@@ -2,8 +2,8 @@
 	import { onMount } from 'svelte';
 	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
-	import GfaView from '$lib/GfaView.svelte';
 	import RefArcView from '$lib/RefArcView.svelte';
+	import IgvView from '$lib/IgvView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 
 	let client: GbzClient | null = null;
@@ -62,10 +62,6 @@
 			return;
 		}
 		running = true;
-		gfa = null;
-		rawGfa = '';
-		stats = null;
-		fetchInfo = null;
 		try {
 			const result = await client!.query(source, locus);
 			if (!result.ok) {
@@ -181,12 +177,13 @@
 		</section>
 
 		<section class="panel">
-			<GfaView {gfa} referenceSample={sample} />
+			<h2 class="panel-title">Large non-reference nodes</h2>
+			<RefArcView {gfa} referenceSample={sample} />
 		</section>
 
 		<section class="panel">
-			<h2 class="panel-title">Large non-reference nodes</h2>
-			<RefArcView {gfa} referenceSample={sample} />
+			<h2 class="panel-title">Genome browser (IGV.js)</h2>
+			<IgvView {gfa} referenceSample={sample} />
 		</section>
 
 		<section class="panel">

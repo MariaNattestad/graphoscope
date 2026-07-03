@@ -1,0 +1,186 @@
+// Shared computation: place non-reference nodes onto the reference coordinate
+// system. Used by both the arc view and the IGV.js view.
+import type { Gfa } from './gfa';
+
+export interface NonRefEvent {
+	id: string;
+	len: number;
+	/** Reference bp (relative to the subgraph reference path) where the alt anchors. */
+	leftBp: number;
+	rightBp: number;
+	/** bp of reference spanned between the anchors (0 for a pure insertion). */
+	skipped: number;
+	/** len - skipped: >0 net insertion, <0 alt shorter than replaced ref. */
+	net: number;
+	/** Number of non-reference haplotype walks that traverse this node. */
+	cov: number;
+}
+
+export interface NonRefModel {
+	refName: string;
+	contig: string;
+	/** Genomic start (0-based) of the reference path fragment in this subgraph. */
+	genomicStart: number;
+	/** Reference path length in bp within the subgraph. */
+	refLen: number;
+	totalNonRef: number;
+	events: NonRefEvent[];
+	maxLen: number;
+}
+
+// --- shared classification + color scales (used by the arc view and IGV) ---
+
+export type NetClass = 'insertion' | 'expansion' | 'contraction' | 'substitution';
+
+/** Classify a non-reference node by how its length compares to the reference it replaces. */
+export function classify(ev: { skipped: number; net: number }): NetClass {
+	if (ev.net === 0) return 'substitution';
+	if (ev.net > 0) return ev.skipped === 0 ? 'insertion' : 'expansion';
+	return 'contraction';
+}
+
+// Paired blues for insertions: dark = pure insertion (no ref replaced),
+// light = net insertion that also replaces some reference sequence.
+export const NET_COLORS: Record<NetClass, string> = {
+	insertion: '#1d4ed8', // pure insertion (0 bp ref replaced)
+	expansion: '#60a5fa', // net insertion, replaces some ref
+	contraction: '#dc2626', // net deletion (alt shorter than replaced ref)
+	substitution: '#6b7280' // same length
+};
+
+export const NET_LABELS: Record<NetClass, string> = {
+	insertion: 'insertion (0 bp ref)',
+	expansion: 'net insertion',
+	contraction: 'net deletion',
+	substitution: 'substitution'
+};
+
+/** Short code for compact labels (e.g. IGV feature names). */
+export const NET_CODES: Record<NetClass, string> = {
+	insertion: 'ins',
+	expansion: 'ins*',
+	contraction: 'del',
+	substitution: 'sub'
+};
+
+// Coverage scale: legible green sequential (few → many haplotypes). Chosen so
+// even the low end is dark enough to read as text (IGV draws labels in this
+// color) and to stay distinct from the blue/red net-change colors.
+export function coverageRgb(cov: number, total: number): [number, number, number] {
+	const t = total <= 1 ? 0 : Math.min(1, Math.max(0, (cov - 1) / (total - 1)));
+	const lo: [number, number, number] = [56, 142, 60]; // #388e3c
+	const hi: [number, number, number] = [16, 60, 24]; // very dark green
+	return [
+		Math.round(lo[0] + (hi[0] - lo[0]) * t),
+		Math.round(lo[1] + (hi[1] - lo[1]) * t),
+		Math.round(lo[2] + (hi[2] - lo[2]) * t)
+	];
+}
+
+export function coverageColor(cov: number, total: number): string {
+	const [r, g, b] = coverageRgb(cov, total);
+	return `rgb(${r},${g},${b})`;
+}
+
+export function computeNonRefNodes(
+	gfa: Gfa,
+	referenceSample: string,
+	minLen: number
+): NonRefModel | null {
+	const ref = gfa.walks.find((w) => w.sample === referenceSample) ?? gfa.walks[0];
+	if (!ref) return null;
+
+	// Reference node -> [start,end) bp along the reference path.
+	const refCoord = new Map<string, { start: number; end: number }>();
+	let off = 0;
+	for (const s of ref.steps) {
+		const len = gfa.segments.get(s.id)?.length ?? 0;
+		refCoord.set(s.id, { start: off, end: off + len });
+		off += len;
+	}
+	const refLen = Math.max(1, off);
+
+	// Undirected adjacency from links.
+	const adj = new Map<string, Set<string>>();
+	const add = (a: string, b: string) => {
+		let s = adj.get(a);
+		if (!s) adj.set(a, (s = new Set()));
+		s.add(b);
+	};
+	for (const l of gfa.links) {
+		add(l.from, l.to);
+		add(l.to, l.from);
+	}
+
+	// Coverage: non-reference walks that traverse each node.
+	const nonRefWalks = gfa.walks.filter((w) => w !== ref);
+	const cov = new Map<string, number>();
+	for (const w of nonRefWalks) {
+		for (const step of w.steps) cov.set(step.id, (cov.get(step.id) ?? 0) + 1);
+	}
+	const totalNonRef = Math.max(1, nonRefWalks.length);
+
+	function nearestRef(startId: string): { start: number; end: number } | null {
+		const seen = new Set([startId]);
+		let frontier = [startId];
+		for (let d = 0; d < 8 && frontier.length; d++) {
+			const next: string[] = [];
+			for (const id of frontier) {
+				for (const nb of adj.get(id) ?? []) {
+					const rc = refCoord.get(nb);
+					if (rc) return rc;
+					if (!seen.has(nb)) {
+						seen.add(nb);
+						next.push(nb);
+					}
+				}
+			}
+			frontier = next;
+		}
+		return null;
+	}
+
+	const events: NonRefEvent[] = [];
+	for (const seg of gfa.segments.values()) {
+		if (refCoord.has(seg.id)) continue;
+		if (seg.length <= minLen) continue;
+		const refNbrs = [...(adj.get(seg.id) ?? [])]
+			.map((n) => refCoord.get(n))
+			.filter((c): c is { start: number; end: number } => !!c);
+
+		let leftBp: number, rightBp: number;
+		if (refNbrs.length === 1) {
+			leftBp = rightBp = refNbrs[0].end;
+		} else if (refNbrs.length > 1) {
+			refNbrs.sort((a, b) => a.start - b.start);
+			leftBp = refNbrs[0].end;
+			rightBp = refNbrs[refNbrs.length - 1].start;
+			if (rightBp < leftBp) [leftBp, rightBp] = [rightBp, leftBp];
+		} else {
+			const near = nearestRef(seg.id);
+			if (!near) continue;
+			leftBp = rightBp = near.end;
+		}
+		const skipped = Math.max(0, rightBp - leftBp);
+		events.push({
+			id: seg.id,
+			len: seg.length,
+			leftBp,
+			rightBp,
+			skipped,
+			net: seg.length - skipped,
+			cov: cov.get(seg.id) ?? 0
+		});
+	}
+	events.sort((a, b) => a.leftBp - b.leftBp);
+	const maxLen = Math.max(1, ...events.map((e) => e.len));
+	return {
+		refName: `${ref.sample}#${ref.hapIndex}#${ref.seqId}`,
+		contig: ref.seqId,
+		genomicStart: ref.start,
+		refLen,
+		totalNonRef,
+		events,
+		maxLen
+	};
+}

@@ -7,6 +7,14 @@
 	// to pin its details (with genomic coordinates); double-click anywhere to
 	// zoom the x-axis 10×.
 	import type { Gfa } from './gfa';
+	import {
+		computeNonRefNodes,
+		classify,
+		NET_COLORS,
+		NET_LABELS,
+		coverageColor,
+		type NonRefEvent as Ev
+	} from './nonRefNodes';
 
 	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
@@ -25,16 +33,6 @@
 	const hmY = 176;
 	const hmH = 12;
 
-	interface Ev {
-		id: string;
-		len: number;
-		leftBp: number;
-		rightBp: number;
-		skipped: number;
-		net: number;
-		cov: number;
-	}
-
 	// Reset zoom/pin when a new subgraph is loaded.
 	$effect(() => {
 		gfa;
@@ -42,115 +40,13 @@
 		pinned = null;
 	});
 
-	const model = $derived.by(() => {
-		const ref = gfa.walks.find((w) => w.sample === referenceSample) ?? gfa.walks[0];
-		if (!ref) return null;
-
-		const refCoord = new Map<string, { start: number; end: number }>();
-		let off = 0;
-		for (const s of ref.steps) {
-			const len = gfa.segments.get(s.id)?.length ?? 0;
-			refCoord.set(s.id, { start: off, end: off + len });
-			off += len;
-		}
-		const refLen = Math.max(1, off);
-
-		const adj = new Map<string, Set<string>>();
-		const add = (a: string, b: string) => {
-			let s = adj.get(a);
-			if (!s) adj.set(a, (s = new Set()));
-			s.add(b);
-		};
-		for (const l of gfa.links) {
-			add(l.from, l.to);
-			add(l.to, l.from);
-		}
-
-		// Coverage: how many non-reference walks traverse each node.
-		const nonRefWalks = gfa.walks.filter((w) => w !== ref);
-		const cov = new Map<string, number>();
-		for (const w of nonRefWalks) {
-			for (const step of w.steps) cov.set(step.id, (cov.get(step.id) ?? 0) + 1);
-		}
-		const totalNonRef = Math.max(1, nonRefWalks.length);
-
-		function nearestRef(startId: string): { start: number; end: number } | null {
-			const seen = new Set([startId]);
-			let frontier = [startId];
-			for (let d = 0; d < 8 && frontier.length; d++) {
-				const next: string[] = [];
-				for (const id of frontier) {
-					for (const nb of adj.get(id) ?? []) {
-						const rc = refCoord.get(nb);
-						if (rc) return rc;
-						if (!seen.has(nb)) {
-							seen.add(nb);
-							next.push(nb);
-						}
-					}
-				}
-				frontier = next;
-			}
-			return null;
-		}
-
-		const events: Ev[] = [];
-		for (const seg of gfa.segments.values()) {
-			if (refCoord.has(seg.id)) continue;
-			if (seg.length <= minLen) continue;
-			const refNbrs = [...(adj.get(seg.id) ?? [])]
-				.map((n) => refCoord.get(n))
-				.filter((c): c is { start: number; end: number } => !!c);
-
-			let leftBp: number, rightBp: number;
-			if (refNbrs.length === 1) {
-				leftBp = rightBp = refNbrs[0].end;
-			} else if (refNbrs.length > 1) {
-				refNbrs.sort((a, b) => a.start - b.start);
-				leftBp = refNbrs[0].end;
-				rightBp = refNbrs[refNbrs.length - 1].start;
-				if (rightBp < leftBp) [leftBp, rightBp] = [rightBp, leftBp];
-			} else {
-				const near = nearestRef(seg.id);
-				if (!near) continue;
-				leftBp = rightBp = near.end;
-			}
-			const skipped = Math.max(0, rightBp - leftBp);
-			events.push({
-				id: seg.id,
-				len: seg.length,
-				leftBp,
-				rightBp,
-				skipped,
-				net: seg.length - skipped,
-				cov: cov.get(seg.id) ?? 0
-			});
-		}
-		events.sort((a, b) => a.leftBp - b.leftBp);
-		const maxLen = Math.max(1, ...events.map((e) => e.len));
-		return {
-			refName: `${ref.sample}#${ref.hapIndex}#${ref.seqId}`,
-			contig: ref.seqId,
-			refLen,
-			events,
-			maxLen,
-			genomicStart: ref.start,
-			totalNonRef
-		};
-	});
+	const model = $derived(computeNonRefNodes(gfa, referenceSample, minLen));
 
 	const win = $derived(viewWin ?? { start: 0, end: model?.refLen ?? 1 });
 	const zoomFactor = $derived(model ? model.refLen / (win.end - win.start) : 1);
 
-	function color(ev: Ev): string {
-		if (ev.net > 0) return '#2563eb';
-		if (ev.net < 0) return '#e11d48';
-		return '#6b7280';
-	}
-	function heatColor(cov: number, total: number): string {
-		const t = total <= 1 ? 0 : Math.min(1, Math.max(0, (cov - 1) / (total - 1)));
-		return `hsl(${(60 * (1 - t)).toFixed(0)} 95% 50%)`;
-	}
+	const color = (ev: Ev): string => NET_COLORS[classify(ev)];
+	const heatColor = coverageColor;
 
 	const render = $derived.by(() => {
 		if (!model) return null;
@@ -296,9 +192,10 @@
 
 		<div class="legends">
 			<div class="legend">
-				<span><span class="sw" style="background:#2563eb"></span> net insertion</span>
-				<span><span class="sw" style="background:#e11d48"></span> alt &lt; ref replaced</span>
-				<span><span class="sw" style="background:#6b7280"></span> substitution</span>
+				<span><span class="sw" style="background:{NET_COLORS.insertion}"></span> {NET_LABELS.insertion}</span>
+				<span><span class="sw" style="background:{NET_COLORS.expansion}"></span> {NET_LABELS.expansion}</span>
+				<span><span class="sw" style="background:{NET_COLORS.contraction}"></span> {NET_LABELS.contraction}</span>
+				<span><span class="sw" style="background:{NET_COLORS.substitution}"></span> {NET_LABELS.substitution}</span>
 				<span class="muted">arc height ∝ length</span>
 			</div>
 			<div class="legend">
@@ -394,7 +291,7 @@
 		width: 90px;
 		height: 10px;
 		border-radius: 3px;
-		background: linear-gradient(90deg, hsl(60 95% 50%), hsl(30 95% 50%), hsl(0 95% 50%));
+		background: linear-gradient(90deg, rgb(56, 142, 60), rgb(16, 60, 24));
 	}
 	.hover {
 		font-size: 0.85rem;
