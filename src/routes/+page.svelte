@@ -6,6 +6,7 @@
 	import IgvView from '$lib/IgvView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
+	import { simplify } from '$lib/graph/simplify';
 
 	let client: GbzClient | null = null;
 
@@ -60,15 +61,24 @@
 	// State
 	let running = $state(false);
 	let error = $state<string | null>(null);
-	let gfa = $state<Gfa | null>(null);
+	// `parsed` is the raw graph from the query/file; `gfa` is what the widgets see
+	// (simplified upfront, unless the user turns it off).
+	let parsed = $state<Gfa | null>(null);
 	let rawGfa = $state<string>('');
-	let stats = $state<ReturnType<typeof gfaStats> | null>(null);
+	let simplifyOn = $state(true);
+	let maxVariant = $state(5);
 	let fetchInfo = $state<{
 		requestCount: number;
 		bytesFetched: number;
 		dbSize: number;
 		elapsedMs: number;
 	} | null>(null);
+
+	const simplified = $derived(
+		parsed ? simplify(parsed, { referenceSample: sample, maxVariant }) : null
+	);
+	const gfa = $derived(simplifyOn && simplified ? simplified.gfa : parsed);
+	const stats = $derived(gfa ? gfaStats(gfa) : null);
 
 	onMount(() => {
 		client = new GbzClient();
@@ -100,16 +110,9 @@
 				error = `${result.error}\n${result.stderr ?? ''}`.trim();
 			} else {
 				rawGfa = result.gfa ?? '';
-				gfa = parseGfa(rawGfa);
-				stats = gfaStats(gfa);
+				parsed = parseGfa(rawGfa);
 				fetchInfo = result.stats ?? null;
-				// Log the data so you can poke at it in the devtools console.
-				console.log('[pangenome-viz] query', { locus, stats: fetchInfo });
-				console.log('[pangenome-viz] parsed GFA', gfa);
-				console.log('[pangenome-viz] segments', gfa.segments);
-				console.log('[pangenome-viz] walks (haplotypes)', gfa.walks);
-				console.log('[pangenome-viz] links', gfa.links);
-				console.log('[pangenome-viz] raw GFA text', rawGfa);
+				logData('query', locus);
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -137,16 +140,14 @@
 				name = source.url;
 			}
 			rawGfa = text;
-			gfa = parseGfa(text);
-			stats = gfaStats(gfa);
+			parsed = parseGfa(text);
 			fetchInfo = {
 				requestCount: 1,
 				bytesFetched: new Blob([text]).size,
 				dbSize: new Blob([text]).size,
 				elapsedMs: Math.round(performance.now() - t0)
 			};
-			console.log('[pangenome-viz] loaded GFA', { name, stats: fetchInfo });
-			console.log('[pangenome-viz] parsed GFA', gfa);
+			logData('file', name);
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -157,6 +158,20 @@
 	function runExampleLocus(locus: string) {
 		locusText = locus;
 		run();
+	}
+
+	// Lightweight console logging. Logs plain snapshots + a summary, and stashes
+	// the full data on window.__pangenome for poking — never dumps the reactive
+	// proxy or the multi-MB raw text into the console (that trips Svelte's
+	// console_log_state warning and floods the log buffer).
+	function logData(kind: string, ctx: unknown) {
+		const snap = parsed ? $state.snapshot(parsed) : null;
+		const summary = snap
+			? { segments: snap.segments.size, links: snap.links.length, walks: snap.walks.length }
+			: null;
+		console.log(`[pangenome-viz] ${kind}`, { ctx, summary, fetch: fetchInfo });
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		(window as any).__pangenome = { parsed: snap, rawGfa, simplified: simplified?.stats };
 	}
 
 	// --- File menu + modal actions ---
@@ -275,6 +290,8 @@
 				<span class="src-name">{source.label}</span>
 			</span>
 			{#if running}<span class="muted small">working…</span>{/if}
+			<span class="spacer"></span>
+			<a class="pg-link" href="/playground">Simplification playground →</a>
 		</div>
 
 		{#if isGbz}
@@ -379,6 +396,24 @@
 					a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
 				</p>
 			{/if}
+			<div class="simplify-bar">
+				<label class="opt">
+					<input type="checkbox" bind:checked={simplifyOn} /> simplify graph
+				</label>
+				{#if simplifyOn}
+					<label class="opt">
+						collapse variants ≤
+						<input type="number" min="1" max="1000" bind:value={maxVariant} /> bp
+					</label>
+					{#if simplified && parsed}
+						<span class="muted small">
+							{parsed.segments.size.toLocaleString()} → <b>{simplified.stats.segmentsAfter.toLocaleString()}</b>
+							nodes · {simplified.stats.sites.toLocaleString()} sites collapsed
+							({simplified.stats.snpCount.toLocaleString()} SNPs, {simplified.stats.basesRemoved.toLocaleString()} alt bp)
+						</span>
+					{/if}
+				{/if}
+			</div>
 		</section>
 
 		<section class="panel">
@@ -398,7 +433,7 @@
 
 		<section class="panel">
 			<h2 class="panel-title">Raw data</h2>
-			<RawDataView {gfa} rawText={rawGfa} />
+			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} />
 		</section>
 	{/if}
 
@@ -492,6 +527,18 @@
 		align-items: center;
 		gap: 0.8rem;
 		margin-bottom: 0.8rem;
+	}
+	.menubar .spacer {
+		flex: 1;
+	}
+	.pg-link {
+		color: #2563eb;
+		font-size: 0.85rem;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.pg-link:hover {
+		text-decoration: underline;
 	}
 	.menu {
 		position: relative;
@@ -622,6 +669,26 @@
 		background: #fff;
 		color: #374151;
 		border: 1px solid #d1d5db;
+	}
+
+	.simplify-bar {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+		flex-wrap: wrap;
+		margin-top: 0.6rem;
+		padding-top: 0.6rem;
+		border-top: 1px solid #f0f0f0;
+	}
+	.simplify-bar .opt {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.85rem;
+	}
+	.simplify-bar .opt input[type='number'] {
+		width: 4rem;
+		padding: 0.15rem 0.35rem;
 	}
 	.stats {
 		display: flex;

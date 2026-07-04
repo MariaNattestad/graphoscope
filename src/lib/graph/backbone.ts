@@ -206,19 +206,31 @@ function orientPath(segIds: string[], graph: GfaGraph): GfaPathStep[] {
 	return steps;
 }
 
-export function computeBackbones(graph: GfaGraph): Backbone[] {
+export function computeBackbones(graph: GfaGraph, referenceSample?: string): Backbone[] {
 	const adjacency = buildAdjacency(graph);
 	const components = findConnectedComponents(adjacency);
 	const segmentLength = (id: string) => Math.max(1, graph.segments.get(id)?.length ?? 1);
+
+	// Paths are named "sample#hap#contig" (see gfaToGraph). Prefer paths of the
+	// reference sample as the backbone so the layout anchors on the real
+	// reference — not merely the longest haplotype, which for an insertion allele
+	// is always longer than the reference it parallels and would hijack the line.
+	const isReference = (name: string) => {
+		if (!referenceSample) return false;
+		const hash = name.indexOf('#');
+		return (hash >= 0 ? name.slice(0, hash) : name) === referenceSample;
+	};
 
 	const backbones: Backbone[] = [];
 
 	components.forEach((componentIds, componentId) => {
 		const componentSet = new Set(componentIds);
 
-		const candidatePaths = graph.paths
+		const allCandidates = graph.paths
 			.map((p) => ({ ...p, steps: p.steps.filter((s) => componentSet.has(s.segId)) }))
 			.filter((p) => p.steps.length > 0);
+		const refCandidates = allCandidates.filter((p) => isReference(p.name));
+		const candidatePaths = refCandidates.length > 0 ? refCandidates : allCandidates;
 
 		let steps: GfaPathStep[];
 		let source: string;

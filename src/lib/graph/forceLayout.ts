@@ -74,9 +74,11 @@ export interface LayoutOptions {
 	maxEdgesPerSegment?: number;
 	unitEdgeLength?: number;
 	iterations?: number;
+	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
+	referenceSample?: string;
 }
 
-const DEFAULTS: Required<LayoutOptions> = {
+const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 	targetTotalSubNodes: 2500,
 	maxEdgesPerSegment: 60,
 	unitEdgeLength: 18,
@@ -159,7 +161,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	}
 
 	// --- Backbone anchoring ---
-	const backbones = computeBackbones(graph);
+	const backbones = computeBackbones(graph, options.referenceSample);
 	const assignedSegIds = new Set<string>();
 	const anchors = new Map<string, { x: number; y: number }>(); // segId -> midpoint, for BFS seeding
 
