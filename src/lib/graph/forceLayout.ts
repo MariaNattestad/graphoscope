@@ -58,7 +58,12 @@ export interface BackboneInfo {
 export interface LayoutResult {
 	nodesById: Map<string, SimNode>;
 	chains: SegmentChain[];
-	structuralLinkPaths: { from: string; to: string; fromNode: string; toNode: string }[];
+	/** `bendNode` is a zero-length, invisible simulation node inserted at the
+	 * midpoint so the link can be drawn as a curve through it (see GraphCanvas) —
+	 * without it, a link between two backbone-pinned points (e.g. a deletion
+	 * skip edge) is a dead-straight line that lies exactly on top of the
+	 * backbone and is invisible. */
+	structuralLinkPaths: { from: string; to: string; fromNode: string; toNode: string; bendNode: string }[];
 	backbones: BackboneInfo[];
 	backboneSegIds: Set<string>;
 	segmentLengths: Map<string, number>;
@@ -68,7 +73,9 @@ export interface LayoutResult {
 }
 
 export interface LayoutOptions {
-	/** Soft budget for total number of sub-nodes across the whole graph. */
+	/** Soft budget for how many sub-edges the reference backbone is divided into
+	 * (this, not the whole graph's total sequence, sets the pixels-per-bp scale —
+	 * see buildAndRunLayout). */
 	targetTotalSubNodes?: number;
 	/** Max sub-edges any single segment chain can be split into. */
 	maxEdgesPerSegment?: number;
@@ -88,27 +95,46 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 /** Vertical spacing between stacked components' backbone baselines. */
 const COMPONENT_V_GAP = 500;
 /** How far off the backbone baseline a bubble node is seeded, per BFS hop. */
-const BUBBLE_Y_STEP = 45;
+const BUBBLE_Y_STEP = 70;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
-const MIN_BASELINE_CLEARANCE_FACTOR = 2.2;
+const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
+/** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
+const BASELINE_PUSH_GAIN = 0.3;
 
 export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}): LayoutResult {
 	const opts = { ...DEFAULTS, ...options };
 
+	// Pixels-per-bp is fixed from the REFERENCE backbone's own bp total, not the
+	// whole graph's summed segment length. Keying it to all segments meant the
+	// scale shifted every time the graph was simplified (removing alt nodes
+	// shrinks total sequence even though the reference itself never changes),
+	// and — combined with clamping every chain to a fixed edge count × a fixed
+	// px-per-edge — meant a 1bp node and a 40kb node could render at the same
+	// on-screen length, or a tiny deletion-marker node could look stretched.
+	// Backbones are sorted by length descending and prefer the reference sample
+	// (see computeBackbones), so backbones[0] is the reference whenever one exists.
+	const backbones = computeBackbones(graph, options.referenceSample);
 	let totalLength = 0;
 	for (const seg of graph.segments.values()) totalLength += Math.max(1, seg.length);
-	const basesPerEdge = Math.max(1, totalLength / Math.max(1, opts.targetTotalSubNodes));
+	const refBp = Math.max(1, backbones[0]?.totalLength ?? totalLength);
+	const basesPerEdge = Math.max(1, refBp / Math.max(1, opts.targetTotalSubNodes));
+	const pxPerBp = opts.unitEdgeLength / basesPerEdge;
 
 	const nodesById = new Map<string, SimNode>();
 	const chains: SegmentChain[] = [];
 	const links: SimLink[] = [];
+	// Total on-screen length assigned to each segment's chain (bp * pxPerBp,
+	// clamped by maxEdgesPerSegment only in how many sub-nodes render it smoothly
+	// — never in its total length).
+	const chainPxLength = new Map<string, number>();
 
 	for (const seg of graph.segments.values()) {
-		const numEdges = Math.min(
-			opts.maxEdgesPerSegment,
-			Math.max(1, Math.ceil(Math.max(1, seg.length) / basesPerEdge))
-		);
+		const segLen = Math.max(1, seg.length);
+		const numEdges = Math.min(opts.maxEdgesPerSegment, Math.max(1, Math.ceil(segLen / basesPerEdge)));
 		const numNodes = numEdges + 1;
+		const totalPx = segLen * pxPerBp;
+		const distancePerEdge = totalPx / numEdges;
+		chainPxLength.set(seg.id, totalPx);
 		const nodeIds: string[] = [];
 
 		for (let i = 0; i < numNodes; i++) {
@@ -127,7 +153,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				links.push({
 					source: nodeIds[i - 1],
 					target: id,
-					distance: opts.unitEdgeLength,
+					distance: distancePerEdge,
 					strength: 1,
 					kind: 'chain'
 				});
@@ -138,6 +164,11 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 
 	const chainById = new Map(chains.map((c) => [c.segId, c]));
 	const structuralLinkPaths: LayoutResult['structuralLinkPaths'] = [];
+	// Sentinel segId for bend nodes: not a real segment, so it's automatically
+	// excluded from chains/hit-testing/rendering-as-a-strand — it only exists to
+	// give the simulation something to push sideways.
+	const BEND_SEG_ID = '__bend__';
+	let bendCounter = 0;
 
 	for (const link of graph.links) {
 		const fromChain = chainById.get(link.from);
@@ -150,18 +181,24 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 
 		if (fromNode === toNode) continue;
 
-		links.push({
-			source: fromNode,
-			target: toNode,
-			distance: opts.unitEdgeLength,
-			strength: 0.3,
-			kind: 'structural'
+		const bendNode = `bend::${bendCounter++}`;
+		nodesById.set(bendNode, {
+			id: bendNode,
+			segId: BEND_SEG_ID,
+			posIndex: 0,
+			isChainEnd: false,
+			x: 0,
+			y: 0,
+			componentBaselineY: 0
 		});
-		structuralLinkPaths.push({ from: link.from, to: link.to, fromNode, toNode });
+		links.push(
+			{ source: fromNode, target: bendNode, distance: opts.unitEdgeLength / 2, strength: 0.3, kind: 'structural' },
+			{ source: bendNode, target: toNode, distance: opts.unitEdgeLength / 2, strength: 0.3, kind: 'structural' }
+		);
+		structuralLinkPaths.push({ from: link.from, to: link.to, fromNode, toNode, bendNode });
 	}
 
 	// --- Backbone anchoring ---
-	const backbones = computeBackbones(graph, options.referenceSample);
 	const assignedSegIds = new Set<string>();
 	const anchors = new Map<string, { x: number; y: number }>(); // segId -> midpoint, for BFS seeding
 
@@ -176,7 +213,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			assignedSegIds.add(step.segId);
 
 			const numEdges = chain.nodeIds.length - 1;
-			const spanLength = numEdges * opts.unitEdgeLength;
+			const spanLength = chainPxLength.get(step.segId) ?? numEdges * opts.unitEdgeLength;
 
 			chain.nodeIds.forEach((nodeId, i) => {
 				const node = nodesById.get(nodeId)!;
@@ -230,6 +267,19 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		});
 	}
 
+	// Seed bend nodes at the midpoint of their two endpoints (now that both have
+	// real positions), nudged off-axis by a deterministic jitter so the
+	// simulation has a direction to push in rather than starting exactly on the
+	// line it's meant to bend away from.
+	for (const path of structuralLinkPaths) {
+		const bend = nodesById.get(path.bendNode)!;
+		const a = nodesById.get(path.fromNode)!;
+		const b = nodesById.get(path.toNode)!;
+		bend.x = (a.x + b.x) / 2 + stableUnit(path.bendNode) * 6;
+		bend.y = (a.y + b.y) / 2 + (stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1) * BUBBLE_Y_STEP * 0.4;
+		bend.componentBaselineY = a.componentBaselineY;
+	}
+
 	const nodeArray = Array.from(nodesById.values());
 
 	// Keeps bubble nodes from drifting on top of the backbone line: general
@@ -244,7 +294,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			const absDy = Math.abs(dy);
 			if (absDy < minBaselineClearance) {
 				const dir = dy !== 0 ? Math.sign(dy) : stableUnit(node.id) >= 0 ? 1 : -1;
-				const push = (minBaselineClearance - absDy) * 0.2 * alpha;
+				const push = (minBaselineClearance - absDy) * BASELINE_PUSH_GAIN * alpha;
 				node.vy = (node.vy ?? 0) + dir * push;
 			}
 		}

@@ -102,16 +102,21 @@
 		ctx.translate(transform.x, transform.y);
 		ctx.scale(transform.k, transform.k);
 
-		// structural links first, underneath strands
+		// structural links first, underneath strands. Drawn as a curve through the
+		// (invisible) bend node so a link between two backbone-pinned points —
+		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
+		// and disappear against it.
 		ctx.strokeStyle = 'rgba(200, 210, 230, 0.35)';
 		ctx.lineWidth = 1 / transform.k;
 		for (const link of layout.structuralLinkPaths) {
 			const a = layout.nodesById.get(link.fromNode);
 			const b = layout.nodesById.get(link.toNode);
+			const m = layout.nodesById.get(link.bendNode);
 			if (!a || !b) continue;
 			ctx.beginPath();
 			ctx.moveTo(a.x, a.y);
-			ctx.lineTo(b.x, b.y);
+			if (m) ctx.quadraticCurveTo(m.x, m.y, b.x, b.y);
+			else ctx.lineTo(b.x, b.y);
 			ctx.stroke();
 		}
 

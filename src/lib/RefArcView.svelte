@@ -10,6 +10,7 @@
 	import {
 		computeNonRefNodes,
 		classify,
+		eventSize,
 		NET_COLORS,
 		NET_LABELS,
 		coverageColor,
@@ -63,7 +64,7 @@
 			.map((ev) => {
 				const x1 = xs(ev.leftBp);
 				const x2 = xs(ev.rightBp);
-				const apex = arcH(ev.len);
+				const apex = arcH(eventSize(ev));
 				const xm = (x1 + x2) / 2;
 				const lollipop = x2 - x1 < 4;
 				const d = lollipop ? '' : `M ${x1} ${baseY} Q ${xm} ${baseY - 2 * apex} ${x2} ${baseY}`;
@@ -102,12 +103,15 @@
 		viewWin = null;
 	}
 
+	const isPureDeletion = (ev: Ev) => ev.len === 0 && ev.skipped > 0;
+
 	function infoText(ev: Ev): string {
 		if (!model) return '';
 		const g0 = Math.round(model.genomicStart + ev.leftBp);
 		const g1 = Math.round(model.genomicStart + ev.rightBp);
 		const coord = g0 === g1 ? `${model.contig}:${g0}` : `${model.contig}:${g0}-${g1}`;
-		return `node ${ev.id}\tlen ${ev.len} bp\t${coord}\treplaces ${ev.skipped} bp\tnet ${ev.net > 0 ? '+' : ''}${ev.net} bp\t${ev.cov}/${model.totalNonRef} haplotypes`;
+		const what = isPureDeletion(ev) ? `deletion (no alt node)` : `node ${ev.id}\tlen ${ev.len} bp`;
+		return `${what}\t${coord}\treplaces ${ev.skipped} bp\tnet ${ev.net > 0 ? '+' : ''}${ev.net} bp\t${ev.cov}/${model.totalNonRef} haplotypes`;
 	}
 	async function copyInfo() {
 		if (!active) return;
@@ -127,7 +131,7 @@
 	<div class="head">
 		<span>Reference: <code>{model?.refName ?? '—'}</code></span>
 		<label class="thresh">
-			min node length
+			min variant size (ins/del)
 			<input type="number" min="1" max="1000" bind:value={minLen} /> bp
 		</label>
 		<span class="muted">{model?.events.length ?? 0} nodes shown</span>
@@ -196,7 +200,7 @@
 				<span><span class="sw" style="background:{NET_COLORS.expansion}"></span> {NET_LABELS.expansion}</span>
 				<span><span class="sw" style="background:{NET_COLORS.contraction}"></span> {NET_LABELS.contraction}</span>
 				<span><span class="sw" style="background:{NET_COLORS.substitution}"></span> {NET_LABELS.substitution}</span>
-				<span class="muted">arc height ∝ length</span>
+				<span class="muted">arc height ∝ max(inserted, deleted) bp</span>
 			</div>
 			<div class="legend">
 				<span class="muted">haplotypes through node:</span>
@@ -209,7 +213,11 @@
 		<div class="hover" class:pinned={!!pinned}>
 			{#if active}
 				<span>
-					node <code>{active.id}</code> · <b>{active.len.toLocaleString()} bp</b> ·
+					{#if isPureDeletion(active)}
+						<b>deletion</b> (no alt node) ·
+					{:else}
+						node <code>{active.id}</code> · <b>{active.len.toLocaleString()} bp</b> ·
+					{/if}
 					<code>{model.contig}:{genomic(active.leftBp).toLocaleString()}{active.leftBp !== active.rightBp
 							? '-' + genomic(active.rightBp).toLocaleString()
 							: ''}</code>

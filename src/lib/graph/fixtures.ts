@@ -10,15 +10,16 @@
 import mhc2kb from './fixtures/mhc_2kb.gfa?raw';
 import mhc8kb from './fixtures/mhc_8kb.gfa?raw';
 import mhc84kb from './fixtures/mhc_84kb.gfa?raw';
+import chr20_200kb from './fixtures/chr20_200kb.gfa?raw';
 
 export interface FixtureExpect {
 	/** Collapsed sites the pop pass should produce. */
 	sites: number;
-	/** Total alt alleles removed across all sites. */
-	allelesRemoved: number;
-	/** Alleles that were single-base substitutions (SNPs). */
+	/** Total non-reference interior nodes removed across all sites. */
+	nodesRemoved: number;
+	/** Removed interior nodes that were single-base (SNPs). */
 	snpCount: number;
-	/** Total ALT sequence bases condensed. */
+	/** Total non-reference interior bases condensed. */
 	basesRemoved: number;
 	/** Segment ids that must be gone after the pop pass. */
 	removedNodes?: string[];
@@ -111,7 +112,7 @@ const snp: Fixture = {
 	}),
 	expect: {
 		sites: 1,
-		allelesRemoved: 1,
+		nodesRemoved: 1,
 		snpCount: 1,
 		basesRemoved: 1,
 		removedNodes: ['20'],
@@ -138,7 +139,7 @@ const smallIns: Fixture = {
 	}),
 	expect: {
 		sites: 1,
-		allelesRemoved: 1,
+		nodesRemoved: 1,
 		snpCount: 0,
 		basesRemoved: 4,
 		removedNodes: ['20'],
@@ -165,7 +166,7 @@ const largeIns: Fixture = {
 	}),
 	expect: {
 		sites: 0,
-		allelesRemoved: 0,
+		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
 		keptNodes: ['1', '2', '3', '4', '30']
@@ -191,7 +192,7 @@ const largeDel: Fixture = {
 	}),
 	expect: {
 		sites: 0,
-		allelesRemoved: 0,
+		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
 		keptNodes: ['1', '2', '3', '4', '5']
@@ -216,7 +217,7 @@ const smallDel: Fixture = {
 	}),
 	expect: {
 		sites: 1,
-		allelesRemoved: 1,
+		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
 		keptNodes: ['1', '2', '3', '4', '5'],
@@ -246,7 +247,7 @@ const multiallelic: Fixture = {
 	}),
 	expect: {
 		sites: 1,
-		allelesRemoved: 2,
+		nodesRemoved: 2,
 		snpCount: 2,
 		basesRemoved: 2,
 		removedNodes: ['20', '21'],
@@ -257,9 +258,9 @@ const multiallelic: Fixture = {
 
 const mixed: Fixture = {
 	id: 'mixed',
-	label: 'Mixed small + large allele',
+	label: 'SNP + nearby SV',
 	description:
-		'A 1 bp SNP and a 60 bp insertion share the same anchors — surgical: drop the SNP, keep the big allele.',
+		'A 1 bp SNP at one site and a 60 bp insertion at the next — the SNP collapses, the SV is preserved.',
 	kind: 'synthetic',
 	referenceSample: REF,
 	gfaText: buildGfa({
@@ -267,18 +268,18 @@ const mixed: Fixture = {
 		segs: { '1': 50, '2': 20, '3': 1, '4': 20, '5': 50, '20': 1, '30': 60 },
 		links: [
 			['1', '2'], ['2', '3'], ['3', '4'], ['4', '5'],
-			['2', '20'], ['20', '4'], ['2', '30'], ['30', '4']
+			['2', '20'], ['20', '4'], ['4', '30'], ['30', '5']
 		],
 		walks: [
 			{ sample: REF, steps: ['1', '2', '3', '4', '5'] },
 			...haps('snp', 2, ['1', '2', '20', '4', '5']),
-			...haps('sv', 2, ['1', '2', '30', '4', '5']),
+			...haps('sv', 2, ['1', '2', '3', '4', '30', '5']),
 			...haps('r', 1, ['1', '2', '3', '4', '5'])
 		]
 	}),
 	expect: {
 		sites: 1,
-		allelesRemoved: 1,
+		nodesRemoved: 1,
 		snpCount: 1,
 		basesRemoved: 1,
 		removedNodes: ['20'],
@@ -286,16 +287,49 @@ const mixed: Fixture = {
 	}
 };
 
-const nested: Fixture = {
-	id: 'nested',
-	label: 'Nested bubble (kept)',
+const mnp: Fixture = {
+	id: 'mnp',
+	label: 'MNP / overlapping small variants',
 	description:
-		'An alt region that itself branches (a bubble within the bubble) — not a simple chain, so the whole site is left intact.',
+		'Two adjacent 1 bp sites tangled by haplotypes carrying both — a complex site whose longest path is still < N, so it collapses to reference.',
 	kind: 'synthetic',
 	referenceSample: REF,
 	gfaText: buildGfa({
 		refSample: REF,
-		segs: { '1': 50, '2': 20, '3': 20, '4': 50, '20': 2, '21': 2, '22': 2 },
+		segs: { '1': 50, '2': 20, '3': 1, '4': 1, '5': 50, '20': 1, '21': 1 },
+		links: [
+			['1', '2'], ['2', '3'], ['3', '4'], ['4', '5'],
+			['2', '20'], ['20', '4'], ['3', '21'], ['21', '5'], ['20', '21']
+		],
+		walks: [
+			{ sample: REF, steps: ['1', '2', '3', '4', '5'] },
+			...haps('a', 2, ['1', '2', '20', '4', '5']),
+			...haps('b', 2, ['1', '2', '3', '21', '5']),
+			...haps('c', 2, ['1', '2', '20', '21', '5']),
+			...haps('r', 1, ['1', '2', '3', '4', '5'])
+		]
+	}),
+	expect: {
+		sites: 1,
+		nodesRemoved: 2,
+		snpCount: 2,
+		basesRemoved: 2,
+		removedNodes: ['20', '21'],
+		keptNodes: ['1', '2', '3', '4', '5'],
+		segmentsAfterSimplify: 1
+	}
+};
+
+const nested: Fixture = {
+	id: 'nested',
+	label: 'Large complex bubble (kept)',
+	description:
+		'A branching alt region (a bubble within the bubble) whose paths exceed N bases — the whole complex site is left intact.',
+	kind: 'synthetic',
+	referenceSample: REF,
+	gfaText: buildGfa({
+		refSample: REF,
+		segs: { '1': 50, '2': 20, '3': 20, '4': 50, '20': 60, '21': 60, '22': 60 },
 		links: [
 			['1', '2'], ['2', '3'], ['3', '4'],
 			['2', '20'], ['20', '21'], ['20', '22'], ['21', '3'], ['22', '3']
@@ -309,7 +343,7 @@ const nested: Fixture = {
 	}),
 	expect: {
 		sites: 0,
-		allelesRemoved: 0,
+		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
 		keptNodes: ['1', '2', '3', '4', '20', '21', '22']
@@ -334,7 +368,7 @@ const cyclic: Fixture = {
 	}),
 	expect: {
 		sites: 0,
-		allelesRemoved: 0,
+		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
 		keptNodes: ['1', '2', '3', '4', '20']
@@ -355,7 +389,7 @@ const longRun: Fixture = {
 	}),
 	expect: {
 		sites: 0,
-		allelesRemoved: 0,
+		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
 		segmentsAfterSimplify: 1
@@ -370,6 +404,7 @@ export const SYNTHETIC_FIXTURES: Fixture[] = [
 	smallDel,
 	multiallelic,
 	mixed,
+	mnp,
 	nested,
 	cyclic,
 	longRun
@@ -402,6 +437,20 @@ export const REAL_FIXTURES: Fixture[] = [
 		kind: 'real',
 		referenceSample: 'GRCh38',
 		gfaText: mhc84kb
+	},
+	{
+		id: 'chr20_200kb',
+		label: 'chr20 ~200 kb (real, complex)',
+		description:
+			'chr20:30,000,000–30,200,000 from HPRC GRCh38 — 9,892 nodes, 422 haplotype walks (vs ~90-100 typical; ' +
+			'likely a segmental duplication). Simplifies far less (only ~5.7×, to ~1,750 nodes) than the MHC ' +
+			'examples (~50×) because most of its sites are large/nested and correctly left untouched — this is ' +
+			'the practical scaling ceiling for the current single-pass algorithm: layout alone takes ~15-20s in ' +
+			'the browser (vs ~0.5s for MHC). Bigger chr20 windows we benchmarked (500kb/1Mb) pushed layout past ' +
+			'20-45s+, well beyond what feels reasonable to wait for interactively.',
+		kind: 'real',
+		referenceSample: 'GRCh38',
+		gfaText: chr20_200kb
 	}
 ];
 

@@ -55,7 +55,12 @@
 	const EXAMPLE_LOCI: { label: string; locus: string }[] = [
 		{ label: 'small ~20 kb', locus: 'chr6:32000000-32020000' },
 		{ label: 'MHC core ~84 kb', locus: 'chr6:31972046-32055647' },
-		{ label: 'large ~500 kb', locus: 'chr6:31700000-32200000' }
+		{ label: 'large ~500 kb', locus: 'chr6:31700000-32200000' },
+		// A structurally complex region (~422 haplotype walks vs ~90-100 typical,
+		// likely a segmental duplication) that simplifies far less than MHC — a
+		// realistic stress test of the current single-pass algorithm's scaling
+		// ceiling. Expect the graph layout to take ~15-20s here.
+		{ label: 'chr20 ~200 kb (complex)', locus: 'chr20:30000000-30200000' }
 	];
 
 	// State
@@ -66,7 +71,7 @@
 	let parsed = $state<Gfa | null>(null);
 	let rawGfa = $state<string>('');
 	let simplifyOn = $state(true);
-	let maxVariant = $state(5);
+	let maxVariant = $state(50);
 	let fetchInfo = $state<{
 		requestCount: number;
 		bytesFetched: number;

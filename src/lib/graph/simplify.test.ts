@@ -3,7 +3,7 @@ import { parseGfa, type Gfa } from '../gfa';
 import { ALL_FIXTURES, SYNTHETIC_FIXTURES, type Fixture } from './fixtures';
 import { popSmallVariants, simplify } from './simplify';
 
-const MAX_VARIANT = 5;
+const MAX_VARIANT = 50;
 
 // --- invariant helpers -------------------------------------------------------
 
@@ -68,13 +68,13 @@ describe('popSmallVariants — synthetic expectations', () => {
 			});
 			const e = fx.expect!;
 			expect(stats.sites, 'sites').toBe(e.sites);
-			expect(stats.allelesRemoved, 'allelesRemoved').toBe(e.allelesRemoved);
+			expect(stats.nodesRemoved, 'nodesRemoved').toBe(e.nodesRemoved);
 			expect(stats.snpCount, 'snpCount').toBe(e.snpCount);
 			expect(stats.basesRemoved, 'basesRemoved').toBe(e.basesRemoved);
 			for (const id of e.removedNodes ?? []) expect(out.segments.has(id), `removed ${id}`).toBe(false);
 			for (const id of e.keptNodes ?? []) expect(out.segments.has(id), `kept ${id}`).toBe(true);
-			// no collapsed allele exceeded the threshold
-			for (const s of sites) expect(s.maxAlleleSize).toBeLessThanOrEqual(MAX_VARIANT);
+			// every collapsed site's longest path was below the threshold
+			for (const s of sites) expect(s.maxPathBases).toBeLessThan(MAX_VARIANT);
 		});
 	}
 });
@@ -109,7 +109,7 @@ describe('invariants hold for every fixture', () => {
 				expect(inputEdges.has(e), `pop introduced edge ${e}`).toBe(true);
 			assertLinksResolve(popped.gfa);
 			assertWalksValid(popped.gfa);
-			for (const s of popped.sites) expect(s.maxAlleleSize).toBeLessThanOrEqual(MAX_VARIANT);
+			for (const s of popped.sites) expect(s.maxPathBases).toBeLessThan(MAX_VARIANT);
 			// reference sequence unchanged
 			const poppedRef = refSequence(popped.gfa, fx.referenceSample);
 			expect(poppedRef.len, 'ref length after pop').toBe(inputRef.len);

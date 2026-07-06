@@ -32,6 +32,13 @@ export interface NonRefModel {
 
 export type NetClass = 'insertion' | 'expansion' | 'contraction' | 'substitution';
 
+/** Variant "size" for filtering/scaling: the bigger of inserted or deleted bp, so
+ * a large deletion (small/zero alt allele, large skipped ref) isn't mistaken for
+ * a tiny variant. */
+export function eventSize(ev: { len: number; skipped: number }): number {
+	return Math.max(ev.len, ev.skipped);
+}
+
 /** Classify a non-reference node by how its length compares to the reference it replaces. */
 export function classify(ev: { skipped: number; net: number }): NetClass {
 	if (ev.net === 0) return 'substitution';
@@ -143,7 +150,6 @@ export function computeNonRefNodes(
 	const events: NonRefEvent[] = [];
 	for (const seg of gfa.segments.values()) {
 		if (refCoord.has(seg.id)) continue;
-		if (seg.length <= minLen) continue;
 		const refNbrs = [...(adj.get(seg.id) ?? [])]
 			.map((n) => refCoord.get(n))
 			.filter((c): c is { start: number; end: number } => !!c);
@@ -162,6 +168,11 @@ export function computeNonRefNodes(
 			leftBp = rightBp = near.end;
 		}
 		const skipped = Math.max(0, rightBp - leftBp);
+		// Size a variant by whichever is bigger: the inserted (alt) bp or the
+		// deleted (skipped reference) bp. A deletion's alt allele is often a tiny
+		// residual segment, so filtering on seg.length alone would hide large
+		// deletions entirely.
+		if (Math.max(seg.length, skipped) <= minLen) continue;
 		events.push({
 			id: seg.id,
 			len: seg.length,
@@ -172,8 +183,45 @@ export function computeNonRefNodes(
 			cov: cov.get(seg.id) ?? 0
 		});
 	}
+
+	// Pure deletions with no alt segment at all: a link directly between two
+	// reference nodes that skips over one or more reference nodes in between.
+	const nonRefPairCount = new Map<string, number>();
+	for (const w of nonRefWalks) {
+		for (let i = 0; i + 1 < w.steps.length; i++) {
+			const a = w.steps[i].id;
+			const b = w.steps[i + 1].id;
+			if (a === b) continue;
+			const k = `${a}>${b}`;
+			nonRefPairCount.set(k, (nonRefPairCount.get(k) ?? 0) + 1);
+		}
+	}
+	const seenSkip = new Set<string>();
+	for (const l of gfa.links) {
+		const a = refCoord.get(l.from);
+		const b = refCoord.get(l.to);
+		if (!a || !b) continue;
+		const [left, right] = a.start <= b.start ? [a, b] : [b, a];
+		const skipped = right.start - left.end;
+		if (skipped <= 0) continue; // adjacent reference nodes, not a deletion
+		if (Math.max(0, skipped) <= minLen) continue;
+		const key = a.start <= b.start ? `${l.from}>${l.to}` : `${l.to}>${l.from}`;
+		if (seenSkip.has(key)) continue;
+		seenSkip.add(key);
+		events.push({
+			id: `del:${l.from}>${l.to}`,
+			len: 0,
+			leftBp: left.end,
+			rightBp: right.start,
+			skipped,
+			net: -skipped,
+			cov: (nonRefPairCount.get(`${l.from}>${l.to}`) ?? 0) + (nonRefPairCount.get(`${l.to}>${l.from}`) ?? 0)
+		});
+	}
 	events.sort((a, b) => a.leftBp - b.leftBp);
-	const maxLen = Math.max(1, ...events.map((e) => e.len));
+	// "Size" for scaling: the bigger of inserted or deleted bp, so a deletion
+	// (len=0, large skipped) scales the same as an insertion of the same impact.
+	const maxLen = Math.max(1, ...events.map((e) => Math.max(e.len, e.skipped)));
 	return {
 		refName: `${ref.sample}#${ref.hapIndex}#${ref.seqId}`,
 		contig: ref.seqId,

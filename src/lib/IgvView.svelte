@@ -7,7 +7,7 @@
 	//   2) a bar track whose height = the node's inserted sequence length.
 	import { onMount, onDestroy } from 'svelte';
 	import type { Gfa } from './gfa';
-	import { computeNonRefNodes, classify, coverageRgb, NET_CODES, type NonRefModel } from './nonRefNodes';
+	import { computeNonRefNodes, classify, coverageRgb, eventSize, NET_CODES, type NonRefModel } from './nonRefNodes';
 
 	let { gfa, referenceSample }: { gfa: Gfa | null; referenceSample: string } = $props();
 
@@ -48,23 +48,25 @@
 		const chr = m.contig;
 
 		// BED9 (itemRgb) — one feature per non-reference node, colored by coverage.
+		// Label uses the variant "size" (max of inserted/deleted bp) so a deletion
+		// (len=0, large skipped) doesn't read as a 0bp event.
 		const bed =
 			m.events
 				.map((ev) => {
 					const start = m.genomicStart + ev.leftBp;
 					const end = Math.max(m.genomicStart + ev.rightBp, start + 1);
-					const name = `${ev.len}bp_${ev.cov}/${m.totalNonRef}_${NET_CODES[classify(ev)]}`;
+					const name = `${eventSize(ev)}bp_${ev.cov}/${m.totalNonRef}_${NET_CODES[classify(ev)]}`;
 					return [chr, start, end, name, Math.min(1000, ev.cov * 10), '.', start, end, heatRgb(ev.cov, m.totalNonRef)].join('\t');
 				})
 				.join('\n') + '\n';
 
-		// bedGraph — bar height = node sequence length (bp).
+		// bedGraph — bar height = variant size (max of inserted/deleted bp).
 		const bg =
 			m.events
 				.map((ev) => {
 					const start = m.genomicStart + ev.leftBp;
 					const end = Math.max(m.genomicStart + ev.rightBp, start + 1);
-					return [chr, start, end, ev.len].join('\t');
+					return [chr, start, end, eventSize(ev)].join('\t');
 				})
 				.join('\n') + '\n';
 
@@ -200,7 +202,7 @@
 			{/if}
 		</span>
 		<label class="thresh">
-			min node length
+			min variant size (ins/del)
 			<input type="number" min="1" max="1000" bind:value={minLen} /> bp
 		</label>
 		{#if model}<span class="muted">{model.events.length} non-reference nodes</span>{/if}
@@ -216,7 +218,7 @@
 		<span>1</span>
 		<span class="grad"></span>
 		<span>{model?.totalNonRef ?? ''} haplotypes</span>
-		<span class="muted">· label = <code>&lt;len&gt;bp_&lt;cov&gt;/&lt;total&gt;_&lt;ins|ins*|del|sub&gt;</code> · lower track: bar height = node length</span>
+		<span class="muted">· label = <code>&lt;size&gt;bp_&lt;cov&gt;/&lt;total&gt;_&lt;ins|ins*|del|sub&gt;</code> (size = max ins/del bp) · lower track: bar height = size</span>
 	</div>
 </div>
 

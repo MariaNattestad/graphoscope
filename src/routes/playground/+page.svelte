@@ -8,7 +8,7 @@
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 
 	let selectedId = $state(ALL_FIXTURES[0].id);
-	let maxVariant = $state(5);
+	let maxVariant = $state(50);
 	let showSimplified = $state(true);
 
 	const fixture = $derived<Fixture>(
@@ -62,14 +62,14 @@
 			<div><span>segments</span><b>{parsed.segments.size} → {result.stats.segmentsAfter}</b></div>
 			<div><span>links</span><b>{parsed.links.length} → {result.stats.linksAfter}</b></div>
 			<div><span>sites collapsed</span><b>{result.stats.sites}</b></div>
-			<div><span>alleles removed</span><b>{result.stats.allelesRemoved}</b></div>
+			<div><span>nodes removed</span><b>{result.stats.nodesRemoved}</b></div>
 			<div><span>SNPs</span><b>{result.stats.snpCount}</b></div>
 			<div><span>alt bp condensed</span><b>{result.stats.basesRemoved}</b></div>
 			<div><span>unchop merges</span><b>{result.stats.unchopMerges}</b></div>
 		</div>
 		{#if fixture.kind === 'synthetic' && fixture.expect}
 			<p class="muted small">
-				expected: {fixture.expect.sites} sites · {fixture.expect.allelesRemoved} alleles · {fixture
+				expected: {fixture.expect.sites} sites · {fixture.expect.nodesRemoved} nodes · {fixture
 					.expect.snpCount} SNPs · {fixture.expect.basesRemoved} alt bp
 			</p>
 		{/if}
@@ -93,17 +93,17 @@
 			<h2 class="panel-title">Collapsed sites ({result.sites.length})</h2>
 			<table>
 				<thead>
-					<tr><th>entry→exit</th><th>ref span</th><th>alleles</th><th>SNPs</th><th>alt bp</th><th>max size</th><th>haplotypes</th></tr>
+					<tr><th>entry→exit</th><th>ref span</th><th>nodes</th><th>SNPs</th><th>alt bp</th><th>longest path</th><th>haplotypes</th></tr>
 				</thead>
 				<tbody>
 					{#each result.sites.slice(0, 40) as s (s.entry + '-' + s.exit)}
 						<tr>
 							<td class="mono">{s.entry}→{s.exit}</td>
 							<td>{s.refSpan}</td>
-							<td>{s.allelesRemoved}</td>
+							<td>{s.nodesRemoved}</td>
 							<td>{s.snpCount}</td>
 							<td>{s.basesRemoved}</td>
-							<td>{s.maxAlleleSize}</td>
+							<td>{s.maxPathBases}</td>
 							<td>{s.haplotypesAffected}</td>
 						</tr>
 					{/each}
