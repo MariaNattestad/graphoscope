@@ -21,11 +21,21 @@ export interface RangeReader {
 }
 
 const BLOCK_SIZE = 1 << 16; // 64 KiB blocks: coarser than SQLite's 4 KiB pages, fewer requests.
+// Adaptive readahead: on a run of sequential block misses we widen the fetch
+// window exponentially (1 → 2 → 4 … blocks) up to this many blocks in a single
+// request. Latency (round-trip time), not bandwidth, dominates when the DB is on
+// a remote host, so coalescing a clustered scan into one big range request is a
+// large win; random single-page reads still fetch exactly one block.
+const MAX_READAHEAD_SHIFT = 5; // up to 2^5 = 32 blocks = 2 MiB per request
 
-/** Wraps a block-fetching source with an aligned block cache. */
+/** Wraps a block-fetching source with an aligned block cache + readahead. */
 abstract class BlockCachedReader implements RangeReader {
 	abstract readonly size: number;
 	private cache = new Map<number, Uint8Array>();
+	// Readahead state: the block index we'd expect next if access is sequential,
+	// and how long the current sequential run is (drives the window size).
+	private expectedNextBlock = -1;
+	private seqRun = 0;
 	requestCount = 0;
 	bytesFetched = 0;
 
@@ -35,13 +45,37 @@ abstract class BlockCachedReader implements RangeReader {
 	private getBlock(index: number): Uint8Array {
 		const cached = this.cache.get(index);
 		if (cached) return cached;
+
+		// Grow the readahead window while misses keep arriving in sequence;
+		// reset to a single block on a non-sequential (random) miss.
+		let windowBlocks = 1;
+		if (index === this.expectedNextBlock) {
+			this.seqRun = Math.min(this.seqRun + 1, MAX_READAHEAD_SHIFT);
+			windowBlocks = 1 << this.seqRun;
+		} else {
+			this.seqRun = 0;
+		}
+
+		// Fetch a contiguous run of *uncached* blocks starting at `index`, so a
+		// widened window never re-downloads pages we already hold.
+		const totalBlocks = Math.ceil(this.size / BLOCK_SIZE);
+		let endBlock = index + 1;
+		while (endBlock < index + windowBlocks && endBlock < totalBlocks && !this.cache.has(endBlock)) {
+			endBlock++;
+		}
+
 		const start = index * BLOCK_SIZE;
-		const end = Math.min(start + BLOCK_SIZE, this.size);
+		const end = Math.min(endBlock * BLOCK_SIZE, this.size);
 		const data = this.fetch(start, end);
 		this.requestCount++;
 		this.bytesFetched += data.length;
-		this.cache.set(index, data);
-		return data;
+
+		for (let b = index; b < endBlock; b++) {
+			const sliceStart = (b - index) * BLOCK_SIZE;
+			this.cache.set(b, data.subarray(sliceStart, Math.min(sliceStart + BLOCK_SIZE, data.length)));
+		}
+		this.expectedNextBlock = endBlock;
+		return this.cache.get(index)!;
 	}
 
 	readRange(offset: number, length: number): Uint8Array {

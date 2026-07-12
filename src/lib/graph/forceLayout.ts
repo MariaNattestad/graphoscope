@@ -16,9 +16,6 @@ import { stableUnit } from './prng';
  * backbone attachment point and only locally relaxed. This makes the layout
  * reproducible and comparable across similar graphs, instead of a force
  * simulation's usual rotation/reflection/local-minimum ambiguity.
- *
- * This is a single-stranded simplification: each segment is drawn once (not
- * as a forward/reverse-complement pair), which is enough for viewing topology.
  */
 
 export interface SimNode {

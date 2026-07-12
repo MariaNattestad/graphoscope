@@ -77,7 +77,12 @@ function cloneGfa(gfa: Gfa): Gfa {
 		headers: [...gfa.headers],
 		segments: new Map([...gfa.segments].map(([k, v]) => [k, { ...v }])),
 		links: gfa.links.map((l) => ({ ...l })),
-		walks: gfa.walks.map((w) => ({ ...w, steps: w.steps.map((s) => ({ ...s })), tags: { ...w.tags } })),
+		// Steps are never mutated in place anywhere in this module (both phases
+		// below always build a fresh `out` array and reassign `w.steps = out`
+		// rather than editing an existing step), so it's safe — and much
+		// cheaper for large graphs — to share the step objects and only copy
+		// the array that holds them.
+		walks: gfa.walks.map((w) => ({ ...w, steps: w.steps.slice(), tags: { ...w.tags } })),
 		referenceSamples: [...gfa.referenceSamples]
 	};
 }
@@ -316,10 +321,13 @@ export function popSmallVariants(input: Gfa, opts: SimplifyOptions = {}): Simpli
 	}
 
 	// Reference interior steps between any two reference nodes (always exists).
+	// The forward-orientation branch reuses the reference's own step objects
+	// (never mutated downstream); the reversed branch must still build new ones
+	// since the orientation is flipped.
 	const interiorBetween = (fromId: string, toId: string): Step[] => {
 		const a = idxOf(fromId);
 		const b = idxOf(toId);
-		if (a < b) return ref.steps.slice(a + 1, b).map((s) => ({ ...s }));
+		if (a < b) return ref.steps.slice(a + 1, b);
 		return ref.steps.slice(b + 1, a).reverse().map((s) => ({ id: s.id, orient: flip(s.orient) }));
 	};
 	const spanOf = (a: string, b: string): number => {
@@ -360,7 +368,7 @@ export function popSmallVariants(input: Gfa, opts: SimplifyOptions = {}): Simpli
 					out.push(...interiorBetween(prev, cur.id));
 					hitSpans.add(spanOf(prev, cur.id));
 				}
-				out.push({ ...cur });
+				out.push(cur);
 				i++;
 			}
 		}
@@ -496,7 +504,7 @@ export function unchop(input: Gfa): { gfa: Gfa; merges: number } {
 		while (i < w.steps.length) {
 			const c = chainOf.get(w.steps[i].id);
 			if (!c) {
-				out.push({ ...w.steps[i] });
+				out.push(w.steps[i]);
 				i++;
 				continue;
 			}
