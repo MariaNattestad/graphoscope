@@ -6,6 +6,7 @@
 	import { simplify } from '$lib/graph/simplify';
 	import { ALL_FIXTURES, type Fixture } from '$lib/graph/fixtures';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
+	import { base } from '$app/paths';
 
 	let selectedId = $state(ALL_FIXTURES[0].id);
 	let maxVariant = $state(50);
@@ -25,7 +26,7 @@
 		<h1>Simplification playground</h1>
 		<p class="sub">
 			Reference-guided small-variant popping + unchop, run on example graphs. These are the exact
-			fixtures the <code>simplify</code> tests assert on. <a href="/">← back to the browser</a>
+			fixtures the <code>simplify</code> tests assert on. <a href="{base}/">← back to the browser</a>
 		</p>
 	</header>
 

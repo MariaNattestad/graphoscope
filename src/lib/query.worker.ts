@@ -21,6 +21,17 @@ export interface QueryRequest {
 	id: number;
 	source: QuerySource;
 	args: string[]; // query flags, e.g. ['--sample','GRCh38','--contig','chr6','--offset','31972046','--context','20k']
+	/**
+	 * Absolute (or root-relative, i.e. leading "/") URL for `query.wasm`,
+	 * computed on the main thread. Deliberately NOT derived in here from
+	 * `$app/paths` or `import.meta.env.BASE_URL`: the former touches `window`
+	 * (absent in a Worker, throws immediately on import) and the latter can be
+	 * emitted as a *relative* path ("./"), which — unlike a root-relative path
+	 * — resolves against the worker script's own location, not the page/site
+	 * root, silently fetching the wrong URL under a subpath deployment like
+	 * GitHub Pages. A leading-slash (or fully absolute) URL sidesteps both.
+	 */
+	wasmUrl: string;
 }
 
 export interface QueryResult {
@@ -62,9 +73,9 @@ class CollectorFd extends Fd {
 
 // Compile the wasm module once; instantiate a fresh instance per query.
 let modulePromise: Promise<WebAssembly.Module> | null = null;
-function getModule(): Promise<WebAssembly.Module> {
+function getModule(wasmUrl: string): Promise<WebAssembly.Module> {
 	if (!modulePromise) {
-		modulePromise = WebAssembly.compileStreaming(fetch('/query.wasm'));
+		modulePromise = WebAssembly.compileStreaming(fetch(wasmUrl));
 	}
 	return modulePromise;
 }
@@ -98,7 +109,7 @@ async function runQuery(req: QueryRequest): Promise<QueryResult> {
 	const args = ['query', ...req.args, '/data/graph.db'];
 	const wasiInstance = new WASI(args, [], fds, { debug: false });
 
-	const module = await getModule();
+	const module = await getModule(req.wasmUrl);
 	const instance = await WebAssembly.instantiate(module, {
 		wasi_snapshot_preview1: wasiInstance.wasiImport
 	});

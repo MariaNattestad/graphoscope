@@ -2,8 +2,15 @@
 // into a promise-based API and builds query arguments from a locus request.
 
 import type { QueryRequest, QueryResult, QuerySource } from './query.worker';
+import { base } from '$app/paths';
 
 export type { QuerySource, QueryResult };
+
+// Computed on the main thread (safe here — `$app/paths` needs `window`, which
+// only exists outside the worker) and sent with every request instead of
+// re-derived inside the worker. See the long comment on QueryRequest.wasmUrl
+// for why deriving this inside the worker is unsafe.
+const WASM_URL = `${base}/query.wasm`;
 
 export interface LocusQuery {
 	sample: string; // e.g. "GRCh38"
@@ -32,7 +39,7 @@ export class GbzClient {
 
 	private send(source: QuerySource, args: string[]): Promise<QueryResult> {
 		const id = this.nextId++;
-		const req: QueryRequest = { id, source, args };
+		const req: QueryRequest = { id, source, args, wasmUrl: WASM_URL };
 		return new Promise((resolve) => {
 			this.pending.set(id, resolve);
 			this.worker.postMessage(req);
