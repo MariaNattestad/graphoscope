@@ -7,69 +7,86 @@
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import { simplify } from '$lib/graph/simplify';
+	import { initAnalytics, trackEvent } from '$lib/analytics';
+	import { searchGenes, resolveGene, geneToLocus, type GeneEntry, type RefKey } from '$lib/genes';
 
 	let client: GbzClient | null = null;
 
-	// Data source. Either a GBZ-base .gbz.db that we query per-locus over range
-	// requests, or a whole .gfa loaded directly. Chosen via the File menu; the
-	// HPRC .gbz.db URL is the default so the page opens with something to explore.
-	const DEFAULT_DB_URL =
-		'https://pub-32138fb437f04b75ac10fea079052edb.r2.dev/hprc-v1.1-mc-grch38.gbz.db';
-	const DEFAULT_DB_LABEL = 'hprc-v1.1-mc-grch38.gbz.db';
+	// ---- The two hosted graphs -------------------------------------------------
+	// Both are HPRC Release 2 (v2.0) Minigraph-Cactus pangenome graphs. We took the
+	// public `.gbz` files, converted each to a GBZ-base `.gbz.db` (SQLite) with
+	// `gbz2db`, and host them on Cloudflare R2 with CORS + HTTP range support so the
+	// browser can query a locus without downloading the multi-GB database.
+	const R2_BASE = 'https://pub-32138fb437f04b75ac10fea079052edb.r2.dev';
 
-	type Source =
-		| { kind: 'gbz'; origin: 'url'; url: string; label: string }
-		| { kind: 'gbz'; origin: 'file'; file: File; label: string }
-		| { kind: 'gfa'; origin: 'url'; url: string; label: string }
-		| { kind: 'gfa'; origin: 'file'; file: File; label: string };
-
-	let source = $state<Source>({
-		kind: 'gbz',
-		origin: 'url',
-		url: DEFAULT_DB_URL,
-		label: DEFAULT_DB_LABEL
-	});
-	const isGbz = $derived(source.kind === 'gbz');
-
-	// File menu + modal state.
-	let menuOpen = $state(false);
-	let modal = $state<{ target: 'gbz-url' | 'gfa-url'; title: string; placeholder: string; value: string } | null>(null);
-	let gbzFileInput = $state<HTMLInputElement>();
-	let gfaFileInput = $state<HTMLInputElement>();
-
-	// Query
-	let locusText = $state('chr6:31972046-32055647');
-	let sample = $state('GRCh38');
-	let haplotypes = $state<'all' | 'distinct' | 'reference-only'>('all');
-
-	function labelFromUrl(url: string): string {
-		try {
-			const p = new URL(url).pathname;
-			return p.split('/').filter(Boolean).pop() || url;
-		} catch {
-			return url.split('/').filter(Boolean).pop() || url;
-		}
+	interface GraphDef {
+		id: 'grch38' | 'chm13';
+		label: string;
+		/** Reference sample name inside the graph — also the coordinate system. */
+		referenceSample: string;
+		/** Which bundled gene map matches this reference. */
+		refKey: RefKey;
+		dbUrl: string;
+		/** Original public source we indexed. */
+		s3Source: string;
+		defaultLocus: string;
+		exampleLoci: { label: string; locus: string }[];
 	}
 
-	// Example loci for benchmarking across sizes (all against the default HPRC DB).
-	const EXAMPLE_LOCI: { label: string; locus: string }[] = [
-		{ label: 'small ~20 kb', locus: 'chr6:32000000-32020000' },
-		{ label: 'MHC core ~84 kb', locus: 'chr6:31972046-32055647' },
-		{ label: 'large ~500 kb', locus: 'chr6:31700000-32200000' },
-		// A structurally complex region (~422 haplotype walks vs ~90-100 typical,
-		// likely a segmental duplication) that simplifies far less than MHC — a
-		// realistic stress test of the current single-pass algorithm's scaling
-		// ceiling. Expect the graph layout to take ~15-20s here.
-		{ label: 'chr20 ~200 kb (complex)', locus: 'chr20:30000000-30200000' }
+	const GRAPHS: GraphDef[] = [
+		{
+			id: 'grch38',
+			label: 'GRCh38-based',
+			referenceSample: 'GRCh38',
+			refKey: 'grch38',
+			dbUrl: `${R2_BASE}/hprc-v2.0-mc-grch38.gbz.db`,
+			s3Source:
+				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-grch38.gbz',
+			defaultLocus: 'chr6:31972046-32055647',
+			exampleLoci: [
+				{ label: 'small ~20 kb', locus: 'chr6:32000000-32020000' },
+				{ label: 'MHC core ~84 kb', locus: 'chr6:31972046-32055647' }
+			]
+		},
+		{
+			id: 'chm13',
+			label: 'CHM13-based (T2T)',
+			referenceSample: 'CHM13',
+			refKey: 'chm13',
+			dbUrl: `${R2_BASE}/hprc-v2.0-mc-chm13.gbz.db`,
+			s3Source:
+				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-chm13.gbz',
+			defaultLocus: 'chr6:31750000-31850000',
+			exampleLoci: [{ label: 'MHC ~100 kb', locus: 'chr6:31750000-31850000' }]
+		}
 	];
+
+	let graphId = $state<'grch38' | 'chm13'>('grch38');
+	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
+
+	// A locus that returns a very large subgraph will blow up the browser: the GFA
+	// is parsed into millions of step objects, then simplify deep-copies them, then
+	// each view walks them again — the live-object footprint is ~100× the GFA text,
+	// so the tab freezes then OOMs ("Aw Snap"). We refuse to render past this raw-GFA
+	// size (checked before parsing, so a pathological region never enters the
+	// pipeline). Calibrated empirically: the ~10.5 MB MHC locus renders smoothly, a
+	// ~17 MB (150 kb) region already wedges the tab, so the ceiling sits between —
+	// all built-in example loci are ≤ ~10.5 MB and clear it with headroom.
+	const MAX_GFA_BYTES = 13 * 1024 * 1024;
+
+	// ---- Query state -----------------------------------------------------------
+	let locusText = $state(GRAPHS[0].defaultLocus);
 
 	// State
 	let running = $state(false);
 	let error = $state<string | null>(null);
-	// `parsed` is the raw graph from the query/file; `gfa` is what the widgets see
+	// `parsed` is the raw graph from the query; `gfa` is what the widgets see
 	// (simplified upfront, unless the user turns it off).
 	let parsed = $state<Gfa | null>(null);
 	let rawGfa = $state<string>('');
+	// Set when a query returns more GFA than MAX_GFA_BYTES; the heavy views are
+	// skipped and a "zoom in" notice is shown instead.
+	let oversized = $state<{ bytes: number } | null>(null);
 	let simplifyOn = $state(true);
 	let maxVariant = $state(50);
 	let fetchInfo = $state<{
@@ -80,32 +97,98 @@
 	} | null>(null);
 
 	const simplified = $derived(
-		parsed ? simplify(parsed, { referenceSample: sample, maxVariant }) : null
+		parsed ? simplify(parsed, { referenceSample: graph.referenceSample, maxVariant }) : null
 	);
 	const gfa = $derived(simplifyOn && simplified ? simplified.gfa : parsed);
 	const stats = $derived(gfa ? gfaStats(gfa) : null);
 
+	// ---- Gene-name autocomplete for the Locus field ----------------------------
+	let suggestions = $state<GeneEntry[]>([]);
+	let showSuggest = $state(false);
+	let activeSuggest = $state(0);
+	let suggestSeq = 0;
+
+	const looksLikeLocus = (s: string) => /:\s*[\d,]+\s*-\s*[\d,]+\s*$/.test(s);
+
+	function onLocusInput() {
+		const q = locusText.trim();
+		if (q.length < 2 || looksLikeLocus(q)) {
+			suggestions = [];
+			showSuggest = false;
+			return;
+		}
+		const seq = ++suggestSeq;
+		searchGenes(graph.refKey, q).then((res) => {
+			if (seq !== suggestSeq) return; // superseded
+			suggestions = res;
+			activeSuggest = 0;
+			showSuggest = res.length > 0;
+		});
+	}
+
+	function pickGene(gene: GeneEntry) {
+		locusText = geneToLocus(gene);
+		showSuggest = false;
+		suggestions = [];
+		run('gene');
+	}
+
+	function onLocusKey(e: KeyboardEvent) {
+		if (showSuggest && suggestions.length > 0) {
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				activeSuggest = (activeSuggest + 1) % suggestions.length;
+				return;
+			}
+			if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				activeSuggest = (activeSuggest - 1 + suggestions.length) % suggestions.length;
+				return;
+			}
+			if (e.key === 'Enter') {
+				e.preventDefault();
+				pickGene(suggestions[activeSuggest]);
+				return;
+			}
+			if (e.key === 'Escape') {
+				showSuggest = false;
+				return;
+			}
+		}
+		if (e.key === 'Enter') run();
+	}
+
 	onMount(() => {
+		initAnalytics();
 		client = new GbzClient();
-		// Auto-load the default (R2) locus so results appear on open.
 		run();
 		return () => client?.terminate();
 	});
 
-	async function run() {
+	async function run(sourceKind: 'coords' | 'gene' | 'example' = 'coords') {
 		error = null;
-		if (source.kind !== 'gbz') return;
-		const qsource: QuerySource =
-			source.origin === 'file'
-				? { kind: 'file', file: source.file }
-				: { kind: 'url', url: source.url };
+		oversized = null;
+		showSuggest = false;
+		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
+		const raw = locusText.trim();
 		try {
-			locus = parseLocus(locusText, sample);
-			locus.sample = sample;
-			locus.haplotypes = haplotypes;
+			// If it isn't a coordinate string, try to resolve it as a gene name.
+			if (!looksLikeLocus(raw)) {
+				const gene = await resolveGene(graph.refKey, raw);
+				if (gene) {
+					locusText = geneToLocus(gene);
+					sourceKind = 'gene';
+				}
+			}
+			locus = parseLocus(locusText, graph.referenceSample);
+			locus.sample = graph.referenceSample;
+			locus.haplotypes = 'all';
 		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+			error =
+				e instanceof Error
+					? `${e.message} — enter coordinates like chr6:31972046-32055647, or a gene symbol (e.g. HLA-A).`
+					: String(e);
 			return;
 		}
 		running = true;
@@ -114,10 +197,27 @@
 			if (!result.ok) {
 				error = `${result.error}\n${result.stderr ?? ''}`.trim();
 			} else {
-				rawGfa = result.gfa ?? '';
-				parsed = parseGfa(rawGfa);
+				const gfaText = result.gfa ?? '';
 				fetchInfo = result.stats ?? null;
-				logData('query', locus);
+				if (gfaText.length > MAX_GFA_BYTES) {
+					// Too big to render safely — skip parsing entirely so the tab
+					// doesn't run out of memory, and tell the user to zoom in.
+					oversized = { bytes: gfaText.length };
+					parsed = null;
+					rawGfa = '';
+				} else {
+					rawGfa = gfaText;
+					parsed = parseGfa(gfaText);
+				}
+				trackEvent('query', {
+					graph: graph.id,
+					contig: locus.contig,
+					start: locus.start,
+					end: locus.end,
+					span: locus.end - locus.start,
+					input: sourceKind,
+					oversized: !!oversized
+				});
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
@@ -126,108 +226,19 @@
 		}
 	}
 
-	// Load a whole .gfa (file or URL) directly, bypassing the query worker.
-	async function loadGfa() {
-		error = null;
-		if (source.kind !== 'gfa') return;
-		const t0 = performance.now();
-		running = true;
-		try {
-			let text: string;
-			let name: string;
-			if (source.origin === 'file') {
-				text = await source.file.text();
-				name = source.file.name;
-			} else {
-				const res = await fetch(source.url);
-				if (!res.ok) throw new Error(`HTTP ${res.status} fetching GFA`);
-				text = await res.text();
-				name = source.url;
-			}
-			rawGfa = text;
-			parsed = parseGfa(text);
-			fetchInfo = {
-				requestCount: 1,
-				bytesFetched: new Blob([text]).size,
-				dbSize: new Blob([text]).size,
-				elapsedMs: Math.round(performance.now() - t0)
-			};
-			logData('file', name);
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
-		} finally {
-			running = false;
-		}
+	function selectGraph(id: 'grch38' | 'chm13') {
+		if (id === graphId) return;
+		graphId = id;
+		locusText = GRAPHS.find((g) => g.id === id)!.defaultLocus;
+		suggestions = [];
+		showSuggest = false;
+		trackEvent('select_graph', { graph: id });
+		run();
 	}
 
 	function runExampleLocus(locus: string) {
 		locusText = locus;
-		run();
-	}
-
-	// Lightweight console logging. Logs plain snapshots + a summary, and stashes
-	// the full data on window.__pangenome for poking — never dumps the reactive
-	// proxy or the multi-MB raw text into the console (that trips Svelte's
-	// console_log_state warning and floods the log buffer).
-	function logData(kind: string, ctx: unknown) {
-		const snap = parsed ? $state.snapshot(parsed) : null;
-		const summary = snap
-			? { segments: snap.segments.size, links: snap.links.length, walks: snap.walks.length }
-			: null;
-		console.log(`[pangenome-viz] ${kind}`, { ctx, summary, fetch: fetchInfo });
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(window as any).__pangenome = { parsed: snap, rawGfa, simplified: simplified?.stats };
-	}
-
-	// --- File menu + modal actions ---
-	function openGbzUrl() {
-		menuOpen = false;
-		modal = {
-			target: 'gbz-url',
-			title: 'Open GBZ-base database by URL',
-			placeholder: 'https://…/graph.gbz.db',
-			value: source.kind === 'gbz' && source.origin === 'url' ? source.url : DEFAULT_DB_URL
-		};
-	}
-	function openGfaUrl() {
-		menuOpen = false;
-		modal = {
-			target: 'gfa-url',
-			title: 'Open GFA by URL',
-			placeholder: 'https://…/subgraph.gfa',
-			value: source.kind === 'gfa' && source.origin === 'url' ? source.url : ''
-		};
-	}
-	function confirmModal() {
-		if (!modal) return;
-		const url = modal.value.trim();
-		if (!url) return;
-		if (modal.target === 'gbz-url') {
-			source = { kind: 'gbz', origin: 'url', url, label: labelFromUrl(url) };
-			modal = null;
-			run();
-		} else {
-			source = { kind: 'gfa', origin: 'url', url, label: labelFromUrl(url) };
-			modal = null;
-			loadGfa();
-		}
-	}
-	function onGbzFile(e: Event) {
-		const f = (e.target as HTMLInputElement).files?.[0];
-		if (!f) return;
-		source = { kind: 'gbz', origin: 'file', file: f, label: f.name };
-		run();
-	}
-	function onGfaFile(e: Event) {
-		const f = (e.target as HTMLInputElement).files?.[0];
-		if (!f) return;
-		source = { kind: 'gfa', origin: 'file', file: f, label: f.name };
-		loadGfa();
-	}
-	function resetToDefault() {
-		menuOpen = false;
-		source = { kind: 'gbz', origin: 'url', url: DEFAULT_DB_URL, label: DEFAULT_DB_LABEL };
-		run();
+		run('example');
 	}
 
 	function fmtBytes(n: number): string {
@@ -242,148 +253,130 @@
 	<header>
 		<h1>Pangenome locus browser</h1>
 		<p class="sub">
-			Query an HPRC pangenome graph at a locus, straight from a GBZ-base <code>.gbz.db</code> — read
-			on demand via range requests, no full download.
+			Explore an HPRC human pangenome graph at any locus, straight from the browser — pick a region
+			by coordinates or gene name and the subgraph is read on demand, no multi-gigabyte download.
 		</p>
+
+		<details class="how">
+			<summary>How the on-demand querying works</summary>
+			<div class="how-body">
+				<p>
+					The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
+					the Human Pangenome Reference Consortium. Each is distributed as a
+					<code>.gbz</code> file of several gigabytes.
+				</p>
+				<p>
+					Querying one by genomic coordinate normally means downloading the whole thing. Instead we
+					use <b>GBZ-base</b> (<code>gbz2db</code> / <code>query</code>, part of the
+					<a href="https://github.com/jltsiren/gbz-base" target="_blank" rel="noopener">vg / GBZ-base</a>
+					tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database that
+					<i>can</i> be queried by position.
+				</p>
+				<p>
+					What <b>we</b> added: we compiled GBZ-base's <code>query</code> program to WebAssembly
+					(<code>wasm32-wasip1</code>) and wrote a small WASI filesystem shim that backs SQLite's
+					page reads with <b>HTTP range requests</b>. So the browser runs the real query engine in a
+					Web Worker and pulls only the few megabytes of database pages a locus actually touches
+					from the file on Cloudflare R2 — an approach inspired by
+					<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
+					The visualizations below (graph layout, variant arcs, the IGV.js
+					track, and the reference-guided simplification) are a few prototypes we built for
+					inspecting a graph's complex patterns around a particular reference locus.
+				</p>
+			</div>
+		</details>
 	</header>
 
 	<section class="panel">
-		<div class="menubar">
-			<div class="menu">
-				<button class="menu-btn" class:open={menuOpen} onclick={() => (menuOpen = !menuOpen)}>
-					File ▾
+		<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
+			{#each GRAPHS as g (g.id)}
+				<button
+					class="gbtn"
+					class:active={g.id === graphId}
+					onclick={() => selectGraph(g.id)}
+					disabled={running}
+				>
+					{g.label}
+					<span class="gref">reference: {g.referenceSample}</span>
 				</button>
-				{#if menuOpen}
-					<!-- svelte-ignore a11y_consider_explicit_label -->
-					<button class="menu-scrim" onclick={() => (menuOpen = false)}></button>
-					<div class="menu-pop" role="menu">
-						<button class="menu-item" role="menuitem" onclick={openGbzUrl}>
-							Open GBZ-base database by URL…
-						</button>
-						<button
-							class="menu-item"
-							role="menuitem"
-							onclick={() => {
-								menuOpen = false;
-								gbzFileInput?.click();
-							}}
-						>
-							Open GBZ-base database file…
-						</button>
-						<div class="menu-sep"></div>
-						<button class="menu-item" role="menuitem" onclick={openGfaUrl}>Open GFA by URL…</button>
-						<button
-							class="menu-item"
-							role="menuitem"
-							onclick={() => {
-								menuOpen = false;
-								gfaFileInput?.click();
-							}}
-						>
-							Open GFA file…
-						</button>
-						<div class="menu-sep"></div>
-						<button class="menu-item" role="menuitem" onclick={resetToDefault}>
-							Reset to HPRC default
-						</button>
-					</div>
-				{/if}
-			</div>
-
-			<span class="source-label">
-				<span class="badge" class:gfa={!isGbz}>{isGbz ? 'GBZ-base' : 'GFA'}</span>
-				<span class="src-name">{source.label}</span>
-			</span>
+			{/each}
 			{#if running}<span class="muted small">working…</span>{/if}
-			<span class="spacer"></span>
-			<a class="pg-link" href="/playground">Simplification playground →</a>
 		</div>
 
-		{#if isGbz}
-			<div class="row">
-				<label>Locus <input type="text" bind:value={locusText} size="26" /></label>
-				<label>
-					Sample
-					<select bind:value={sample}>
-						<option value="GRCh38">GRCh38</option>
-						<option value="CHM13">CHM13</option>
-					</select>
-				</label>
-				<label>
-					Haplotypes
-					<select bind:value={haplotypes}>
-						<option value="all">all</option>
-						<option value="distinct">distinct (weighted)</option>
-						<option value="reference-only">reference only</option>
-					</select>
-				</label>
-				<button onclick={run} disabled={running}>{running ? 'Querying…' : 'Query'}</button>
-			</div>
+		<div class="row">
+			<label class="locus-field">
+				Locus or gene
+				<div class="locus-input">
+					<input
+						type="text"
+						bind:value={locusText}
+						oninput={onLocusInput}
+						onkeydown={onLocusKey}
+						onblur={() => setTimeout(() => (showSuggest = false), 120)}
+						onfocus={onLocusInput}
+						placeholder="chr6:31972046-32055647 or HLA-A"
+						autocomplete="off"
+						size="30"
+					/>
+					{#if showSuggest && suggestions.length > 0}
+						<ul class="suggest" role="listbox">
+							{#each suggestions as s, i (s.name)}
+								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+								<li
+									role="option"
+									aria-selected={i === activeSuggest}
+									class:active={i === activeSuggest}
+									onmousedown={(e) => {
+										e.preventDefault();
+										pickGene(s);
+									}}
+								>
+									<b>{s.name}</b>
+									<span class="scoord">{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			</label>
+			<button onclick={() => run()} disabled={running}>{running ? 'Querying…' : 'Query'}</button>
+		</div>
 
-			<div class="row">
-				<span class="muted small">examples:</span>
-				{#each EXAMPLE_LOCI as ex (ex.locus)}
-					<button class="chip" onclick={() => runExampleLocus(ex.locus)} disabled={running}>
-						{ex.label}
-					</button>
-				{/each}
-			</div>
-		{:else}
-			<div class="row">
-				<label>
-					Reference sample
-					<select bind:value={sample}>
-						<option value="GRCh38">GRCh38</option>
-						<option value="CHM13">CHM13</option>
-					</select>
-				</label>
-				<span class="muted small">first walk is used if this reference isn't present</span>
-			</div>
-		{/if}
+		<div class="row">
+			<span class="muted small">examples:</span>
+			{#each graph.exampleLoci as ex (ex.locus)}
+				<button class="chip" onclick={() => runExampleLocus(ex.locus)} disabled={running}>
+					{ex.label}
+				</button>
+			{/each}
+		</div>
+
+		<p class="provenance muted small">
+			Source: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus graph. We
+			converted it to a GBZ-base <code>.gbz.db</code> (SQLite) and host it on Cloudflare R2 for
+			coordinate range queries.
+		</p>
 	</section>
-
-	<!-- hidden file pickers driven by the File menu -->
-	<input
-		bind:this={gbzFileInput}
-		type="file"
-		accept=".db"
-		style="display:none"
-		onchange={onGbzFile}
-	/>
-	<input
-		bind:this={gfaFileInput}
-		type="file"
-		accept=".gfa,.gfa1,text/*"
-		style="display:none"
-		onchange={onGfaFile}
-	/>
-
-	{#if modal}
-		<!-- svelte-ignore a11y_consider_explicit_label -->
-		<button class="modal-scrim" onclick={() => (modal = null)}></button>
-		<div class="modal" role="dialog" aria-modal="true" aria-label={modal.title}>
-			<h3>{modal.title}</h3>
-			<!-- svelte-ignore a11y_autofocus -->
-			<input
-				type="text"
-				class="modal-input"
-				placeholder={modal.placeholder}
-				bind:value={modal.value}
-				autofocus
-				onkeydown={(e) => {
-					if (e.key === 'Enter') confirmModal();
-					else if (e.key === 'Escape') modal = null;
-				}}
-			/>
-			<div class="modal-actions">
-				<button class="ghost" onclick={() => (modal = null)}>Cancel</button>
-				<button onclick={confirmModal}>Open</button>
-			</div>
-		</div>
-	{/if}
 
 	{#if error}
 		<pre class="error">{error}</pre>
+	{/if}
+
+	{#if oversized}
+		<section class="panel">
+			<p class="oversized">
+				<b>This region is too large to render.</b> It returns ~{fmtBytes(oversized.bytes)} of graph —
+				parsing and laying that out would use enough memory to crash the tab, so it's been skipped.
+				Try a smaller window (a few hundred kb or less; the built-in examples are ≤ ~100 kb) or a
+				specific gene.
+			</p>
+			{#if fetchInfo}
+				<p class="muted small">
+					Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads · {fetchInfo.elapsedMs}
+					ms
+				</p>
+			{/if}
+		</section>
 	{/if}
 
 	{#if stats && gfa}
@@ -392,7 +385,6 @@
 				<div><b>{stats.segments.toLocaleString()}</b><span>segments</span></div>
 				<div><b>{stats.links.toLocaleString()}</b><span>links</span></div>
 				<div><b>{stats.walks.toLocaleString()}</b><span>haplotype walks</span></div>
-				<div><b>{stats.samples.toLocaleString()}</b><span>samples</span></div>
 				<div><b>{stats.totalSequenceBp.toLocaleString()}</b><span>bp of sequence</span></div>
 			</div>
 			{#if fetchInfo}
@@ -423,17 +415,17 @@
 
 		<section class="panel">
 			<h2 class="panel-title">Reference-anchored graph layout</h2>
-			<GraphLayoutView {gfa} referenceSample={sample} />
+			<GraphLayoutView {gfa} referenceSample={graph.referenceSample} />
 		</section>
 
 		<section class="panel">
 			<h2 class="panel-title">Large non-reference nodes</h2>
-			<RefArcView {gfa} referenceSample={sample} />
+			<RefArcView {gfa} referenceSample={graph.referenceSample} />
 		</section>
 
 		<section class="panel">
 			<h2 class="panel-title">Genome browser (IGV.js)</h2>
-			<IgvView {gfa} referenceSample={sample} />
+			<IgvView {gfa} referenceSample={graph.referenceSample} />
 		</section>
 
 		<section class="panel">
@@ -441,6 +433,40 @@
 			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} />
 		</section>
 	{/if}
+
+	<section class="panel ack">
+		<h2 class="panel-title">Acknowledgements</h2>
+		<p class="muted small">
+			Big thanks to:
+		</p>
+		<ul class="ack-list">
+			<li>
+				<b>The Human Pangenome Reference Consortium (HPRC)</b> and the
+				<b>Minigraph-Cactus</b> team for building and openly releasing the pangenome graphs shown
+				here.
+			</li>
+			<li>
+				<b>GBZ-base</b> and the <b>vg</b> toolkit (Jouni Sirén and colleagues) for
+				<code>gbz2db</code>/<code>query</code>, which make coordinate queries over a graph
+				possible.
+			</li>
+			<li>
+				<b>browser_wasi_shim</b> (@bjorn3) for running the WASI query binary in the browser, and the
+				<b>SQLite</b> and <b>Rust</b> projects underneath it.
+			</li>
+			<li>
+				<b>IGV.js</b> and <b>D3</b> for visualization frameworks.
+			</li>
+			<li>
+				<b>Bandage</b> for the strand-like node rendering style that the reference-anchored graph
+				layout draws inspiration from.
+			</li>
+			<li>
+				<b>42basepairs</b> for the range-request idea that this is modelled on.
+			</li>
+			<li>Gene coordinates from <b>GENCODE</b> (GRCh38) and the <b>T2T-CHM13v2.0</b> annotation.</li>
+		</ul>
+	</section>
 
 	<footer class="muted small">
 		GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
@@ -464,8 +490,32 @@
 		font-size: 1.5rem;
 	}
 	.sub {
-		margin: 0 0 1.2rem;
+		margin: 0 0 0.8rem;
 		color: #555;
+	}
+	.how {
+		margin-bottom: 0.4rem;
+		font-size: 0.85rem;
+	}
+	.how summary {
+		cursor: pointer;
+		color: #2563eb;
+		font-weight: 600;
+		width: fit-content;
+	}
+	.how-body {
+		margin-top: 0.5rem;
+		padding: 0.6rem 0.9rem;
+		border-left: 3px solid #dbeafe;
+		background: #f8faff;
+		border-radius: 0 8px 8px 0;
+		color: #444;
+	}
+	.how-body p {
+		margin: 0 0 0.6rem;
+	}
+	.how-body p:last-child {
+		margin-bottom: 0;
 	}
 	.panel {
 		border: 1px solid #e6e6e6;
@@ -482,7 +532,7 @@
 	}
 	.row {
 		display: flex;
-		align-items: center;
+		align-items: flex-end;
 		gap: 0.8rem;
 		flex-wrap: wrap;
 		margin-bottom: 0.6rem;
@@ -494,7 +544,7 @@
 		font-size: 0.9rem;
 	}
 	input[type='text'],
-	select {
+	input[type='number'] {
 		font: inherit;
 		padding: 0.35rem 0.5rem;
 		border: 1px solid #ccc;
@@ -526,154 +576,92 @@
 		color: #9ca3af;
 	}
 
-	/* --- File menu --- */
-	.menubar {
+	/* --- graph switch --- */
+	.graph-switch {
 		display: flex;
 		align-items: center;
-		gap: 0.8rem;
-		margin-bottom: 0.8rem;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+		margin-bottom: 0.9rem;
 	}
-	.menubar .spacer {
-		flex: 1;
-	}
-	.pg-link {
-		color: #2563eb;
-		font-size: 0.85rem;
-		text-decoration: none;
-		white-space: nowrap;
-	}
-	.pg-link:hover {
-		text-decoration: underline;
-	}
-	.menu {
-		position: relative;
-	}
-	.menu-btn {
+	.gbtn {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.1rem;
 		background: #f3f4f6;
 		color: #1f2937;
-		font-weight: 600;
-		padding: 0.35rem 0.9rem;
 		border: 1px solid #d1d5db;
+		padding: 0.45rem 0.9rem;
+		line-height: 1.2;
 	}
-	.menu-btn.open,
-	.menu-btn:hover {
+	.gbtn:hover:not(:disabled) {
 		background: #e5e7eb;
 	}
-	.menu-scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 40;
-		background: transparent;
-		border: none;
-		padding: 0;
-		cursor: default;
+	.gbtn.active {
+		background: #2563eb;
+		border-color: #2563eb;
+		color: #fff;
 	}
-	.menu-pop {
+	.gbtn .gref {
+		font-size: 0.68rem;
+		font-weight: 500;
+		opacity: 0.75;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	}
+
+	/* --- locus field + gene autocomplete --- */
+	.locus-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.locus-input {
+		position: relative;
+	}
+	.suggest {
 		position: absolute;
-		top: calc(100% + 4px);
+		top: calc(100% + 2px);
 		left: 0;
-		z-index: 50;
-		min-width: 240px;
+		right: 0;
+		z-index: 30;
+		margin: 0;
+		padding: 4px;
+		list-style: none;
 		background: #fff;
 		border: 1px solid #e2e5ea;
 		border-radius: 8px;
-		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
-		padding: 4px;
-		display: flex;
-		flex-direction: column;
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+		max-height: 260px;
+		overflow-y: auto;
 	}
-	.menu-item {
-		text-align: left;
-		background: #fff;
-		color: #1f2937;
-		font-weight: 500;
-		padding: 0.45rem 0.6rem;
-		border: none;
+	.suggest li {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 0.8rem;
+		padding: 0.3rem 0.5rem;
 		border-radius: 5px;
+		cursor: pointer;
+		font-size: 0.85rem;
 	}
-	.menu-item:hover {
+	.suggest li.active,
+	.suggest li:hover {
 		background: #eef2ff;
-		color: #3730a3;
 	}
-	.menu-sep {
-		height: 1px;
-		background: #eee;
-		margin: 4px 2px;
-	}
-	.source-label {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.9rem;
-		min-width: 0;
-	}
-	.src-name {
+	.suggest .scoord {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.82rem;
-		color: #444;
-		overflow: hidden;
-		text-overflow: ellipsis;
+		font-size: 0.74rem;
+		color: #6b7280;
 		white-space: nowrap;
-		max-width: 60ch;
 	}
-	.badge {
-		background: #dbeafe;
-		color: #1e40af;
-		font-size: 0.72rem;
-		font-weight: 700;
-		padding: 0.1rem 0.45rem;
-		border-radius: 999px;
-		letter-spacing: 0.02em;
+	.provenance {
+		margin: 0.4rem 0 0;
+		padding-top: 0.6rem;
+		border-top: 1px solid #f0f0f0;
 	}
-	.badge.gfa {
-		background: #dcfce7;
-		color: #166534;
-	}
-
-	/* --- modal --- */
-	.modal-scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 100;
-		background: rgba(15, 23, 42, 0.35);
-		border: none;
-		padding: 0;
-		cursor: default;
-	}
-	.modal {
-		position: fixed;
-		z-index: 101;
-		top: 30%;
-		left: 50%;
-		transform: translate(-50%, -50%);
-		width: min(560px, 92vw);
-		background: #fff;
-		border-radius: 12px;
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
-		padding: 1.2rem;
-	}
-	.modal h3 {
-		margin: 0 0 0.8rem;
-		font-size: 1rem;
-	}
-	.modal-input {
-		width: 100%;
-		box-sizing: border-box;
-		font: inherit;
-		padding: 0.5rem 0.6rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
-	.modal-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 0.6rem;
-		margin-top: 1rem;
-	}
-	button.ghost {
-		background: #fff;
-		color: #374151;
-		border: 1px solid #d1d5db;
+	.provenance code {
+		word-break: break-all;
 	}
 
 	.simplify-bar {
@@ -718,6 +706,19 @@
 		padding: 0.8rem;
 		border-radius: 8px;
 		white-space: pre-wrap;
+	}
+	.oversized {
+		margin: 0 0 0.4rem;
+		color: #92400e;
+		font-size: 0.9rem;
+		line-height: 1.5;
+	}
+	.ack-list {
+		margin: 0.4rem 0 0;
+		padding-left: 1.1rem;
+		font-size: 0.82rem;
+		color: #555;
+		line-height: 1.6;
 	}
 	.muted {
 		color: #888;

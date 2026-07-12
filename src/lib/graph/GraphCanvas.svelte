@@ -5,12 +5,20 @@
 	import type { LayoutResult } from './forceLayout';
 	import { BACKBONE_COLOR, heatmapColor } from './colors';
 
+	interface RefCoord {
+		contig: string;
+		start: number;
+		end: number;
+	}
+
 	let {
 		layout,
+		refCoords,
 		strokeWidth = 3,
 		onSelectSegment
 	}: {
 		layout: LayoutResult;
+		refCoords?: Map<string, RefCoord>;
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
 	} = $props();
@@ -31,7 +39,11 @@
 			return;
 		}
 		const length = layout.segmentLengths.get(segId);
-		hoverLabel = `${segId} — ${(length ?? 0).toLocaleString()} bp`;
+		const coord = refCoords?.get(segId);
+		const coordStr = coord
+			? ` · ${coord.contig}:${coord.start.toLocaleString()}–${coord.end.toLocaleString()}`
+			: '';
+		hoverLabel = `${segId} — ${(length ?? 0).toLocaleString()} bp${coordStr}`;
 	}
 
 	function colorForChain(segId: string): string {
@@ -134,6 +146,98 @@
 			ctx.stroke();
 		}
 
+		ctx.restore();
+
+		// Reference-coordinate labels along the backbone, drawn in SCREEN space so
+		// the font stays a constant size regardless of zoom. Each reference node
+		// gets its start coordinate; the last also gets its end. Labels are skipped
+		// when they'd collide with the previous one, but the first and last are
+		// always kept.
+		drawRefCoordLabels(ctx, width, height);
+	}
+
+	function drawRefCoordLabels(ctx: CanvasRenderingContext2D, width: number, height: number) {
+		if (!refCoords || refCoords.size === 0) return;
+
+		// Bounds (world) of each reference segment's chain, so we can anchor a label
+		// to its left edge (genomic start) and know where its right edge (end) is.
+		interface Anchor {
+			segId: string;
+			minX: number;
+			maxX: number;
+			y: number;
+			coord: RefCoord;
+		}
+		const anchors: Anchor[] = [];
+		for (const chain of layout.chains) {
+			const coord = refCoords.get(chain.segId);
+			if (!coord) continue;
+			let minX = Infinity,
+				maxX = -Infinity,
+				y = 0;
+			for (const id of chain.nodeIds) {
+				const n = layout.nodesById.get(id);
+				if (!n) continue;
+				if (n.x < minX) minX = n.x;
+				if (n.x > maxX) maxX = n.x;
+				y = n.y;
+			}
+			if (!Number.isFinite(minX)) continue;
+			anchors.push({ segId: chain.segId, minX, maxX, y, coord });
+		}
+		if (anchors.length === 0) return;
+		anchors.sort((a, b) => a.minX - b.minX);
+
+		const toScreenX = (wx: number) => transform.x + wx * transform.k;
+		const toScreenY = (wy: number) => transform.y + wy * transform.k;
+
+		ctx.save();
+		ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+		ctx.textBaseline = 'top';
+		const MIN_GAP = 64; // px between labels
+		const fmt = (n: number) => n.toLocaleString();
+
+		let lastLabelRight = -Infinity;
+		const drawTick = (sx: number, sy: number, text: string, align: CanvasTextAlign) => {
+			ctx.strokeStyle = 'rgba(150, 165, 190, 0.6)';
+			ctx.lineWidth = 1;
+			ctx.beginPath();
+			ctx.moveTo(sx, sy);
+			ctx.lineTo(sx, sy + 6);
+			ctx.stroke();
+			ctx.textAlign = align;
+			ctx.fillStyle = 'rgba(230, 235, 245, 0.55)';
+			// text background pill for legibility over strands
+			const w = ctx.measureText(text).width;
+			const tx = align === 'center' ? sx - w / 2 : align === 'right' ? sx - w : sx;
+			ctx.fillStyle = 'rgba(11, 13, 18, 0.72)';
+			ctx.fillRect(tx - 2, sy + 7, w + 4, 13);
+			ctx.fillStyle = '#a9c7ff';
+			ctx.fillText(text, sx, sy + 8);
+		};
+
+		for (let i = 0; i < anchors.length; i++) {
+			const a = anchors[i];
+			const sx = toScreenX(a.minX);
+			const sy = toScreenY(a.y);
+			if (sx < -40 || sx > width + 40) continue; // off-screen
+			const isFirst = i === 0;
+			const isLast = i === anchors.length - 1;
+			const textW = ctx.measureText(fmt(a.coord.start)).width;
+			if (isFirst || isLast || sx - lastLabelRight >= MIN_GAP) {
+				drawTick(sx, sy, fmt(a.coord.start), 'center');
+				lastLabelRight = sx + textW / 2;
+			}
+			if (isLast) {
+				const ex = toScreenX(a.maxX);
+				drawTick(ex, sy, fmt(a.coord.end), 'right');
+			}
+		}
+		// Contig label, once, at the far left.
+		ctx.textAlign = 'left';
+		ctx.fillStyle = 'rgba(169, 199, 255, 0.85)';
+		ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+		ctx.fillText(anchors[0].coord.contig, 8, Math.max(4, toScreenY(anchors[0].y) - 18));
 		ctx.restore();
 	}
 

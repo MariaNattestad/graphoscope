@@ -11,7 +11,7 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa | null; referenceSample: string } = $props();
 
-	let minLen = $state(5);
+	let minLen = $state(50);
 	let notice = $state('');
 	let loading = $state(false);
 	let container = $state<HTMLDivElement | null>(null);

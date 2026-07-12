@@ -19,7 +19,7 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
-	let minLen = $state(5);
+	let minLen = $state(50);
 	let pinned = $state<Ev | null>(null);
 	let hovered = $state<Ev | null>(null);
 	let viewWin = $state<{ start: number; end: number } | null>(null);

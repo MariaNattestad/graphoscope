@@ -7,16 +7,6 @@
       "runtimeArgs": ["run", "dev"],
       "port": 5173,
       "autoPort": true
-    },
-    {
-      "name": "gfa-viewer",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "cd /Users/marianattestad/coding/mini-web-viz-for-gfa && npm run dev -- --port 5183"
-      ],
-      "port": 5183,
-      "autoPort": true
     }
   ]
 }

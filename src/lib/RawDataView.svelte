@@ -2,6 +2,7 @@
 	// Raw-data inspector: shows the parsed graph as tables plus the raw GFA text,
 	// so you can see exactly what the query returns before designing a viz.
 	import type { Gfa } from './gfa';
+	import { trackEvent } from './analytics';
 
 	let { gfa, rawText }: { gfa: Gfa; rawText: string } = $props();
 
@@ -24,6 +25,7 @@
 	let tab = $state<'segments' | 'links' | 'walks' | 'raw'>('walks');
 
 	function download() {
+		trackEvent('widget_interact', { widget: 'raw_data', action: 'download_gfa' });
 		const blob = new Blob([rawText], { type: 'text/plain' });
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
@@ -55,6 +57,13 @@
 	</div>
 
 	{#if tab === 'walks'}
+		<p class="desc">
+			Each row is one haplotype's path (a GFA <code>W</code>-line) through this subgraph, exactly as
+			GBZ-base <code>query</code> extracts it — <code>sample</code>/<code>hap</code>/<code>contig</code>
+			and the <code>start</code>–<code>end</code> span come from the path metadata stored in the graph.
+			Haplotypes the graph carries without a sample name (e.g. anonymous minigraph paths) are reported
+			by the tool as <code>unknown</code>.
+		</p>
 		<table>
 			<thead>
 				<tr><th>sample</th><th>hap</th><th>contig</th><th>start</th><th>end</th><th>steps</th><th>path (first steps)</th></tr>
@@ -162,5 +171,18 @@
 	.note {
 		color: #888;
 		margin: 0.5rem 0 0;
+	}
+	.desc {
+		color: #555;
+		font-size: 0.8rem;
+		line-height: 1.5;
+		margin: 0 0 0.7rem;
+		max-width: 80ch;
+	}
+	.desc code {
+		background: #f0f0f0;
+		padding: 0 3px;
+		border-radius: 3px;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 	}
 </style>

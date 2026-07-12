@@ -11,6 +11,7 @@
 	import type { LayoutResult } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
 	import GraphCanvas from './GraphCanvas.svelte';
+	import { trackEvent } from '../analytics';
 
 	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
@@ -51,6 +52,33 @@
 
 	const adapted = $derived(gfaToGraph(gfa, { referenceSample }));
 
+	// Reference genomic coordinates for each reference segment. Walk the reference
+	// sample's path (fall back to the first walk, matching gfaToGraph) and
+	// accumulate segment lengths from the walk's own genomic start. After
+	// simplification a reference node may be an unchopped merge of several original
+	// nodes — its [start, end) here is the full merged span. Passed to the canvas
+	// so backbone nodes can be labelled with their coordinates.
+	interface RefCoord {
+		contig: string;
+		start: number;
+		end: number;
+	}
+	const refCoords = $derived.by(() => {
+		const map = new Map<string, RefCoord>();
+		const refWalks = gfa.walks.filter((w) => w.sample === referenceSample);
+		const ref = refWalks.length > 0 ? refWalks[0] : gfa.walks[0];
+		if (!ref) return map;
+		let cursor = ref.start ?? 0;
+		for (const step of ref.steps) {
+			const len = gfa.segments.get(step.id)?.length ?? 0;
+			// If a segment recurs on the reference walk, keep the first occurrence's
+			// coordinate (the layout draws each segment once anyway).
+			if (!map.has(step.id)) map.set(step.id, { contig: ref.seqId, start: cursor, end: cursor + len });
+			cursor += len;
+		}
+		return map;
+	});
+
 	// --- layout worker ---
 	let worker: Worker | null = null;
 	let reqId = 0;
@@ -83,6 +111,10 @@
 	onDestroy(() => worker?.terminate());
 
 	const selectedLen = $derived(selected ? (gfa.segments.get(selected)?.length ?? null) : null);
+	const selectedCoord = $derived(selected ? (refCoords.get(selected) ?? null) : null);
+	function fmtCoord(c: RefCoord): string {
+		return `${c.contig}:${c.start.toLocaleString()}–${c.end.toLocaleString()}`;
+	}
 </script>
 
 <div class="wrap">
@@ -97,7 +129,14 @@
 
 	<div class="stage">
 		{#if layout}
-			<GraphCanvas {layout} onSelectSegment={(id) => (selected = id)} />
+			<GraphCanvas
+				{layout}
+				{refCoords}
+				onSelectSegment={(id) => {
+					selected = id;
+					if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
+				}}
+			/>
 		{/if}
 		{#if computing}
 			<div class="overlay"><span>computing layout…</span></div>
@@ -106,12 +145,12 @@
 
 	<div class="foot">
 		{#if selected}
-			<span>selected <code>{selected}</code>{#if selectedLen != null} · {selectedLen.toLocaleString()} bp{/if}</span>
+			<span>selected <code>{selected}</code>{#if selectedLen != null} · {selectedLen.toLocaleString()} bp{/if}{#if selectedCoord} · <span class="coord">{fmtCoord(selectedCoord)}</span>{/if}</span>
 		{:else}
 			<span class="muted">click a strand to select · plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 		{/if}
 		<span class="spacer"></span>
-		<span class="legend"><span class="sw backbone"></span> reference backbone</span>
+		<span class="legend"><span class="sw backbone"></span> reference backbone (coords shown)</span>
 		<span class="legend"><span class="sw grad"></span> more haplotypes →</span>
 	</div>
 
@@ -202,6 +241,10 @@
 	}
 	.muted {
 		color: #888;
+	}
+	.coord {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		color: #2563eb;
 	}
 	code {
 		background: #f0f0f0;
