@@ -301,8 +301,6 @@
 				</button>
 			{/each}
 			{#if running}<span class="muted small">working…</span>{/if}
-			<span class="spacer"></span>
-			<a class="pg-link" href="{base}/playground">Simplification playground →</a>
 		</div>
 
 		<div class="row">
@@ -416,7 +414,10 @@
 		</section>
 
 		<section class="panel">
-			<h2 class="panel-title">Reference-anchored graph layout</h2>
+			<div class="title-row">
+				<h2 class="panel-title">Reference-anchored graph layout</h2>
+				<a class="pg-link" href="{base}/playground">Simplification playground →</a>
+			</div>
 			<GraphLayoutView {gfa} referenceSample={graph.referenceSample} />
 		</section>
 
@@ -532,6 +533,16 @@
 		font-weight: 600;
 		color: #444;
 	}
+	.title-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.8rem;
+		flex-wrap: wrap;
+	}
+	.title-row .panel-title {
+		margin: 0 0 0.8rem;
+	}
 	.row {
 		display: flex;
 		align-items: flex-end;
@@ -585,9 +596,6 @@
 		gap: 0.6rem;
 		flex-wrap: wrap;
 		margin-bottom: 0.9rem;
-	}
-	.graph-switch .spacer {
-		flex: 1;
 	}
 	.pg-link {
 		color: #2563eb;
