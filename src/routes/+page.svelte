@@ -9,6 +9,7 @@
 	import { simplify } from '$lib/graph/simplify';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
 	import { searchGenes, resolveGene, geneToLocus, type GeneEntry, type RefKey } from '$lib/genes';
+	import { base } from '$app/paths';
 
 	let client: GbzClient | null = null;
 
@@ -185,10 +186,9 @@
 			locus.sample = graph.referenceSample;
 			locus.haplotypes = 'all';
 		} catch (e) {
-			error =
-				e instanceof Error
-					? `${e.message} — enter coordinates like chr6:31972046-32055647, or a gene symbol (e.g. HLA-A).`
-					: String(e);
+			// parseLocus's own message already gives a coordinate example; just add
+			// the gene-symbol option rather than repeating the same example twice.
+			error = e instanceof Error ? `${e.message}, or a gene symbol (e.g. HLA-A).` : String(e);
 			return;
 		}
 		running = true;
@@ -301,6 +301,8 @@
 				</button>
 			{/each}
 			{#if running}<span class="muted small">working…</span>{/if}
+			<span class="spacer"></span>
+			<a class="pg-link" href="{base}/playground">Simplification playground →</a>
 		</div>
 
 		<div class="row">
@@ -583,6 +585,18 @@
 		gap: 0.6rem;
 		flex-wrap: wrap;
 		margin-bottom: 0.9rem;
+	}
+	.graph-switch .spacer {
+		flex: 1;
+	}
+	.pg-link {
+		color: #2563eb;
+		font-size: 0.85rem;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.pg-link:hover {
+		text-decoration: underline;
 	}
 	.gbtn {
 		display: flex;
