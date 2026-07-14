@@ -24,8 +24,12 @@
 
 	const TRACK_NAMES = ['Non-ref nodes (color = # haplotypes)', 'Non-ref node size (bp)'];
 
-	// Map a pangenome reference sample to a hosted IGV genome id.
-	const GENOMES: Record<string, string> = { GRCh38: 'hg38', CHM13: 'chm13v2.0' };
+	// Map a pangenome reference sample to a hosted IGV genome id. IGV.js's own
+	// built-in genome registry uses UCSC ids, not assembly names — CHM13's is
+	// `hs1` (UCSC's id for T2T-CHM13v2.0), not `chm13v2.0` (that id doesn't
+	// exist in igv.js and fails with "Cannot read properties of undefined
+	// (reading 'locus')" as soon as it tries to look up a default locus).
+	const GENOMES: Record<string, string> = { GRCh38: 'hg38', CHM13: 'hs1' };
 	const genomeId = $derived(GENOMES[referenceSample] ?? null);
 
 	const model = $derived(gfa ? computeNonRefNodes(gfa, referenceSample, minLen) : null);

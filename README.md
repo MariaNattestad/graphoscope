@@ -51,8 +51,8 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   the backbone.
 - **Large non-reference nodes** (`src/lib/RefArcView.svelte`) — arc/lollipop view
   of insertions/deletions/substitutions on a reference coordinate axis.
-- **Genome browser** (`src/lib/IgvView.svelte`) — an IGV.js track (hg38 /
-  chm13v2.0) of the non-reference nodes.
+- **Genome browser** (`src/lib/IgvView.svelte`) — an IGV.js track (hg38 / hs1,
+  IGV's built-in id for T2T-CHM13v2.0) of the non-reference nodes.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
