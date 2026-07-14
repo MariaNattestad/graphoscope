@@ -204,13 +204,13 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		let cursorX = 0;
 
 		for (const step of backbone.steps) {
-			if (assignedSegIds.has(step.segId)) continue; // guard against a path revisiting a segment
-			const chain = chainById.get(step.segId);
+			if (assignedSegIds.has(step.id)) continue; // guard against a path revisiting a segment
+			const chain = chainById.get(step.id);
 			if (!chain) continue;
-			assignedSegIds.add(step.segId);
+			assignedSegIds.add(step.id);
 
 			const numEdges = chain.nodeIds.length - 1;
-			const spanLength = chainPxLength.get(step.segId) ?? numEdges * opts.unitEdgeLength;
+			const spanLength = chainPxLength.get(step.id) ?? numEdges * opts.unitEdgeLength;
 
 			chain.nodeIds.forEach((nodeId, i) => {
 				const node = nodesById.get(nodeId)!;
@@ -223,7 +223,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				node.componentBaselineY = baselineY;
 			});
 
-			anchors.set(step.segId, { x: cursorX + spanLength / 2, y: baselineY });
+			anchors.set(step.id, { x: cursorX + spanLength / 2, y: baselineY });
 			cursorX += spanLength + opts.unitEdgeLength;
 		}
 	});
@@ -331,9 +331,9 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		if (backboneSourceNames.has(path.name)) continue;
 		const seenInThisPath = new Set<string>();
 		for (const step of path.steps) {
-			if (seenInThisPath.has(step.segId)) continue; // count each path once per segment
-			seenInThisPath.add(step.segId);
-			pathCoverage.set(step.segId, (pathCoverage.get(step.segId) ?? 0) + 1);
+			if (seenInThisPath.has(step.id)) continue; // count each path once per segment
+			seenInThisPath.add(step.id);
+			pathCoverage.set(step.id, (pathCoverage.get(step.id) ?? 0) + 1);
 		}
 	}
 	let maxPathCoverage = 0;

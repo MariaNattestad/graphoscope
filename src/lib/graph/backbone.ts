@@ -177,7 +177,7 @@ function syntheticBackbone(
 /** Orients a path of segment ids using link data so each consecutive step's orientation is consistent with how the links connect them. */
 function orientPath(segIds: string[], graph: GfaGraph): GfaPathStep[] {
 	if (segIds.length === 0) return [];
-	if (segIds.length === 1) return [{ segId: segIds[0], orient: '+' }];
+	if (segIds.length === 1) return [{ id: segIds[0], orient: '+' }];
 
 	const linkLookup = new Map<string, { fromOrient: string; toOrient: string }[]>();
 	const key = (a: string, b: string) => `${a}|${b}`;
@@ -186,7 +186,7 @@ function orientPath(segIds: string[], graph: GfaGraph): GfaPathStep[] {
 		linkLookup.get(key(link.from, link.to))!.push({ fromOrient: link.fromOrient, toOrient: link.toOrient });
 	}
 
-	const steps: GfaPathStep[] = [{ segId: segIds[0], orient: '+' }];
+	const steps: GfaPathStep[] = [{ id: segIds[0], orient: '+' }];
 	for (let i = 1; i < segIds.length; i++) {
 		const prev = segIds[i - 1];
 		const curr = segIds[i];
@@ -201,7 +201,7 @@ function orientPath(segIds: string[], graph: GfaGraph): GfaPathStep[] {
 			const match = backward.find((l) => l.toOrient === prevOrient) ?? backward[0];
 			orient = match.fromOrient === '+' ? '-' : '+';
 		}
-		steps.push({ segId: curr, orient });
+		steps.push({ id: curr, orient });
 	}
 	return steps;
 }
@@ -227,7 +227,7 @@ export function computeBackbones(graph: GfaGraph, referenceSample?: string): Bac
 		const componentSet = new Set(componentIds);
 
 		const allCandidates = graph.paths
-			.map((p) => ({ ...p, steps: p.steps.filter((s) => componentSet.has(s.segId)) }))
+			.map((p) => ({ ...p, steps: p.steps.filter((s) => componentSet.has(s.id)) }))
 			.filter((p) => p.steps.length > 0);
 		const refCandidates = allCandidates.filter((p) => isReference(p.name));
 		const candidatePaths = refCandidates.length > 0 ? refCandidates : allCandidates;
@@ -240,7 +240,7 @@ export function computeBackbones(graph: GfaGraph, referenceSample?: string): Bac
 			let best = candidatePaths[0];
 			let bestLength = -1;
 			for (const p of candidatePaths) {
-				const len = p.steps.reduce((sum, s) => sum + segmentLength(s.segId), 0);
+				const len = p.steps.reduce((sum, s) => sum + segmentLength(s.id), 0);
 				if (len > bestLength) {
 					bestLength = len;
 					best = p;
@@ -253,7 +253,7 @@ export function computeBackbones(graph: GfaGraph, referenceSample?: string): Bac
 			const segIds = syntheticBackbone(componentIds, adjacency, segmentLength);
 			steps = orientPath(segIds, graph);
 			source = 'synthetic';
-			totalLength = steps.reduce((sum, s) => sum + segmentLength(s.segId), 0);
+			totalLength = steps.reduce((sum, s) => sum + segmentLength(s.id), 0);
 		}
 
 		backbones.push({ componentId, steps, totalLength, source });

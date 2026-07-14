@@ -46,11 +46,15 @@ export function gfaToGraph(gfa: Gfa, opts: AdaptOptions = {}): AdaptResult {
 		});
 	}
 
+	// `w.steps` are reused directly (filter only, no `.map()`) rather than
+	// rebuilt into new `{id, orient}` objects — `Step` and `GfaPathStep` share
+	// that exact shape (see types.ts) specifically so this can share the same
+	// step objects instead of allocating a second copy of every step of every
+	// walk, which is the dominant cost on a large/repetitive locus (a walk can
+	// have thousands of steps, and there can be thousands of walks).
 	const paths: GfaPath[] = gfa.walks.map((w) => ({
 		name: `${w.sample}#${w.hapIndex}#${w.seqId}`,
-		steps: w.steps
-			.filter((s) => segments.has(s.id))
-			.map((s) => ({ segId: s.id, orient: s.orient as Orient }))
+		steps: w.steps.filter((s) => segments.has(s.id))
 	}));
 
 	return {

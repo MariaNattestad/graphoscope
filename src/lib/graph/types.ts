@@ -15,8 +15,12 @@ export interface GfaLink {
 	overlap: string;
 }
 
+// Field is named `id` (not `segId`) so it lines up with `../gfa`'s `Step` shape
+// ({id, orient}) — that lets gfaToGraph.ts reuse a walk's existing step objects
+// for a path's steps directly instead of allocating a new object per step
+// (walks can have millions of steps on a large/repetitive locus).
 export interface GfaPathStep {
-	segId: string;
+	id: string;
 	orient: Orient;
 }
 
