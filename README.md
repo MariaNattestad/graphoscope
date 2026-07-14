@@ -51,8 +51,8 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   the backbone.
 - **Large non-reference nodes** (`src/lib/RefArcView.svelte`) — arc/lollipop view
   of insertions/deletions/substitutions on a reference coordinate axis.
-- **Genome browser** (`src/lib/IgvView.svelte`) — an IGV.js track (hg38 /
-  chm13v2.0) of the non-reference nodes.
+- **Genome browser** (`src/lib/IgvView.svelte`) — an IGV.js track (hg38 / hs1,
+  IGV's built-in id for T2T-CHM13v2.0) of the non-reference nodes.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
@@ -133,13 +133,6 @@ it needs no server of its own — only the `.gbz.db` files on R2/S3 as above.
 ### GitHub Pages
 
 `.github/workflows/deploy-pages.yml` builds and deploys on every push to `main`.
-Since a project Pages site is served at `/<repo>/`, not domain root, the workflow
-sets `BASE_PATH=/graphoscope` for the build; local `npm run dev`/`npm run build`
-are unaffected (default to root) unless you set `BASE_PATH` yourself. GitHub
-Pages requires the repo to be public (or a paid plan) before it can actually go
-live — until then the workflow will fail at the "configure Pages" step; once the
-repo is public, enable Pages once via **Settings → Pages → Source: GitHub
-Actions** and re-run the workflow.
 
 ## Rebuilding `query.wasm`
 
@@ -152,3 +145,5 @@ the output:
 (cd ../gbz-base && ./build-wasm-local.sh)
 cp ../gbz-base/target/wasm32-wasip1/release/query.wasm static/query.wasm
 ```
+
+Claude just did this quickly to build it on a Mac with Apple Silicon, but if anyone needs this, let me know and I'm happy to share the script.
