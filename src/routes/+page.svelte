@@ -29,8 +29,6 @@
 		dbUrl: string;
 		/** Original public source we indexed. */
 		s3Source: string;
-		defaultLocus: string;
-		exampleLoci: { label: string; locus: string }[];
 	}
 
 	const GRAPHS: GraphDef[] = [
@@ -41,12 +39,7 @@
 			refKey: 'grch38',
 			dbUrl: `${R2_BASE}/hprc-v2.0-mc-grch38.gbz.db`,
 			s3Source:
-				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-grch38.gbz',
-			defaultLocus: 'chr6:31972046-32055647',
-			exampleLoci: [
-				{ label: 'small ~20 kb', locus: 'chr6:32000000-32020000' },
-				{ label: 'MHC core ~84 kb', locus: 'chr6:31972046-32055647' }
-			]
+				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-grch38.gbz'
 		},
 		{
 			id: 'chm13',
@@ -55,11 +48,24 @@
 			refKey: 'chm13',
 			dbUrl: `${R2_BASE}/hprc-v2.0-mc-chm13.gbz.db`,
 			s3Source:
-				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-chm13.gbz',
-			defaultLocus: 'chr6:31750000-31850000',
-			exampleLoci: [{ label: 'MHC ~100 kb', locus: 'chr6:31750000-31850000' }]
+				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-chm13.gbz'
 		}
 	];
+
+	// Example loci are gene symbols, not raw coordinates — resolved through the
+	// exact same gene → coordinate lookup as manual search (below), separately
+	// per graph, so they're never out of sync with what search would actually
+	// return. Deliberately NOT the old hardcoded "MHC core" coordinate range:
+	// that number wasn't standardized anywhere except an odgi documentation
+	// example. Chosen for a mix of real pangenome-relevant variation and to
+	// stay comfortably under MAX_GFA_BYTES on both assemblies (tested directly
+	// against both databases): HLA-A (immune/MHC hypervariability — closest to
+	// the size ceiling of this set, since MHC class I is genuinely that
+	// diverse even in a ~20kb window), AMY1A (salivary amylase copy-number
+	// variation), SMN1 (spinal muscular atrophy locus, segmental duplication),
+	// CYP2D6 (pharmacogenomics, common structural variation).
+	const EXAMPLE_GENES = ['HLA-A', 'AMY1A', 'SMN1', 'CYP2D6'];
+	const DEFAULT_GENE = 'HLA-A';
 
 	let graphId = $state<'grch38' | 'chm13'>('grch38');
 	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
@@ -75,7 +81,12 @@
 	const MAX_GFA_BYTES = 13 * 1024 * 1024;
 
 	// ---- Query state -----------------------------------------------------------
-	let locusText = $state(GRAPHS[0].defaultLocus);
+	let locusText = $state(DEFAULT_GENE);
+	// Set to the resolved gene's symbol whenever the current results came from a
+	// gene-name search (manual or an example chip) — kept alongside the
+	// coordinates so a user can look back and remember what they searched for,
+	// since `locusText` itself gets overwritten with the resolved coordinates.
+	let queriedGene = $state<string | null>(null);
 
 	// State
 	let running = $state(false);
@@ -100,7 +111,7 @@
 		parsed ? simplify(parsed, { referenceSample: graph.referenceSample, maxVariant }) : null
 	);
 	const gfa = $derived(simplifyOn && simplified ? simplified.gfa : parsed);
-	const stats = $derived(gfa ? gfaStats(gfa) : null);
+	const stats = $derived(gfa ? gfaStats(gfa, graph.referenceSample) : null);
 
 	// ---- Gene-name autocomplete for the Locus field ----------------------------
 	let suggestions = $state<GeneEntry[]>([]);
@@ -127,7 +138,10 @@
 	}
 
 	function pickGene(gene: GeneEntry) {
-		locusText = geneToLocus(gene);
+		// Set the symbol, not pre-resolved coordinates, so this goes through the
+		// same resolution path as typing a name and hitting Enter (run() sets
+		// queriedGene there) rather than duplicating that logic here.
+		locusText = gene.name;
 		showSuggest = false;
 		suggestions = [];
 		run('gene');
@@ -168,6 +182,7 @@
 	async function run(sourceKind: 'coords' | 'gene' | 'example' = 'coords') {
 		error = null;
 		oversized = null;
+		queriedGene = null;
 		showSuggest = false;
 		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
@@ -178,6 +193,7 @@
 				const gene = await resolveGene(graph.refKey, raw);
 				if (gene) {
 					locusText = geneToLocus(gene);
+					queriedGene = gene.name;
 					sourceKind = 'gene';
 				}
 			}
@@ -229,15 +245,15 @@
 	function selectGraph(id: 'grch38' | 'chm13') {
 		if (id === graphId) return;
 		graphId = id;
-		locusText = GRAPHS.find((g) => g.id === id)!.defaultLocus;
+		locusText = DEFAULT_GENE;
 		suggestions = [];
 		showSuggest = false;
 		trackEvent('select_graph', { graph: id });
 		run();
 	}
 
-	function runExampleLocus(locus: string) {
-		locusText = locus;
+	function runExampleGene(gene: string) {
+		locusText = gene;
 		run('example');
 	}
 
@@ -344,9 +360,9 @@
 
 		<div class="row">
 			<span class="muted small">examples:</span>
-			{#each graph.exampleLoci as ex (ex.locus)}
-				<button class="chip" onclick={() => runExampleLocus(ex.locus)} disabled={running}>
-					{ex.label}
+			{#each EXAMPLE_GENES as gene (gene)}
+				<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
+					{gene}
 				</button>
 			{/each}
 		</div>
@@ -381,11 +397,19 @@
 
 	{#if stats && gfa}
 		<section class="panel">
+			{#if queriedGene}
+				<p class="gene-tag muted small">
+					Searched gene: <b>{queriedGene}</b> · <code>{locusText}</code>
+				</p>
+			{/if}
 			<div class="stats">
 				<div><b>{stats.segments.toLocaleString()}</b><span>segments</span></div>
 				<div><b>{stats.links.toLocaleString()}</b><span>links</span></div>
 				<div><b>{stats.walks.toLocaleString()}</b><span>haplotype walks</span></div>
-				<div><b>{stats.totalSequenceBp.toLocaleString()}</b><span>bp of sequence</span></div>
+				{#if stats.referencePathBp != null}
+					<div><b>{stats.referencePathBp.toLocaleString()}</b><span>bp of reference path</span></div>
+				{/if}
+				<div><b>{stats.totalSequenceBp.toLocaleString()}</b><span>bp of total sequence</span></div>
 			</div>
 			{#if fetchInfo}
 				<p class="muted small">
@@ -682,6 +706,14 @@
 	.simplify-bar .opt input[type='number'] {
 		width: 4rem;
 		padding: 0.15rem 0.35rem;
+	}
+	.gene-tag {
+		margin: 0 0 0.6rem;
+	}
+	.gene-tag code {
+		background: #f0f0f0;
+		padding: 0 4px;
+		border-radius: 4px;
 	}
 	.stats {
 		display: flex;
