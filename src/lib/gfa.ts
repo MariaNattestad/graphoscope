@@ -116,19 +116,27 @@ export interface GfaStats {
 	segments: number;
 	links: number;
 	walks: number;
+	/** Sum of all segment lengths — every distinct bit of sequence in the subgraph. */
 	totalSequenceBp: number;
 	samples: number;
+	/** bp spanned by the reference walk (its own W-line start/end), or null if
+	 * `referenceSample` wasn't given or has no walk in this subgraph. Distinct
+	 * from `totalSequenceBp`: it's just the reference's own genomic span, not
+	 * every haplotype's sequence combined. */
+	referencePathBp: number | null;
 }
 
-export function gfaStats(gfa: Gfa): GfaStats {
+export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 	let totalSequenceBp = 0;
 	for (const s of gfa.segments.values()) totalSequenceBp += s.length;
 	const samples = new Set(gfa.walks.map((w) => w.sample));
+	const ref = referenceSample ? gfa.walks.find((w) => w.sample === referenceSample) : undefined;
 	return {
 		segments: gfa.segments.size,
 		links: gfa.links.length,
 		walks: gfa.walks.length,
 		totalSequenceBp,
-		samples: samples.size
+		samples: samples.size,
+		referencePathBp: ref ? ref.end - ref.start : null
 	};
 }
