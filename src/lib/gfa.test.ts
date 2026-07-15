@@ -5,8 +5,8 @@ import { ALL_FIXTURES } from './graph/fixtures';
 describe('gfaLightStats', () => {
 	it('matches gfaStats(parseGfa(text)) exactly, across every fixture', () => {
 		for (const fixture of ALL_FIXTURES) {
-			const full = gfaStats(parseGfa(fixture.gfaText));
-			const light = gfaLightStats(fixture.gfaText);
+			const full = gfaStats(parseGfa(fixture.gfaText), fixture.referenceSample);
+			const light = gfaLightStats(fixture.gfaText, fixture.referenceSample);
 			expect(light, fixture.id).toEqual(full);
 		}
 	});
@@ -17,18 +17,20 @@ describe('gfaLightStats', () => {
 			links: 0,
 			walks: 0,
 			totalSequenceBp: 0,
-			samples: 0
+			samples: 0,
+			referencePathBp: null
 		});
 	});
 
 	it('handles a file with no trailing newline', () => {
 		const text = 'H\tVN:Z:1.1\nS\t1\tACGT\nL\t1\t+\t2\t+\t*\nW\tGRCh38\t0\tchr1\t0\t4\t>1';
-		const stats = gfaLightStats(text);
+		const stats = gfaLightStats(text, 'GRCh38');
 		expect(stats.segments).toBe(1);
 		expect(stats.links).toBe(1);
 		expect(stats.walks).toBe(1);
 		expect(stats.totalSequenceBp).toBe(4);
 		expect(stats.samples).toBe(1);
+		expect(stats.referencePathBp).toBe(4);
 	});
 
 	it('counts total sequence bp correctly across multiple segments', () => {
@@ -45,6 +47,21 @@ describe('gfaLightStats', () => {
 		].join('\n');
 		expect(gfaLightStats(text).samples).toBe(2);
 		expect(gfaLightStats(text).walks).toBe(3);
+	});
+
+	it('computes referencePathBp from the reference sample only, ignoring others', () => {
+		const text = [
+			'W\tHG002\t1\tchr1\t0\t999\t>1>2',
+			'W\tGRCh38\t0\tchr1\t100\t150\t>1>2',
+			''
+		].join('\n');
+		expect(gfaLightStats(text, 'GRCh38').referencePathBp).toBe(50);
+	});
+
+	it('returns null referencePathBp when no referenceSample is given, or none matches', () => {
+		const text = 'W\tGRCh38\t0\tchr1\t100\t150\t>1>2\n';
+		expect(gfaLightStats(text).referencePathBp).toBeNull();
+		expect(gfaLightStats(text, 'HG002').referencePathBp).toBeNull();
 	});
 });
 

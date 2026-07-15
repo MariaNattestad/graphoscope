@@ -151,12 +151,13 @@ export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
  * a walk with thousands of steps costs the same as one with a handful.
  * Used as the final fallback for a locus too large to parse/render at all.
  */
-export function gfaLightStats(text: string): GfaStats {
+export function gfaLightStats(text: string, referenceSample?: string): GfaStats {
 	let segments = 0;
 	let links = 0;
 	let walks = 0;
 	let totalSequenceBp = 0;
 	const samples = new Set<string>();
+	let referencePathBp: number | null = null;
 
 	const n = text.length;
 	let i = 0;
@@ -179,13 +180,32 @@ export function gfaLightStats(text: string): GfaStats {
 				// The sample field runs from i+2 (right after "W\t") up to the
 				// tab that terminates it — never touch the walk-string field.
 				const t1 = text.indexOf('\t', i + 2);
-				if (t1 !== -1 && t1 <= eol) samples.add(text.slice(i + 2, t1));
+				const sampleValid = t1 !== -1 && t1 <= eol;
+				const sample = sampleValid ? text.slice(i + 2, t1) : '';
+				if (sampleValid) samples.add(sample);
+				// Only the reference walk's start/end are worth the extra field
+				// scan (still stops well before the walk-string): <hapIndex>
+				// <seqId> <start> <end> are fields 3-6, i.e. tabs 2-5 after t1.
+				if (sampleValid && referenceSample && sample === referenceSample && referencePathBp === null) {
+					let pos = t1;
+					const tabs: number[] = [];
+					for (let f = 0; f < 4; f++) {
+						pos = text.indexOf('\t', pos + 1);
+						if (pos === -1 || pos > eol) { pos = -1; break; }
+						tabs.push(pos);
+					}
+					if (pos !== -1) {
+						const start = Number(text.slice(tabs[1] + 1, tabs[2]));
+						const end = Number(text.slice(tabs[2] + 1, tabs[3]));
+						if (Number.isFinite(start) && Number.isFinite(end)) referencePathBp = end - start;
+					}
+				}
 			}
 		}
 		i = eol + 1;
 	}
 
-	return { segments, links, walks, totalSequenceBp, samples: samples.size };
+	return { segments, links, walks, totalSequenceBp, samples: samples.size, referencePathBp };
 }
 
 /**

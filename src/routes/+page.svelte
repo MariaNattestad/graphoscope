@@ -254,7 +254,7 @@
 					// Even reference-only is too big (rare — topology itself is huge).
 					// Final fallback: line-counted stats only, never fully parsed, so
 					// there's no size this can't at least summarize.
-					lightStats = gfaLightStats(refOnlyText);
+					lightStats = gfaLightStats(refOnlyText, graph.referenceSample);
 					oversized = { bytes: gfaText.length };
 					parsed = null;
 					rawGfa = '';
@@ -437,7 +437,10 @@
 					<div><b>{lightStats.segments.toLocaleString()}</b><span>segments</span></div>
 					<div><b>{lightStats.links.toLocaleString()}</b><span>links</span></div>
 					<div><b>{lightStats.walks.toLocaleString()}</b><span>haplotype walks</span></div>
-					<div><b>{lightStats.totalSequenceBp.toLocaleString()}</b><span>bp of sequence</span></div>
+					{#if lightStats.referencePathBp != null}
+						<div><b>{lightStats.referencePathBp.toLocaleString()}</b><span>bp of reference path</span></div>
+					{/if}
+					<div><b>{lightStats.totalSequenceBp.toLocaleString()}</b><span>bp of total sequence</span></div>
 					<div><b>{lightStats.samples.toLocaleString()}</b><span>samples</span></div>
 				</div>
 			{/if}
