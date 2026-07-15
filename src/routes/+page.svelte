@@ -1,7 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
-	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
+	import {
+		parseGfa,
+		gfaStats,
+		gfaLightStats,
+		filterToReferenceWalks,
+		type Gfa,
+		type GfaStats
+	} from '$lib/gfa';
 	import RefArcView from '$lib/RefArcView.svelte';
 	import IgvView from '$lib/IgvView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
@@ -96,9 +103,17 @@
 	// (simplified upfront, unless the user turns it off).
 	let parsed = $state<Gfa | null>(null);
 	let rawGfa = $state<string>('');
-	// Set when a query returns more GFA than MAX_GFA_BYTES; the heavy views are
-	// skipped and a "zoom in" notice is shown instead.
+	// Set when even the locally-filtered reference-only graph is still more GFA
+	// than MAX_GFA_BYTES (rare — see run()); the heavy views are skipped and
+	// these line-counted-only stats (never fully parsed) are shown instead.
 	let oversized = $state<{ bytes: number } | null>(null);
+	let lightStats = $state<GfaStats | null>(null);
+	// Set when the full (all-haplotype) query was too big and we locally
+	// dropped every walk but the reference's (see filterToReferenceWalks):
+	// same segments/links (full topology), but only the reference walk — no
+	// per-haplotype coverage/heatmap, raw walk listing, or endpoint-artifact
+	// hints for this locus.
+	let reducedMode = $state<'reference-only' | null>(null);
 	let simplifyOn = $state(true);
 	let maxVariant = $state(50);
 	let fetchInfo = $state<{
@@ -184,6 +199,8 @@
 		error = null;
 		oversized = null;
 		queriedGene = null;
+		lightStats = null;
+		reducedMode = null;
 		showSuggest = false;
 		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
@@ -212,29 +229,60 @@
 			const result = await client!.query(qsource, locus);
 			if (!result.ok) {
 				error = `${result.error}\n${result.stderr ?? ''}`.trim();
-			} else {
-				const gfaText = result.gfa ?? '';
-				fetchInfo = result.stats ?? null;
-				if (gfaText.length > MAX_GFA_BYTES) {
-					// Too big to render safely — skip parsing entirely so the tab
-					// doesn't run out of memory, and tell the user to zoom in.
+				return;
+			}
+			let gfaText = result.gfa ?? '';
+			fetchInfo = result.stats ?? null;
+
+			if (gfaText.length > MAX_GFA_BYTES) {
+				// Full (all-haplotype) query too big. On a large or repetitive locus,
+				// haplotype walks — not sequence or topology — dominate GFA size (measured
+				// ~97% of bytes on a real large locus): each haplotype can traverse the
+				// same handful of nodes thousands of times. Segments/links are determined
+				// by the query interval, not by which walks reference them, so we can drop
+				// every walk but the reference locally — no second query needed, and no
+				// extra network round-trip for data we already have in hand. This is
+				// typically ~35x smaller, so it usually succeeds where the full query
+				// didn't. Cost: no per-haplotype coverage heatmap, no raw walk listing, no
+				// endpoint-artifact hints for this locus.
+				const refOnlyText = filterToReferenceWalks(gfaText, graph.referenceSample);
+
+				if (refOnlyText.length <= MAX_GFA_BYTES) {
+					gfaText = refOnlyText;
+					reducedMode = 'reference-only';
+				} else {
+					// Even reference-only is too big (rare — topology itself is huge).
+					// Final fallback: line-counted stats only, never fully parsed, so
+					// there's no size this can't at least summarize.
+					lightStats = gfaLightStats(refOnlyText, graph.referenceSample);
 					oversized = { bytes: gfaText.length };
 					parsed = null;
 					rawGfa = '';
-				} else {
-					rawGfa = gfaText;
-					parsed = parseGfa(gfaText);
+					trackEvent('query', {
+						graph: graph.id,
+						contig: locus.contig,
+						start: locus.start,
+						end: locus.end,
+						span: locus.end - locus.start,
+						input: sourceKind,
+						oversized: true
+					});
+					return;
 				}
-				trackEvent('query', {
-					graph: graph.id,
-					contig: locus.contig,
-					start: locus.start,
-					end: locus.end,
-					span: locus.end - locus.start,
-					input: sourceKind,
-					oversized: !!oversized
-				});
 			}
+
+			rawGfa = gfaText;
+			parsed = parseGfa(gfaText);
+			trackEvent('query', {
+				graph: graph.id,
+				contig: locus.contig,
+				start: locus.start,
+				end: locus.end,
+				span: locus.end - locus.start,
+				input: sourceKind,
+				reducedMode: !!reducedMode,
+				oversized: false
+			});
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -381,10 +429,25 @@
 	{#if oversized}
 		<section class="panel">
 			<p class="oversized">
-				<b>This region is too large to render.</b> It returns ~{fmtBytes(oversized.bytes)} of graph —
-				parsing and laying that out would use enough memory to crash the tab, so it's been skipped.
-				Try a smaller window (a few hundred kb or less; the built-in examples are ≤ ~100 kb) or a
-				specific gene.
+				<b>This region is too large to render, even reference-only.</b> Here's what we can tell
+				you about it without parsing the full thing:
+			</p>
+			{#if lightStats}
+				<div class="stats">
+					<div><b>{lightStats.segments.toLocaleString()}</b><span>segments</span></div>
+					<div><b>{lightStats.links.toLocaleString()}</b><span>links</span></div>
+					<div><b>{lightStats.walks.toLocaleString()}</b><span>haplotype walks</span></div>
+					{#if lightStats.referencePathBp != null}
+						<div><b>{lightStats.referencePathBp.toLocaleString()}</b><span>bp of reference path</span></div>
+					{/if}
+					<div><b>{lightStats.totalSequenceBp.toLocaleString()}</b><span>bp of total sequence</span></div>
+					<div><b>{lightStats.samples.toLocaleString()}</b><span>samples</span></div>
+				</div>
+			{/if}
+			<p class="muted small">
+				~{fmtBytes(oversized.bytes)} of raw graph — parsing and laying that out would use enough
+				memory to crash the tab, so it's been skipped entirely. Try a smaller window (a few
+				hundred kb or less; the built-in examples are ≤ ~100 kb) or a specific gene.
 			</p>
 			{#if fetchInfo}
 				<p class="muted small">
@@ -392,6 +455,19 @@
 					ms
 				</p>
 			{/if}
+		</section>
+	{/if}
+
+	{#if reducedMode === 'reference-only'}
+		<section class="panel reduced-mode">
+			<p class="reduced-note">
+				<b>Showing reference topology only.</b> The full query (every haplotype) was too large to
+				render — on a large or repetitive locus, haplotype walks dominate the data, not sequence or
+				topology. This falls back to the reference path plus the full structural graph (every
+				variant node/edge that exists anywhere in the pangenome is still here), just without
+				per-haplotype coverage: no coverage heatmap, no raw walk listing below, no "N haplotypes
+				support this" counts.
+			</p>
 		</section>
 	{/if}
 
@@ -457,7 +533,7 @@
 
 		<section class="panel">
 			<h2 class="panel-title">Raw data</h2>
-			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} />
+			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} {reducedMode} />
 		</section>
 	{/if}
 
@@ -765,6 +841,16 @@
 		margin: 0 0 0.4rem;
 		color: #92400e;
 		font-size: 0.9rem;
+		line-height: 1.5;
+	}
+	.reduced-mode {
+		background: #f8faff;
+		border-color: #dbeafe;
+	}
+	.reduced-note {
+		margin: 0;
+		color: #444;
+		font-size: 0.85rem;
 		line-height: 1.5;
 	}
 	.ack-list {
