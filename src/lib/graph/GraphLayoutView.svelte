@@ -105,7 +105,15 @@
 		const id = ++reqId;
 		computing = true;
 		const w = ensureWorker();
-		w.postMessage({ id, graph, options: { referenceSample } } satisfies LayoutRequest);
+		// `graph` traces back into `gfa`, which is (or is derived from) `$state`
+		// — Svelte 5 deep-reactivity wraps its nested objects/arrays in Proxies,
+		// and `postMessage`'s structured-clone algorithm can't clone a Proxy
+		// (throws DataCloneError). simplify.ts and gfaToGraph.ts deliberately
+		// share step objects internally rather than copying them (a large
+		// locus can have millions), so nothing upstream de-proxies them for us
+		// — this snapshot is the one place that must, since it's the one place
+		// with a hard structured-clone requirement.
+		w.postMessage({ id, graph: $state.snapshot(graph), options: { referenceSample } } satisfies LayoutRequest);
 	});
 
 	onDestroy(() => worker?.terminate());
