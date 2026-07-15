@@ -1,4 +1,4 @@
-# Pangenome locus browser
+# Graphoscope
 
 Interactive, browser-based viewer for HPRC pangenome graphs at the locus level.
 Pick a region by **coordinates or gene name** and it queries the graph by genome

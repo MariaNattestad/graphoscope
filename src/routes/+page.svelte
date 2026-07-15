@@ -315,10 +315,11 @@
 
 <main>
 	<header>
-		<h1>Pangenome locus browser</h1>
+		<h1>Graphoscope</h1>
 		<p class="sub">
-			Explore an HPRC human pangenome graph at any locus, straight from the browser — pick a region
-			by coordinates or gene name and the subgraph is read on demand, no multi-gigabyte download.
+			Explore an HPRC human pangenome graph at any locus. We indexed the graphs so you don't have to.
+			Pick a region to see the subgraph for that locus, visualized with a few early prototypes
+			designed to highlight major graph patterns relative to the reference.
 		</p>
 
 		<details class="how">
