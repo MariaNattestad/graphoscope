@@ -4,7 +4,11 @@
 	import type { Gfa } from './gfa';
 	import { trackEvent } from './analytics';
 
-	let { gfa, rawText }: { gfa: Gfa; rawText: string } = $props();
+	let {
+		gfa,
+		rawText,
+		reducedMode = null
+	}: { gfa: Gfa; rawText: string; reducedMode?: 'reference-only' | null } = $props();
 
 	const PREVIEW = 25; // rows shown per table
 
@@ -57,6 +61,15 @@
 	</div>
 
 	{#if tab === 'walks'}
+		{#if reducedMode === 'reference-only'}
+			<p class="skip-warning">
+				<b>Non-reference walks are skipped.</b> This region's full (all-haplotype) query was too large
+				to parse and render safely, so every haplotype walk except the reference's was dropped before
+				this data ever reached the browser — only the reference path is listed below. Segments and
+				links are unaffected (the full structural graph is still shown above); what's missing here is
+				specifically per-haplotype path detail for this locus.
+			</p>
+		{/if}
 		<p class="desc">
 			Each row is one haplotype's path (a GFA <code>W</code>-line) through this subgraph, exactly as
 			GBZ-base <code>query</code> extracts it — <code>sample</code>/<code>hap</code>/<code>contig</code>
@@ -177,6 +190,17 @@
 		font-size: 0.8rem;
 		line-height: 1.5;
 		margin: 0 0 0.7rem;
+		max-width: 80ch;
+	}
+	.skip-warning {
+		color: #92400e;
+		background: #fffbeb;
+		border: 1px solid #fde68a;
+		border-radius: 6px;
+		font-size: 0.8rem;
+		line-height: 1.5;
+		margin: 0 0 0.7rem;
+		padding: 0.5rem 0.7rem;
 		max-width: 80ch;
 	}
 	.desc code {

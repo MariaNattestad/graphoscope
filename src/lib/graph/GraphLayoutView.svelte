@@ -79,6 +79,12 @@
 		return map;
 	});
 
+	// Past this node count, layout time stops scaling gently — e.g. a
+	// reference-only reduced-mode graph on a large/repetitive locus (tens of
+	// thousands of nodes) has been observed taking several minutes, not
+	// seconds. Below this, graphs typically lay out in well under 20s.
+	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
+
 	// --- layout worker ---
 	let worker: Worker | null = null;
 	let reqId = 0;
@@ -147,7 +153,18 @@
 			/>
 		{/if}
 		{#if computing}
-			<div class="overlay"><span>computing layout…</span></div>
+			<div class="overlay">
+				<span>
+					computing layout…
+					{#if adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD}
+						<br />
+						<span class="overlay-warning">
+							{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
+							a large or repetitive locus. Still working, not stuck.
+						</span>
+					{/if}
+				</span>
+			</div>
 		{/if}
 	</div>
 
@@ -224,9 +241,19 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
+		text-align: center;
 		color: #9aa3b2;
 		background: rgba(11, 13, 18, 0.55);
 		font-size: 0.9rem;
+		padding: 0 1.5rem;
+	}
+	.overlay-warning {
+		display: inline-block;
+		margin-top: 0.4rem;
+		max-width: 32rem;
+		color: #fbbf24;
+		font-size: 0.78rem;
+		line-height: 1.4;
 	}
 	.legend {
 		display: inline-flex;

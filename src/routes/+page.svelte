@@ -530,7 +530,7 @@
 
 		<section class="panel">
 			<h2 class="panel-title">Raw data</h2>
-			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} />
+			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} {reducedMode} />
 		</section>
 	{/if}
 
