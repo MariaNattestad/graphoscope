@@ -73,7 +73,10 @@
 	// variation), SMN1 (spinal muscular atrophy locus, segmental duplication),
 	// CYP2D6 (pharmacogenomics, common structural variation).
 	const EXAMPLE_GENES = ['HLA-A', 'AMY1A', 'SMN1', 'CYP2D6'];
-	const DEFAULT_GENE = 'HLA-A';
+	// SMN1 is the lightest of the four examples (35 segments vs. HLA-A's 130,
+	// ~35 KiB less to fetch, layout in well under a second) — the default should
+	// load fast and stay responsive on mobile, not showcase the heaviest case.
+	const DEFAULT_GENE = 'SMN1';
 
 	let graphId = $state<'grch38' | 'chm13'>('grch38');
 	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
