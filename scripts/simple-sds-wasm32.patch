@@ -1,0 +1,38 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 142c11b..a29a858 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -8,7 +8,7 @@ readme = "README.md"
+ repository = "https://github.com/jltsiren/simple-sds"
+ 
+ [features]
+-default = ["libc"]
++default = []
+ binaries = ["getopts", "libc", "rand", "rand_distr"]
+ 
+ [dependencies]
+diff --git a/src/binaries.rs b/src/binaries.rs
+index 6700cc5..fca0387 100644
+--- a/src/binaries.rs
++++ b/src/binaries.rs
+@@ -46,13 +46,16 @@ const SUFFIXES: [(&str, usize); 10] = [
+     ("k", 1_000),
+     ("m", 1_000_000),
+     ("g", 1_000_000_000),
+-    ("t", 1_000_000_000_000),
+-    ("p", 1_000_000_000_000_000),
++    // saturating_mul keeps these const expressions from overflowing usize on
++    // 32-bit targets (e.g. wasm32); values above usize::MAX saturate, which is
++    // irrelevant for the size-suffix parsing these are used for.
++    ("t", 1_000usize.saturating_mul(1_000_000_000)),
++    ("p", 1_000_000usize.saturating_mul(1_000_000_000)),
+     ("ki", 1024),
+     ("mi", 1024 * 1024),
+     ("gi", 1024 * 1024 * 1024),
+-    ("ti", 1024 * 1024 * 1024 * 1024),
+-    ("pi", 1024 * 1024 * 1024 * 1024 * 1024),
++    ("ti", 1024usize.saturating_mul(1024).saturating_mul(1024).saturating_mul(1024)),
++    ("pi", 1024usize.saturating_mul(1024).saturating_mul(1024).saturating_mul(1024).saturating_mul(1024)),
+ ];
+ 
+ /// Parses a human-readable representation of an unsigned integer.

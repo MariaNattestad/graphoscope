@@ -1,11 +1,6 @@
-# Pangenome locus browser
+# Graphoscope
 
-Interactive, browser-based viewer for HPRC pangenome graphs at the locus level.
-Pick a region by **coordinates or gene name** and it queries the graph by genome
-position and renders the resulting subgraph — all in the browser, reading a
-multi-GB database **on demand via HTTP range requests**, without ever downloading
-the whole thing. The visualizations are a few prototypes for getting a quick
-overview of the graph complexity at a locus.
+Explore an HPRC human pangenome graph at any locus. We indexed the graphs so you don't have to. Pick a region to see the subgraph for that locus, visualized with a few early prototypes designed to highlight major graph patterns relative to the reference.
 
 Two HPRC **Release 2 (v2.0)** Minigraph-Cactus graphs are built in, switchable in
 the UI:
@@ -14,16 +9,6 @@ the UI:
 - **CHM13-based / T2T** (`hprc-v2.0-mc-chm13.gbz.db`, reference `CHM13`)
 
 ## How it works
-
-```
- .gbz  ──gbz2db──▶  .gbz.db (SQLite)  ──host on R2/S3──▶  browser
-                                                            │
-     query.wasm (GBZ-base `query`, WASI)  ◀── Web Worker ──┘
-                                                            │
-                        range requests for only the DB pages a query touches
-                                                            │
-                                   GFA  ──▶  parse  ──▶  visualization
-```
 
 - **`gbz2db`** (from [GBZ-base](https://github.com/jltsiren/gbz-base)) converts a
   `.gbz` into a random-access SQLite database (`.gbz.db`). This is a one-time,
@@ -136,14 +121,23 @@ it needs no server of its own — only the `.gbz.db` files on R2/S3 as above.
 
 ## Rebuilding `query.wasm`
 
-The wasm at `static/query.wasm` is built from GBZ-base with
-`../gbz-base/build-wasm-local.sh` (targets `wasm32-wasip1`; patches `simple-sds`
-to drop the `libc`/mmap feature and fix 32-bit size constants). Re-run it and copy
-the output:
+The wasm at `static/query.wasm` is [GBZ-base](https://github.com/jltsiren/gbz-base)'s
+`query` binary, compiled to `wasm32-wasip1`. GBZ-base itself doesn't build for wasm
+out of the box — its own `build-wasm.sh` targets the removed `wasm32-wasi`, and its
+dependency `simple-sds` doesn't compile for 32-bit wasm without a small patch (drops
+the `libc`/mmap feature, which wasm lacks, and fixes two size constants that overflow
+32-bit `usize`).
+
+`scripts/build-wasm.sh` (checked into this repo) handles all of that: it clones a
+pinned `simple-sds`, applies `scripts/simple-sds-wasm32.patch`, wires it into
+GBZ-base via a local `[patch.crates-io]`, builds, and copies the result into
+`static/`. It needs a GBZ-base checkout to build against:
 
 ```sh
-(cd ../gbz-base && ./build-wasm-local.sh)
-cp ../gbz-base/target/wasm32-wasip1/release/query.wasm static/query.wasm
+git clone https://github.com/jltsiren/gbz-base ../gbz-base
+scripts/build-wasm.sh          # defaults to ../gbz-base
+# or: scripts/build-wasm.sh /path/to/gbz-base
 ```
 
-Claude just did this quickly to build it on a Mac with Apple Silicon, but if anyone needs this, let me know and I'm happy to share the script.
+Tested on Apple Silicon (arm64 WASI SDK). On another host architecture, change
+`WASI_SDK_ARCH` near the top of the script (e.g. `x86_64-linux`).
