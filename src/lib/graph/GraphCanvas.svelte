@@ -152,7 +152,10 @@
 		// the font stays a constant size regardless of zoom. Each reference node
 		// gets its start coordinate; the last also gets its end. Labels are skipped
 		// when they'd collide with the previous one, but the first and last are
-		// always kept.
+		// always kept. ctx.restore() above dropped back to the identity transform
+		// (physical device pixels), but toScreenX/Y below compute CSS-pixel
+		// coordinates — reapply the DPR scale so they still land in the right spot.
+		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawRefCoordLabels(ctx, width, height);
 	}
 
