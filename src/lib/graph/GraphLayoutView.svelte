@@ -34,8 +34,9 @@
 		role: 'start' | 'end' | 'both';
 	}
 	function walkEndpointsAt(nodeId: string): WalkEndpoint[] {
-		// Needs per-haplotype walks; in reduced mode those are aggregated away, so
-		// there's nothing meaningful to show (only the reference walk remains).
+		// In reduced mode the individual walks are aggregated away, so we can't
+		// name them — but the reducer counts how many begin and end at each node
+		// (`WS`/`WE` tags), which is the part that actually flags an artifact.
 		if (gfa.reduced) return [];
 		const out: WalkEndpoint[] = [];
 		for (const w of gfa.walks) {
@@ -52,6 +53,14 @@
 	const endpoints = $derived(selected ? walkEndpointsAt(selected) : []);
 	const starts = $derived(endpoints.filter((e) => e.role === 'start' || e.role === 'both'));
 	const ends = $derived(endpoints.filter((e) => e.role === 'end' || e.role === 'both'));
+	// Reduced mode: counts from the `WS`/`WE` tags on the selected segment.
+	const endpointCounts = $derived.by(() => {
+		if (!gfa.reduced || !selected) return null;
+		const seg = gfa.segments.get(selected);
+		const s = seg?.walkStarts ?? 0;
+		const e = seg?.walkEnds ?? 0;
+		return s === 0 && e === 0 ? null : { starts: s, ends: e };
+	});
 
 	const adapted = $derived(gfaToGraph(gfa, { referenceSample }));
 
@@ -182,7 +191,29 @@
 		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 	</div>
 
-	{#if selected && endpoints.length > 0}
+	{#if endpointCounts}
+		<div class="endpoints">
+			<span class="hint muted">
+				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) is often an
+				artifact worth checking
+			</span>
+			{#if endpointCounts.starts > 0}
+				<div class="erow">
+					<span class="etag start"
+						>{endpointCounts.starts.toLocaleString()} walk{endpointCounts.starts === 1 ? '' : 's'} start
+						here</span
+					>
+				</div>
+			{/if}
+			{#if endpointCounts.ends > 0}
+				<div class="erow">
+					<span class="etag end"
+						>{endpointCounts.ends.toLocaleString()} walk{endpointCounts.ends === 1 ? '' : 's'} end here</span
+					>
+				</div>
+			{/if}
+		</div>
+	{:else if selected && endpoints.length > 0}
 		<div class="endpoints">
 			<span class="hint muted">
 				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) is often an

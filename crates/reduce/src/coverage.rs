@@ -23,6 +23,14 @@ pub struct Coverage {
     pub node: Vec<u32>,
     /// Distinct non-reference walks across each undirected output edge.
     pub edge: HashMap<(u32, u32), u32>,
+    /// Non-reference walks that *begin* at each segment, and that *end* there.
+    ///
+    /// A walk that stops inside the graph — rather than at the subgraph boundary
+    /// or the far side of a bubble — is the tell for a fragmentary or artifactual
+    /// haplotype. The viewer surfaces these on node click; counting them here is
+    /// what keeps that diagnostic alive now that the walks themselves are gone.
+    pub starts: Vec<u32>,
+    pub ends: Vec<u32>,
     pub non_ref_walks: usize,
     // Scratch reused across walks so counting allocates nothing per walk.
     seen_nodes: HashSet<u32>,
@@ -34,6 +42,8 @@ impl Coverage {
         Coverage {
             node: vec![0; segment_count],
             edge: HashMap::new(),
+            starts: vec![0; segment_count],
+            ends: vec![0; segment_count],
             non_ref_walks: 0,
             seen_nodes: HashSet::new(),
             seen_edges: HashSet::new(),
@@ -43,6 +53,15 @@ impl Coverage {
     /// Folds one non-reference walk (already rerouted and chain-mapped) in.
     pub fn observe(&mut self, steps: &[(u32, bool)]) {
         self.non_ref_walks += 1;
+
+        if let (Some(&(first, _)), Some(&(last, _))) = (steps.first(), steps.last()) {
+            if let Some(c) = self.starts.get_mut(first as usize) {
+                *c += 1;
+            }
+            if let Some(c) = self.ends.get_mut(last as usize) {
+                *c += 1;
+            }
+        }
 
         self.seen_nodes.clear();
         for &(idx, _) in steps {

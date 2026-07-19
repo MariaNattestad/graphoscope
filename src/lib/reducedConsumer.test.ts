@@ -14,7 +14,7 @@ const REDUCED = [
 	'S\t1\tACGT\tWC:i:0',
 	'S\t2\tAAAAA\tWC:i:0',
 	'S\t3\tCCCC\tWC:i:0',
-	'S\t4\tG\tWC:i:7', // alt node, 7 non-ref walks
+	'S\t4\tG\tWC:i:7\tWE:i:2', // alt node: 7 non-ref walks, 2 of them dead-end here
 	'S\t5\tTTTT\tWC:i:12',
 	'L\t1\t+\t2\t+\t0M\tWC:i:0',
 	'L\t2\t+\t3\t+\t0M\tWC:i:0',
@@ -37,6 +37,12 @@ describe('reduced GFA consumer pipeline', () => {
 		expect(gfa.reduced!.totalWalks).toBe(20);
 		expect(gfa.reduced!.nonRefWalks).toBe(19);
 		expect(gfa.reduced!.samples).toBe(10);
+	});
+
+	it('parses WS/WE endpoint counts, leaving them undefined where absent', () => {
+		expect(gfa.segments.get('4')!.walkEnds).toBe(2);
+		expect(gfa.segments.get('4')!.walkStarts).toBeUndefined();
+		expect(gfa.segments.get('1')!.walkEnds).toBeUndefined();
 	});
 
 	it('parses WC coverage onto segments and links', () => {

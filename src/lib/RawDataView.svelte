@@ -47,7 +47,7 @@
 <div class="raw">
 	<div class="tabs">
 		<button class:active={tab === 'walks'} onclick={() => (tab = 'walks')}
-			>Walks ({walkCount.toLocaleString()})</button
+			>{isReduced ? 'Reference path' : `Walks (${walkCount.toLocaleString()})`}</button
 		>
 		<button class:active={tab === 'segments'} onclick={() => (tab = 'segments')}
 			>Segments ({gfa.segments.size})</button
@@ -62,21 +62,18 @@
 
 	{#if tab === 'walks'}
 		{#if isReduced}
-			<p class="skip-warning">
-				<b>Non-reference walks are aggregated, not listed.</b> To keep even large loci light, the wasm
-				<code>query</code> counts how many walks cross each node and edge (the coverage heatmaps above)
-				and drops the per-haplotype step lists before the data ever reaches the browser — so of
-				{walkCount.toLocaleString()} walks in this subgraph, only the reference path is shown below.
-				Segments and links carry a <code>WC</code> coverage count instead.
+			<p class="desc">
+				The reference path (a GFA <code>W</code>-line) through this subgraph. The other
+				{(walkCount - 1).toLocaleString()} haplotype walks were counted per node and edge — see the
+				<code>walks</code> column under Segments — and dropped before reaching the browser.
+			</p>
+		{:else}
+			<p class="desc">
+				Each row is one haplotype's path (a GFA <code>W</code>-line) through this subgraph, exactly
+				as GBZ-base <code>query</code> extracts it. Haplotypes the graph carries without a sample
+				name (e.g. anonymous minigraph paths) are reported as <code>unknown</code>.
 			</p>
 		{/if}
-		<p class="desc">
-			Each row is one haplotype's path (a GFA <code>W</code>-line) through this subgraph, exactly as
-			GBZ-base <code>query</code> extracts it — <code>sample</code>/<code>hap</code>/<code>contig</code>
-			and the <code>start</code>–<code>end</code> span come from the path metadata stored in the graph.
-			Haplotypes the graph carries without a sample name (e.g. anonymous minigraph paths) are reported
-			by the tool as <code>unknown</code>.
-		</p>
 		<table>
 			<thead>
 				<tr><th>sample</th><th>hap</th><th>contig</th><th>start</th><th>end</th><th>steps</th><th>path (first steps)</th></tr>
@@ -200,17 +197,6 @@
 		font-size: 0.8rem;
 		line-height: 1.5;
 		margin: 0 0 0.7rem;
-		max-width: 80ch;
-	}
-	.skip-warning {
-		color: #92400e;
-		background: #fffbeb;
-		border: 1px solid #fde68a;
-		border-radius: 6px;
-		font-size: 0.8rem;
-		line-height: 1.5;
-		margin: 0 0 0.7rem;
-		padding: 0.5rem 0.7rem;
 		max-width: 80ch;
 	}
 	.desc code {

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
-	import { parseGfa, gfaStats, gfaLightStats, type Gfa, type GfaStats } from '$lib/gfa';
+	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RefArcView from '$lib/RefArcView.svelte';
 	import IgvView from '$lib/IgvView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
@@ -73,12 +73,11 @@
 	let graphId = $state<'grch38' | 'chm13'>('grch38');
 	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
 
-	// Safety net for the reduced GFA. The walks — which used to dominate size and
-	// blow up the tab (parsed into millions of step objects at ~100× the text in
-	// live memory) — are now aggregated away server-side, so a reduced response is
-	// governed by topology and is normally tiny. This guard only trips on a locus
-	// whose *topology* alone is still enormous; past it we show line-counted stats
-	// instead of parsing/rendering. Kept well above any normal reduced response.
+	// Backstop only. The walks that used to dominate GFA size (and blow up the tab
+	// once parsed into per-step objects) are aggregated away in the wasm query, so
+	// a reduced response is governed by topology: measured loci from 10 kb to
+	// 3.2 Mb all came back three orders of magnitude under this ceiling. Reaching
+	// it means something pathological, and we refuse rather than try to render.
 	const MAX_GFA_BYTES = 13 * 1024 * 1024;
 
 	// ---- Query state -----------------------------------------------------------
@@ -98,11 +97,8 @@
 	// walk-dominated GFA — that server-side reduction is the whole memory win.
 	let gfa = $state<Gfa | null>(null);
 	let rawGfa = $state<string>('');
-	// Set when even the reduced GFA is still more than MAX_GFA_BYTES (rare — the
-	// topology itself is huge); the heavy views are skipped and these
-	// line-counted-only stats are shown instead.
+	// Set only if the reduced GFA somehow still exceeds MAX_GFA_BYTES.
 	let oversized = $state<{ bytes: number } | null>(null);
-	let lightStats = $state<GfaStats | null>(null);
 	let maxVariant = $state(50);
 	let fetchInfo = $state<{
 		requestCount: number;
@@ -183,7 +179,6 @@
 		error = null;
 		oversized = null;
 		queriedGene = null;
-		lightStats = null;
 		showSuggest = false;
 		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
@@ -223,10 +218,10 @@
 			fetchInfo = result.stats ?? null;
 
 			if (gfaText.length > MAX_GFA_BYTES) {
-				// Even the reduced graph is too big to render — the topology itself
-				// (not the walks, which are already aggregated away) is huge. Fall back
-				// to line-counted stats only, never fully parsed.
-				lightStats = gfaLightStats(gfaText, graph.referenceSample);
+				// Backstop only. The walks are aggregated away before this point, so
+				// the reduced graph is governed by topology and is normally tiny —
+				// measured loci up to 3.2 Mb land three orders of magnitude under this
+				// ceiling. Reaching it means something pathological, so just refuse.
 				oversized = { bytes: gfaText.length };
 				gfa = null;
 				rawGfa = '';
@@ -260,19 +255,20 @@
 		}
 	}
 
-	// Re-query (debounced) when the collapse threshold changes: simplification now
-	// happens server-side, so a different threshold needs a fresh reduced query.
-	// The DB blocks are already cached and the reduced response is tiny, so this
-	// is fast. Guard against the initial render firing a redundant query.
-	let maxVariantTimer: ReturnType<typeof setTimeout> | undefined;
+	// Simplification happens in the wasm query now, so a different threshold needs
+	// a fresh query rather than a local re-simplify. The database blocks are
+	// already cached and the reduced response is small, so this is quick.
+	//
+	// The new value is read off the event rather than from `maxVariant`: a
+	// `bind:value` and this handler both listen for the same change event, and
+	// relying on the binding having landed first silently skipped the re-query.
 	let lastQueriedMaxVariant = 50;
-	function onMaxVariantChange() {
-		clearTimeout(maxVariantTimer);
-		maxVariantTimer = setTimeout(() => {
-			if (maxVariant === lastQueriedMaxVariant || !gfa) return;
-			lastQueriedMaxVariant = maxVariant;
-			run();
-		}, 400);
+	function onMaxVariantChange(e: Event) {
+		const value = Number((e.currentTarget as HTMLSelectElement).value);
+		if (!Number.isFinite(value) || value === lastQueriedMaxVariant || !gfa) return;
+		maxVariant = value;
+		lastQueriedMaxVariant = value;
+		run();
 	}
 
 	function selectGraph(id: 'grch38' | 'chm13') {
@@ -415,32 +411,10 @@
 	{#if oversized}
 		<section class="panel">
 			<p class="oversized">
-				<b>This region is too large to render, even reference-only.</b> Here's what we can tell
-				you about it without parsing the full thing:
+				<b>This region's graph is too tangled to render.</b> Even after simplification it came back
+				at ~{fmtBytes(oversized.bytes)}, which is far past anything we've seen from a normal locus —
+				try a smaller window or a specific gene.
 			</p>
-			{#if lightStats}
-				<div class="stats">
-					<div><b>{lightStats.segments.toLocaleString()}</b><span>segments</span></div>
-					<div><b>{lightStats.links.toLocaleString()}</b><span>links</span></div>
-					<div><b>{lightStats.walks.toLocaleString()}</b><span>haplotype walks</span></div>
-					{#if lightStats.referencePathBp != null}
-						<div><b>{lightStats.referencePathBp.toLocaleString()}</b><span>bp of reference path</span></div>
-					{/if}
-					<div><b>{lightStats.totalSequenceBp.toLocaleString()}</b><span>bp of total sequence</span></div>
-					<div><b>{lightStats.samples.toLocaleString()}</b><span>samples</span></div>
-				</div>
-			{/if}
-			<p class="muted small">
-				~{fmtBytes(oversized.bytes)} of raw graph — parsing and laying that out would use enough
-				memory to crash the tab, so it's been skipped entirely. Try a smaller window (a few
-				hundred kb or less; the built-in examples are ≤ ~100 kb) or a specific gene.
-			</p>
-			{#if fetchInfo}
-				<p class="muted small">
-					Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads · {fetchInfo.elapsedMs}
-					ms
-				</p>
-			{/if}
 		</section>
 	{/if}
 
@@ -469,24 +443,20 @@
 			<div class="simplify-bar">
 				<label class="opt">
 					collapse variants ≤
-					<input
-						type="number"
-						min="1"
-						max="1000"
-						bind:value={maxVariant}
-						oninput={onMaxVariantChange}
-					/> bp
+					<select value={maxVariant} onchange={onMaxVariantChange}>
+						{#each [10, 25, 50, 100, 250, 500] as bp (bp)}
+							<option value={bp}>{bp}</option>
+						{/each}
+					</select> bp
 				</label>
 				{#if gfa.reduced}
 					<span class="muted small">
 						{gfa.reduced.segmentsBefore.toLocaleString()} →
 						<b>{gfa.reduced.segmentsAfter.toLocaleString()}</b>
 						nodes · {gfa.reduced.sites.toLocaleString()} sites collapsed
-						({gfa.reduced.snpCount.toLocaleString()} SNPs, {gfa.reduced.basesRemoved.toLocaleString()} alt
-						bp) · simplified server-side{#if gfa.reduced.unchopMerges > 0}, {gfa.reduced.unchopMerges.toLocaleString()}
-							chains merged{/if}
 					</span>
 				{/if}
+				<span class="muted small">changing this re-runs the query</span>
 			</div>
 		</section>
 
@@ -634,7 +604,7 @@
 		font-size: 0.9rem;
 	}
 	input[type='text'],
-	input[type='number'] {
+	select {
 		font: inherit;
 		padding: 0.35rem 0.5rem;
 		border: 1px solid #ccc;
@@ -778,8 +748,7 @@
 		gap: 0.35rem;
 		font-size: 0.85rem;
 	}
-	.simplify-bar .opt input[type='number'] {
-		width: 4rem;
+	.simplify-bar .opt select {
 		padding: 0.15rem 0.35rem;
 	}
 	.gene-tag {

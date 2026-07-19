@@ -257,6 +257,8 @@ pub fn write_reduced<W: Write>(
     segments: &[OutSegment],
     links: &[(u32, bool, u32, bool)],
     node_cov: &[u32],
+    node_starts: &[u32],
+    node_ends: &[u32],
     edge_cov: &HashMap<(u32, u32), u32>,
     ref_walk: Option<&RefWalk>,
     ref_steps_out: &[(u32, bool)],
@@ -291,7 +293,18 @@ pub fn write_reduced<W: Write>(
         seg.write_id(out)?;
         out.write_all(b"\t")?;
         out.write_all(&seg.seq)?;
-        writeln!(out, "\tWC:i:{}", node_cov.get(i).copied().unwrap_or(0))?;
+        write!(out, "\tWC:i:{}", node_cov.get(i).copied().unwrap_or(0))?;
+        // Only emit the endpoint tags where there is something to report, so a
+        // typical interior node stays a short line.
+        let (s, e) =
+            (node_starts.get(i).copied().unwrap_or(0), node_ends.get(i).copied().unwrap_or(0));
+        if s > 0 {
+            write!(out, "\tWS:i:{}", s)?;
+        }
+        if e > 0 {
+            write!(out, "\tWE:i:{}", e)?;
+        }
+        out.write_all(b"\n")?;
     }
 
     for &(from, from_rev, to, to_rev) in links {

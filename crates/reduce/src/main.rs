@@ -182,6 +182,8 @@ fn run() -> Result<(), String> {
         &unchop.segments,
         &unchop.links,
         &cov.node,
+        &cov.starts,
+        &cov.ends,
         &cov.edge,
         ref_walk.as_ref(),
         &ref_steps_out,
