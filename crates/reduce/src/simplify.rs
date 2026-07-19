@@ -23,7 +23,8 @@
 //! Safety invariant: every edge in the output corresponds to an adjacency that
 //! existed in the input, and the reference sequence is unchanged.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::gfa::{Link, NodeId, OutSegment, Segment, Step};
 
@@ -172,15 +173,13 @@ pub fn plan_collapse(
         prefix.insert(s, 0);
         let mut cone: HashSet<NodeId> = HashSet::new();
         cone.insert(s);
-        let mut pq: Vec<(usize, NodeId)> = vec![(0, s)];
-        while !pq.is_empty() {
-            let mut bi = 0;
-            for k in 1..pq.len() {
-                if pq[k].0 < pq[bi].0 {
-                    bi = k;
-                }
-            }
-            let (d, u) = pq.remove(bi);
+        // A real min-heap, not a linear scan: `detect` runs at every reference
+        // node, so an O(V^2) frontier here dominates everything on a large
+        // locus (a 400 kb region spent ~32 s in this loop). Pop order only
+        // differs on ties, which cannot change the resulting distances or cone.
+        let mut pq: BinaryHeap<Reverse<(usize, NodeId)>> = BinaryHeap::new();
+        pq.push(Reverse((0, s)));
+        while let Some(Reverse((d, u))) = pq.pop() {
             if d > *prefix.get(&u).unwrap_or(&usize::MAX) {
                 continue;
             }
@@ -198,7 +197,7 @@ pub fn plan_collapse(
                     if cone.len() > 512 {
                         return None;
                     }
-                    pq.push((nd, v));
+                    pq.push(Reverse((nd, v)));
                 }
             }
         }
