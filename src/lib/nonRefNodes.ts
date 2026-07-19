@@ -119,13 +119,20 @@ export function computeNonRefNodes(
 		add(l.to, l.from);
 	}
 
-	// Coverage: non-reference walks that traverse each node.
+	// Coverage: non-reference walks that traverse each node. In reduced mode this
+	// is precomputed (segment.coverage from the `WC` tag) because the walks were
+	// aggregated away; otherwise count it from the walks in hand.
+	const isReduced = gfa.reduced !== undefined;
 	const nonRefWalks = gfa.walks.filter((w) => w !== ref);
 	const cov = new Map<string, number>();
-	for (const w of nonRefWalks) {
-		for (const step of w.steps) cov.set(step.id, (cov.get(step.id) ?? 0) + 1);
+	if (isReduced) {
+		for (const s of gfa.segments.values()) if (s.coverage !== undefined) cov.set(s.id, s.coverage);
+	} else {
+		for (const w of nonRefWalks) {
+			for (const step of w.steps) cov.set(step.id, (cov.get(step.id) ?? 0) + 1);
+		}
 	}
-	const totalNonRef = Math.max(1, nonRefWalks.length);
+	const totalNonRef = Math.max(1, isReduced ? (gfa.reduced?.nonRefWalks ?? 0) : nonRefWalks.length);
 
 	function nearestRef(startId: string): { start: number; end: number } | null {
 		const seen = new Set([startId]);
@@ -185,15 +192,19 @@ export function computeNonRefNodes(
 	}
 
 	// Pure deletions with no alt segment at all: a link directly between two
-	// reference nodes that skips over one or more reference nodes in between.
+	// reference nodes that skips over one or more reference nodes in between. Edge
+	// coverage comes from the reduced GFA's per-link `WC` tag, or (full GFA) from
+	// counting non-reference walk step-pairs.
 	const nonRefPairCount = new Map<string, number>();
-	for (const w of nonRefWalks) {
-		for (let i = 0; i + 1 < w.steps.length; i++) {
-			const a = w.steps[i].id;
-			const b = w.steps[i + 1].id;
-			if (a === b) continue;
-			const k = `${a}>${b}`;
-			nonRefPairCount.set(k, (nonRefPairCount.get(k) ?? 0) + 1);
+	if (!isReduced) {
+		for (const w of nonRefWalks) {
+			for (let i = 0; i + 1 < w.steps.length; i++) {
+				const a = w.steps[i].id;
+				const b = w.steps[i + 1].id;
+				if (a === b) continue;
+				const k = `${a}>${b}`;
+				nonRefPairCount.set(k, (nonRefPairCount.get(k) ?? 0) + 1);
+			}
 		}
 	}
 	const seenSkip = new Set<string>();
@@ -208,6 +219,9 @@ export function computeNonRefNodes(
 		const key = a.start <= b.start ? `${l.from}>${l.to}` : `${l.to}>${l.from}`;
 		if (seenSkip.has(key)) continue;
 		seenSkip.add(key);
+		const edgeCov = isReduced
+			? (l.coverage ?? 0)
+			: (nonRefPairCount.get(`${l.from}>${l.to}`) ?? 0) + (nonRefPairCount.get(`${l.to}>${l.from}`) ?? 0);
 		events.push({
 			id: `del:${l.from}>${l.to}`,
 			len: 0,
@@ -215,7 +229,7 @@ export function computeNonRefNodes(
 			rightBp: right.start,
 			skipped,
 			net: -skipped,
-			cov: (nonRefPairCount.get(`${l.from}>${l.to}`) ?? 0) + (nonRefPairCount.get(`${l.to}>${l.from}`) ?? 0)
+			cov: edgeCov
 		});
 	}
 	events.sort((a, b) => a.leftBp - b.leftBp);

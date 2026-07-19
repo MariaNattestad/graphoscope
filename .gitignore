@@ -21,3 +21,9 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Rust crate build artifacts (crates/reduce). `vendor/` and the WASI SDK are
+# fetched by scripts/build-wasm.sh, not checked in.
+/crates/reduce/target
+/crates/reduce/vendor
+/crates/reduce/wasi-sdk-*

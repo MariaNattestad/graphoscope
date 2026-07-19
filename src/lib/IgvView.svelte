@@ -22,7 +22,7 @@
 	let objectUrls: string[] = [];
 	let applyToken = 0;
 
-	const TRACK_NAMES = ['Non-ref nodes (color = # haplotypes)', 'Non-ref node size (bp)'];
+	const TRACK_NAMES = ['Non-ref nodes (color = # walks)', 'Non-ref node size (bp)'];
 
 	// Map a pangenome reference sample to a hosted IGV genome id. IGV.js's own
 	// built-in genome registry uses UCSC ids, not assembly names — CHM13's is
@@ -221,7 +221,7 @@
 		<span class="muted">“Non-ref nodes” track:</span>
 		<span>1</span>
 		<span class="grad"></span>
-		<span>{model?.totalNonRef ?? ''} haplotypes</span>
+		<span>{model?.totalNonRef ?? ""} walks</span>
 		<span class="muted">· label = <code>&lt;size&gt;bp_&lt;cov&gt;/&lt;total&gt;_&lt;ins|ins*|del|sub&gt;</code> (size = max ins/del bp) · lower track: bar height = size</span>
 	</div>
 </div>

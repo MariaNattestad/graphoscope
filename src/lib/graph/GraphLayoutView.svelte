@@ -34,6 +34,9 @@
 		role: 'start' | 'end' | 'both';
 	}
 	function walkEndpointsAt(nodeId: string): WalkEndpoint[] {
+		// Needs per-haplotype walks; in reduced mode those are aggregated away, so
+		// there's nothing meaningful to show (only the reference walk remains).
+		if (gfa.reduced) return [];
 		const out: WalkEndpoint[] = [];
 		for (const w of gfa.walks) {
 			if (w.steps.length === 0) continue;
@@ -176,7 +179,7 @@
 		{/if}
 		<span class="spacer"></span>
 		<span class="legend"><span class="sw backbone"></span> reference backbone (coords shown)</span>
-		<span class="legend"><span class="sw grad"></span> more haplotypes →</span>
+		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 	</div>
 
 	{#if selected && endpoints.length > 0}

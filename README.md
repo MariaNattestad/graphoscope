@@ -119,25 +119,44 @@ it needs no server of its own — only the `.gbz.db` files on R2/S3 as above.
 
 `.github/workflows/deploy-pages.yml` builds and deploys on every push to `main`.
 
-## Rebuilding `query.wasm`
+## The locus query (`crates/reduce`)
 
-The wasm at `static/query.wasm` is [GBZ-base](https://github.com/jltsiren/gbz-base)'s
-`query` binary, compiled to `wasm32-wasip1`. GBZ-base itself doesn't build for wasm
-out of the box — its own `build-wasm.sh` targets the removed `wasm32-wasi`, and its
-dependency `simple-sds` doesn't compile for 32-bit wasm without a small patch (drops
-the `libc`/mmap feature, which wasm lacks, and fixes two size constants that overflow
-32-bit `usize`).
+The wasm at `static/query.wasm` is built from **`crates/reduce`**, this repo's own
+Rust crate. It does three things per query:
 
-`scripts/build-wasm.sh` (checked into this repo) handles all of that: it clones a
-pinned `simple-sds`, applies `scripts/simple-sds-wasm32.patch`, wires it into
-GBZ-base via a local `[patch.crates-io]`, builds, and copies the result into
-`static/`. It needs a GBZ-base checkout to build against:
+1. **Retrieve** the locus subgraph, using
+   [GBZ-base](https://github.com/jltsiren/gbz-base) unmodified as a crates.io
+   dependency — that's what it's for, and it's the only thing it does here.
+2. **Simplify** the subgraph (`src/simplify.rs`): collapse small reference-anchored
+   superbubbles onto the reference, then merge non-branching chains. A site
+   collapses only if its *longest* entry→exit path is under the threshold, so a
+   small deletion spanning a long reference stretch correctly survives.
+3. **Aggregate the walks** (`src/coverage.rs`): count how many distinct haplotype
+   walks cross each node and edge, emit those as `WC` tags, and drop the walks.
+
+Step 3 is the reason large loci render at all. Haplotype walks are ~97% of a GFA's
+bytes on a repetitive locus (measured: 48.5 MB of a 49.8 MB LPA query), and once
+parsed into per-step JS objects they dominate the browser's heap. Counting them
+here instead means what the browser holds is governed by graph topology, not
+haplotype count — for LPA, 404 MB of parsed heap becomes 7.6 MB.
+
+The output is a "reduced" GFA: segments and links carrying `WC:i:<n>` coverage
+tags, an `X` line of locus-level counts, and only the reference `W` line.
 
 ```sh
-git clone https://github.com/jltsiren/gbz-base ../gbz-base
-scripts/build-wasm.sh          # defaults to ../gbz-base
-# or: scripts/build-wasm.sh /path/to/gbz-base
+scripts/build-wasm.sh     # → static/query.wasm
 ```
 
-Tested on Apple Silicon (arm64 WASI SDK). On another host architecture, change
-`WASI_SDK_ARCH` near the top of the script (e.g. `x86_64-linux`).
+The script fetches a pinned `simple-sds` and applies
+`scripts/simple-sds-wasm32.patch` — it doesn't build for 32-bit wasm as published
+(it defaults to a `libc`/mmap feature wasm lacks, and two size constants overflow a
+32-bit `usize`). Tested on Apple Silicon; for another host change `WASI_SDK_ARCH`
+near the top of the script (e.g. `x86_64-linux`).
+
+You can also run it natively, which is useful for debugging a locus:
+
+```sh
+cd crates/reduce && cargo build --release
+./target/release/graphoscope-reduce --sample GRCh38 --contig chr5 \
+  -i 70925029..70953942 /path/to/hprc-v2.0-mc-grch38.gbz.db
+```

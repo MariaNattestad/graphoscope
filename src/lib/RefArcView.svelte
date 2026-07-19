@@ -111,7 +111,7 @@
 		const g1 = Math.round(model.genomicStart + ev.rightBp);
 		const coord = g0 === g1 ? `${model.contig}:${g0}` : `${model.contig}:${g0}-${g1}`;
 		const what = isPureDeletion(ev) ? `deletion (no alt node)` : `node ${ev.id}\tlen ${ev.len} bp`;
-		return `${what}\t${coord}\treplaces ${ev.skipped} bp\tnet ${ev.net > 0 ? '+' : ''}${ev.net} bp\t${ev.cov}/${model.totalNonRef} haplotypes`;
+		return `${what}\t${coord}\treplaces ${ev.skipped} bp\tnet ${ev.net > 0 ? '+' : ''}${ev.net} bp\t${ev.cov}/${model.totalNonRef} walks`;
 	}
 	async function copyInfo() {
 		if (!active) return;
@@ -146,7 +146,7 @@
 	{#if render && model}
 		<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" ondblclick={onDblClick} role="img" aria-label="reference arc view">
 			<!-- vertical position guides -->
-			{#each render.ticks as t (t.label)}
+			{#each render.ticks as t, i (i)}
 				<line x1={t.x} y1={TOP} x2={t.x} y2={baseY} stroke="#eee" stroke-width="1" />
 			{/each}
 
@@ -187,7 +187,7 @@
 			{/each}
 
 			<!-- axis ticks + labels -->
-			{#each render.ticks as t (t.label)}
+			{#each render.ticks as t, i (i)}
 				<line x1={t.x} y1={hmY + hmH} x2={t.x} y2={hmY + hmH + 4} stroke="#999" stroke-width="1" />
 				<text x={t.x} y={hmY + hmH + 18} font-size="10" fill="#666" text-anchor="middle">{t.label}</text>
 			{/each}
@@ -203,7 +203,7 @@
 				<span class="muted">arc height ∝ max(inserted, deleted) bp</span>
 			</div>
 			<div class="legend">
-				<span class="muted">haplotypes through node:</span>
+				<span class="muted">walks through node:</span>
 				<span>1</span>
 				<span class="grad"></span>
 				<span>{model.totalNonRef}</span>
@@ -222,7 +222,7 @@
 							? '-' + genomic(active.rightBp).toLocaleString()
 							: ''}</code>
 					· replaces {active.skipped.toLocaleString()} bp · net {active.net > 0 ? '+' : ''}{active.net.toLocaleString()} bp ·
-					<b>{active.cov}/{model.totalNonRef}</b> haplotypes
+					<b>{active.cov}/{model.totalNonRef}</b> walks
 				</span>
 				<button class="mini" onclick={copyInfo}>{copied ? 'copied ✓' : 'copy'}</button>
 				{#if pinned}<button class="mini ghost" onclick={clearPin}>clear</button>{/if}

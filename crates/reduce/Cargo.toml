@@ -1,0 +1,37 @@
+[package]
+name = "graphoscope-reduce"
+version = "0.1.0"
+edition = "2021"
+description = "Reference-guided pangenome subgraph simplification and walk aggregation for Graphoscope"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "graphoscope-reduce"
+path = "src/main.rs"
+
+[dependencies]
+# GBZ-base is used unmodified, from crates.io, purely for indexed subgraph
+# retrieval (open the .gbz.db, extract the locus). Everything downstream of
+# that — simplification, walk aggregation, the reduced GFA — is ours.
+gbz-base = "0.5.1"
+gbz = "0.6.1"
+getopts = "0.2"
+
+# GBZ-base pulls in SQLite; keep the bundled build so the wasm target compiles
+# the C sources itself (see scripts/build-wasm.sh for the WASI SDK flags).
+rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
+
+# simple-sds 0.4.1 does not build for 32-bit wasm as published: it defaults to a
+# `libc`/mmap feature wasm lacks, and two size constants overflow a 32-bit usize.
+# scripts/build-wasm.sh vendors a patched copy here before building.
+# (Native builds resolve this the same way, so both targets stay identical.)
+[patch.crates-io]
+simple-sds = { path = "vendor/simple-sds" }
+
+[profile.release]
+opt-level = 3
+lto = true
+# Smaller wasm: the browser downloads this on every cold load.
+codegen-units = 1
+panic = "abort"

@@ -8,6 +8,9 @@ export interface Segment {
 	id: string;
 	seq: string;
 	length: number;
+	/** Distinct non-reference walks through this node (from a `WC` tag in the
+	 * reduced GFA). Undefined in full GFA, where coverage is counted from walks. */
+	coverage?: number;
 }
 
 export interface Link {
@@ -15,6 +18,8 @@ export interface Link {
 	fromOrient: Orient;
 	to: string;
 	toOrient: Orient;
+	/** Distinct non-reference walks across this edge (from a `WC` tag). */
+	coverage?: number;
 }
 
 export interface Step {
@@ -34,6 +39,26 @@ export interface Walk {
 	tags: Record<string, string>;
 }
 
+/** Locus-level counts carried by the reduced GFA's `X` stats line, so the viewer
+ * can report walk/site/collapse totals without ever seeing the dropped walks. */
+export interface ReducedStats {
+	segmentsBefore: number;
+	segmentsAfter: number;
+	linksBefore: number;
+	linksAfter: number;
+	sites: number;
+	nodesRemoved: number;
+	snpCount: number;
+	basesRemoved: number;
+	unchopMerges: number;
+	/** All walks in the subgraph (reference + haplotypes), before aggregation. */
+	totalWalks: number;
+	/** Non-reference walks (the ones aggregated into coverage tags). */
+	nonRefWalks: number;
+	samples: number;
+	totalSequenceBp: number;
+}
+
 export interface Gfa {
 	headers: string[];
 	segments: Map<string, Segment>;
@@ -41,11 +66,28 @@ export interface Gfa {
 	walks: Walk[];
 	/** Reference sample names from the header RS tag, if present. */
 	referenceSamples: string[];
+	/** Present when parsed from a reduced GFA (server-side simplified + walk-counted). */
+	reduced?: ReducedStats;
+}
+
+/** Reads an integer GFA tag like `WC:i:42` from a line's trailing fields. */
+function intTag(fields: string[], tag: string): number | undefined {
+	const prefix = `${tag}:i:`;
+	for (const f of fields) {
+		if (f.startsWith(prefix)) {
+			const n = Number(f.slice(prefix.length));
+			return Number.isFinite(n) ? n : undefined;
+		}
+	}
+	return undefined;
 }
 
 function parseSteps(walk: string): Step[] {
 	const steps: Step[] = [];
-	const re = /([<>])(\d+)/g;
+	// A step is an orientation (`>`/`<`) followed by a segment id. The id is not
+	// always numeric: the reduced GFA's unchop-merged chains have ids like `u1`,
+	// so match any run of non-orientation, non-space characters, not just digits.
+	const re = /([<>])([^<>\s]+)/g;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(walk)) !== null) {
 		steps.push({ id: m[2], orient: m[1] === '>' ? '+' : '-' });
@@ -59,6 +101,7 @@ export function parseGfa(text: string): Gfa {
 	const links: Link[] = [];
 	const walks: Walk[] = [];
 	let referenceSamples: string[] = [];
+	let reduced: ReducedStats | undefined;
 
 	for (const line of text.split('\n')) {
 		if (line.length === 0) continue;
@@ -73,9 +116,28 @@ export function parseGfa(text: string): Gfa {
 				}
 				break;
 			}
+			case 'X': {
+				// Reduced-GFA stats line (custom record emitted by `query --format reduced`).
+				reduced = {
+					segmentsBefore: intTag(f, 'SB') ?? 0,
+					segmentsAfter: intTag(f, 'SA') ?? 0,
+					linksBefore: intTag(f, 'LB') ?? 0,
+					linksAfter: intTag(f, 'LA') ?? 0,
+					sites: intTag(f, 'ST') ?? 0,
+					nodesRemoved: intTag(f, 'NR') ?? 0,
+					snpCount: intTag(f, 'SN') ?? 0,
+					basesRemoved: intTag(f, 'BR') ?? 0,
+					unchopMerges: intTag(f, 'UM') ?? 0,
+					totalWalks: intTag(f, 'TW') ?? 0,
+					nonRefWalks: intTag(f, 'NW') ?? 0,
+					samples: intTag(f, 'NS') ?? 0,
+					totalSequenceBp: intTag(f, 'TS') ?? 0
+				};
+				break;
+			}
 			case 'S': {
 				const seq = f[2] ?? '';
-				segments.set(f[1], { id: f[1], seq, length: seq.length });
+				segments.set(f[1], { id: f[1], seq, length: seq.length, coverage: intTag(f.slice(3), 'WC') });
 				break;
 			}
 			case 'L': {
@@ -83,7 +145,8 @@ export function parseGfa(text: string): Gfa {
 					from: f[1],
 					fromOrient: f[2] as Orient,
 					to: f[3],
-					toOrient: f[4] as Orient
+					toOrient: f[4] as Orient,
+					coverage: intTag(f.slice(5), 'WC')
 				});
 				break;
 			}
@@ -109,7 +172,7 @@ export function parseGfa(text: string): Gfa {
 		}
 	}
 
-	return { headers, segments, links, walks, referenceSamples };
+	return { headers, segments, links, walks, referenceSamples, reduced };
 }
 
 export interface GfaStats {
@@ -129,14 +192,18 @@ export interface GfaStats {
 export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 	let totalSequenceBp = 0;
 	for (const s of gfa.segments.values()) totalSequenceBp += s.length;
-	const samples = new Set(gfa.walks.map((w) => w.sample));
 	const ref = referenceSample ? gfa.walks.find((w) => w.sample === referenceSample) : undefined;
+	// In reduced mode the non-reference walks have been aggregated away, so the
+	// live `walks`/sample counts would undercount — use the totals the reducer
+	// recorded on the `X` line instead.
+	const walks = gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length;
+	const samples = gfa.reduced ? gfa.reduced.samples : new Set(gfa.walks.map((w) => w.sample)).size;
 	return {
 		segments: gfa.segments.size,
 		links: gfa.links.length,
-		walks: gfa.walks.length,
+		walks,
 		totalSequenceBp,
-		samples: samples.size,
+		samples,
 		referencePathBp: ref ? ref.end - ref.start : null
 	};
 }
