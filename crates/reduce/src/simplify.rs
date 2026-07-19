@@ -121,7 +121,10 @@ fn neighbours<'a>(
 
 pub struct CollapsePlan {
     pub removed_nodes: HashSet<NodeId>,
-    collapsed_spans: Vec<(usize, usize)>,
+    /// Collapsed reference spans, ascending by start. `span_max_h` is the
+    /// running maximum of the ends, so `span_of` can binary-search (see there).
+    span_l: Vec<usize>,
+    span_max_h: Vec<usize>,
     ref_index: HashMap<NodeId, usize>,
     ref_steps: Vec<Step>,
     pub sites: usize,
@@ -378,9 +381,19 @@ pub fn plan_collapse(
         bases_removed += r.bases_removed;
     }
 
+    // Spans come out ascending by start; precompute the prefix max of the ends.
+    let span_l: Vec<usize> = collapsed_spans.iter().map(|&(l, _)| l).collect();
+    let mut span_max_h: Vec<usize> = Vec::with_capacity(collapsed_spans.len());
+    let mut running = 0usize;
+    for &(_, h) in &collapsed_spans {
+        running = running.max(h);
+        span_max_h.push(running);
+    }
+
     CollapsePlan {
         removed_nodes,
-        collapsed_spans,
+        span_l,
+        span_max_h,
         ref_index,
         ref_steps: ref_steps.to_vec(),
         sites,
@@ -397,10 +410,24 @@ impl CollapsePlan {
     fn is_ref(&self, id: NodeId) -> bool {
         self.ref_index.contains_key(&id)
     }
+    /// Is the reference stretch between two reference nodes inside a collapsed
+    /// span (i.e. does some span `[l,h]` satisfy `l <= lo && hi <= h`)?
+    ///
+    /// The reroute asks this once per step transition, so a linear scan over
+    /// the spans makes the whole pass O(steps x spans) — on a 200 kb locus with
+    /// thousands of collapsed sites that alone cost ~55 s. Spans are produced in
+    /// ascending `l` order, so binary-searching for the last span with `l <= lo`
+    /// and consulting a prefix maximum of `h` answers it in O(log n).
     fn span_of(&self, a: NodeId, b: NodeId) -> bool {
         let (x, y) = (self.idx_of(a), self.idx_of(b));
         let (lo, hi) = if x <= y { (x, y) } else { (y, x) };
-        self.collapsed_spans.iter().any(|&(l, h)| l <= lo && hi <= h)
+        // Rightmost span whose start is <= lo.
+        let i = match self.span_l.binary_search(&lo) {
+            Ok(i) => i,
+            Err(0) => return false,
+            Err(i) => i - 1,
+        };
+        self.span_max_h[i] >= hi
     }
     /// Reference interior steps between two reference nodes.
     fn interior_between(&self, from: NodeId, to: NodeId, out: &mut Vec<Step>) {
