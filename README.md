@@ -147,6 +147,10 @@ tags, an `X` line of locus-level counts, and only the reference `W` line.
 scripts/build-wasm.sh     # → static/query.wasm
 ```
 
+`static/query.wasm` is checked in deliberately, so a clone builds and deploys with
+no Rust toolchain and the Pages workflow stays a plain static build. Rebuild it
+(and commit the result) only when `crates/reduce` changes.
+
 The script fetches a pinned `simple-sds` and applies
 `scripts/simple-sds-wasm32.patch` — it doesn't build for 32-bit wasm as published
 (it defaults to a `libc`/mmap feature wasm lacks, and two size constants overflow a
