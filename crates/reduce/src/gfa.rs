@@ -1,190 +1,218 @@
-//! GFA model, parser, and the reduced-GFA writer.
+//! GFA plumbing: a streaming line sink, zero-allocation line/step parsing, and
+//! the reduced-GFA writer.
 //!
-//! The model mirrors the parsed `Gfa` in the browser's `src/lib/gfa.ts`, so the
-//! simplification here and the (still-used, for the playground) TypeScript
-//! implementation stay directly comparable. Node identity is the segment id
-//! string, orientation-independent; orientation rides on each step/link as
-//! `rev` (true = `-`).
+//! Nothing here ever holds the whole GFA. `LineSink` implements `Write` so
+//! GBZ-base can serialize a subgraph straight through it, dispatching one
+//! complete line at a time; walks are consumed as they stream past and dropped.
+//! Node ids are `u64` throughout — they arrive numeric from GBZ-base, and only
+//! become strings at output (where unchopped chains print as `u<first>`).
 
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-#[derive(Clone)]
-pub struct Segment {
-    pub id: String,
-    pub seq: Vec<u8>,
-    pub length: usize,
-}
+pub type NodeId = u64;
 
 #[derive(Clone)]
+pub struct Segment {
+    pub id: NodeId,
+    pub seq: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
 pub struct Link {
-    pub from: String,
+    pub from: NodeId,
     pub from_rev: bool,
-    pub to: String,
+    pub to: NodeId,
     pub to_rev: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Step {
-    pub id: String,
+    pub id: NodeId,
     pub rev: bool,
 }
 
-#[derive(Clone)]
-pub struct Walk {
+/// The reference walk — the only walk we keep, since it anchors the layout and
+/// is the one `W` line the output carries.
+#[derive(Clone, Default)]
+pub struct RefWalk {
     pub sample: String,
     pub hap: usize,
     pub seq_id: String,
     pub start: usize,
     pub end: usize,
     pub steps: Vec<Step>,
-    pub is_ref: bool,
 }
 
-/// Insertion-ordered segment map, matching the iteration semantics of the JS
-/// `Map` the TypeScript implementation uses (segments are emitted in the order
-/// they arrived, not sorted).
-#[derive(Clone, Default)]
-pub struct OrderedSegments {
-    order: Vec<String>,
-    map: HashMap<String, Segment>,
+//-----------------------------------------------------------------------------
+// Streaming sink.
+
+/// A `Write` that splits its input into lines and hands each complete line to a
+/// callback. Only a single line is ever buffered, so serializing a subgraph
+/// through it costs O(longest line) rather than O(whole GFA).
+pub struct LineSink<F: FnMut(&[u8])> {
+    buf: Vec<u8>,
+    on_line: F,
 }
 
-impl OrderedSegments {
-    pub fn new() -> Self {
-        Self::default()
+impl<F: FnMut(&[u8])> LineSink<F> {
+    pub fn new(on_line: F) -> Self {
+        LineSink { buf: Vec::with_capacity(4096), on_line }
     }
-    pub fn insert(&mut self, seg: Segment) {
-        if !self.map.contains_key(&seg.id) {
-            self.order.push(seg.id.clone());
-        }
-        self.map.insert(seg.id.clone(), seg);
-    }
-    pub fn get(&self, id: &str) -> Option<&Segment> {
-        self.map.get(id)
-    }
-    pub fn contains(&self, id: &str) -> bool {
-        self.map.contains_key(id)
-    }
-    /// Bulk removal in one pass — removing ids one at a time would be O(n) each.
-    pub fn remove_all(&mut self, ids: &std::collections::HashSet<String>) {
-        self.order.retain(|id| !ids.contains(id));
-        for id in ids {
-            self.map.remove(id);
+    /// Flush any trailing line that wasn't newline-terminated.
+    pub fn finish(mut self) {
+        if !self.buf.is_empty() {
+            (self.on_line)(&self.buf);
+            self.buf.clear();
         }
     }
-    pub fn len(&self) -> usize {
-        self.map.len()
-    }
-    pub fn len_of(&self, id: &str) -> usize {
-        self.map.get(id).map(|s| s.length).unwrap_or(0)
-    }
-    pub fn iter(&self) -> impl Iterator<Item = &Segment> {
-        self.order.iter().map(move |id| &self.map[id])
-    }
-    pub fn keys(&self) -> impl Iterator<Item = &String> {
-        self.order.iter()
-    }
 }
 
-pub struct Gfa {
-    pub segments: OrderedSegments,
-    pub links: Vec<Link>,
-    pub walks: Vec<Walk>,
-    pub reference_samples: Vec<String>,
-}
-
-/// Parses the GFA that GBZ-base's `Subgraph::write_gfa` emits.
-///
-/// Only the record types that one produces are handled (`H`, `S`, `L`, `W`);
-/// anything else is ignored. The reference walk is the one whose sample matches
-/// the header's `RS:Z:` tag — GBZ-base writes it first and gives the rest the
-/// sample name `unknown`.
-pub fn parse_gfa(text: &str) -> Gfa {
-    let mut segments = OrderedSegments::new();
-    let mut links: Vec<Link> = Vec::new();
-    let mut walks: Vec<Walk> = Vec::new();
-    let mut reference_samples: Vec<String> = Vec::new();
-
-    for line in text.lines() {
-        if line.is_empty() {
-            continue;
+impl<F: FnMut(&[u8])> Write for LineSink<F> {
+    fn write(&mut self, mut data: &[u8]) -> io::Result<usize> {
+        let total = data.len();
+        while let Some(nl) = data.iter().position(|&b| b == b'\n') {
+            if self.buf.is_empty() {
+                (self.on_line)(&data[..nl]);
+            } else {
+                self.buf.extend_from_slice(&data[..nl]);
+                // Take the buffer out so the callback can borrow self freely.
+                let line = std::mem::take(&mut self.buf);
+                (self.on_line)(&line);
+                self.buf = line;
+                self.buf.clear();
+            }
+            data = &data[nl + 1..];
         }
-        let mut f = line.split('\t');
-        match f.next() {
-            Some("H") => {
-                for tag in f {
-                    if let Some(rest) = tag.strip_prefix("RS:Z:") {
-                        reference_samples =
-                            rest.split(' ').filter(|s| !s.is_empty()).map(String::from).collect();
-                    }
+        self.buf.extend_from_slice(data);
+        Ok(total)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+//-----------------------------------------------------------------------------
+// Line parsing (borrowing, no allocation except where a value is kept).
+
+fn field(line: &[u8], n: usize) -> Option<&[u8]> {
+    line.split(|&b| b == b'\t').nth(n)
+}
+
+fn parse_u64(b: &[u8]) -> Option<u64> {
+    if b.is_empty() {
+        return None;
+    }
+    let mut v: u64 = 0;
+    for &c in b {
+        if !c.is_ascii_digit() {
+            return None;
+        }
+        v = v.checked_mul(10)?.checked_add((c - b'0') as u64)?;
+    }
+    Some(v)
+}
+
+pub fn line_type(line: &[u8]) -> u8 {
+    *line.first().unwrap_or(&0)
+}
+
+/// `S <id> <seq>`
+pub fn parse_segment(line: &[u8]) -> Option<Segment> {
+    let id = parse_u64(field(line, 1)?)?;
+    let seq = field(line, 2).unwrap_or_default().to_vec();
+    Some(Segment { id, seq })
+}
+
+/// `L <from> <+-> <to> <+-> <overlap>`
+pub fn parse_link(line: &[u8]) -> Option<Link> {
+    let from = parse_u64(field(line, 1)?)?;
+    let from_rev = field(line, 2) == Some(b"-");
+    let to = parse_u64(field(line, 3)?)?;
+    let to_rev = field(line, 4) == Some(b"-");
+    Some(Link { from, from_rev, to, to_rev })
+}
+
+/// Reference-sample names from an `H` line's `RS:Z:` tag.
+pub fn parse_reference_samples(line: &[u8]) -> Option<Vec<String>> {
+    for f in line.split(|&b| b == b'\t') {
+        if let Some(rest) = f.strip_prefix(b"RS:Z:") {
+            return Some(
+                String::from_utf8_lossy(rest)
+                    .split(' ')
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect(),
+            );
+        }
+    }
+    None
+}
+
+/// The sample name of a `W` line, without copying.
+pub fn walk_sample(line: &[u8]) -> &[u8] {
+    field(line, 1).unwrap_or_default()
+}
+
+/// `W <sample> <hap> <contig> <start> <end> <walk>` — metadata only.
+pub fn parse_walk_meta(line: &[u8]) -> Option<(String, usize, String, usize, usize)> {
+    let sample = String::from_utf8_lossy(field(line, 1)?).into_owned();
+    let hap = parse_u64(field(line, 2)?)? as usize;
+    let seq_id = String::from_utf8_lossy(field(line, 3)?).into_owned();
+    let start = parse_u64(field(line, 4)?)? as usize;
+    let end = parse_u64(field(line, 5)?)? as usize;
+    Some((sample, hap, seq_id, start, end))
+}
+
+/// The raw walk field (`>1<2>3`) of a `W` line.
+pub fn walk_field(line: &[u8]) -> &[u8] {
+    field(line, 6).unwrap_or_default()
+}
+
+/// Iterates a walk field's oriented steps without allocating.
+pub struct StepIter<'a> {
+    b: &'a [u8],
+    i: usize,
+}
+
+impl<'a> StepIter<'a> {
+    pub fn new(b: &'a [u8]) -> Self {
+        StepIter { b, i: 0 }
+    }
+}
+
+impl Iterator for StepIter<'_> {
+    type Item = Step;
+    fn next(&mut self) -> Option<Step> {
+        while self.i < self.b.len() {
+            let rev = match self.b[self.i] {
+                b'>' => false,
+                b'<' => true,
+                _ => {
+                    self.i += 1;
+                    continue;
                 }
+            };
+            let start = self.i + 1;
+            let mut j = start;
+            while j < self.b.len() && self.b[j] != b'>' && self.b[j] != b'<' {
+                j += 1;
             }
-            Some("S") => {
-                let id = f.next().unwrap_or_default().to_string();
-                let seq = f.next().unwrap_or_default().as_bytes().to_vec();
-                let length = seq.len();
-                segments.insert(Segment { id, seq, length });
+            self.i = j;
+            if let Some(id) = parse_u64(&self.b[start..j]) {
+                return Some(Step { id, rev });
             }
-            Some("L") => {
-                let from = f.next().unwrap_or_default().to_string();
-                let from_rev = f.next() == Some("-");
-                let to = f.next().unwrap_or_default().to_string();
-                let to_rev = f.next() == Some("-");
-                links.push(Link { from, from_rev, to, to_rev });
-            }
-            Some("W") => {
-                let sample = f.next().unwrap_or_default().to_string();
-                let hap = f.next().unwrap_or_default().parse().unwrap_or(0);
-                let seq_id = f.next().unwrap_or_default().to_string();
-                let start = f.next().unwrap_or_default().parse().unwrap_or(0);
-                let end = f.next().unwrap_or_default().parse().unwrap_or(0);
-                let steps = parse_steps(f.next().unwrap_or_default());
-                walks.push(Walk { sample, hap, seq_id, start, end, steps, is_ref: false });
-            }
-            _ => {}
         }
+        None
     }
-
-    // Mark the reference walk (first one matching a declared reference sample).
-    if let Some(rs) = reference_samples.first() {
-        if let Some(w) = walks.iter_mut().find(|w| &w.sample == rs) {
-            w.is_ref = true;
-        }
-    }
-
-    Gfa { segments, links, walks, reference_samples }
 }
 
-/// Splits a GFA walk field (`>12<34>56`) into oriented steps.
-fn parse_steps(walk: &str) -> Vec<Step> {
-    let mut steps = Vec::new();
-    let bytes = walk.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let rev = match bytes[i] {
-            b'>' => false,
-            b'<' => true,
-            _ => {
-                i += 1;
-                continue;
-            }
-        };
-        let start = i + 1;
-        let mut j = start;
-        while j < bytes.len() && bytes[j] != b'>' && bytes[j] != b'<' {
-            j += 1;
-        }
-        if j > start {
-            steps.push(Step { id: walk[start..j].to_string(), rev });
-        }
-        i = j;
-    }
-    steps
-}
+//-----------------------------------------------------------------------------
+// Output.
 
 /// Locus-level counts carried on the reduced GFA's `X` line, so the viewer can
 /// report walk/collapse totals without ever seeing the dropped walks.
+#[derive(Default)]
 pub struct ReduceStats {
     pub segments_before: usize,
     pub segments_after: usize,
@@ -201,24 +229,47 @@ pub struct ReduceStats {
     pub total_sequence_bp: usize,
 }
 
-/// Writes the reduced GFA: header, an `X` stats line, segments and links each
-/// carrying a `WC` walk-coverage tag, and only the reference `W` line.
+/// A segment in the reduced output. `members > 1` means it is an unchopped
+/// chain, which prints as `u<first member>`.
+pub struct OutSegment {
+    pub first_member: NodeId,
+    pub members: usize,
+    pub seq: Vec<u8>,
+    pub length: usize,
+}
+
+impl OutSegment {
+    pub fn write_id<W: Write>(&self, out: &mut W) -> io::Result<()> {
+        if self.members > 1 {
+            write!(out, "u{}", self.first_member)
+        } else {
+            write!(out, "{}", self.first_member)
+        }
+    }
+}
+
+/// Writes the reduced GFA: header, `X` stats, segments and links with their
+/// `WC` walk-coverage tags, and only the reference `W` line.
+#[allow(clippy::too_many_arguments)]
 pub fn write_reduced<W: Write>(
-    gfa: &Gfa,
+    reference_samples: &[String],
     stats: &ReduceStats,
-    node_cov: &HashMap<String, usize>,
-    edge_cov: &HashMap<(String, String), usize>,
-    ref_idx: Option<usize>,
-    output: &mut W,
+    segments: &[OutSegment],
+    links: &[(u32, bool, u32, bool)],
+    node_cov: &[u32],
+    edge_cov: &HashMap<(u32, u32), u32>,
+    ref_walk: Option<&RefWalk>,
+    ref_steps_out: &[(u32, bool)],
+    out: &mut W,
 ) -> io::Result<()> {
-    if gfa.reference_samples.is_empty() {
-        output.write_all(b"H\tVN:Z:1.1\n")?;
+    if reference_samples.is_empty() {
+        out.write_all(b"H\tVN:Z:1.1\n")?;
     } else {
-        writeln!(output, "H\tVN:Z:1.1\tRS:Z:{}", gfa.reference_samples.join(" "))?;
+        writeln!(out, "H\tVN:Z:1.1\tRS:Z:{}", reference_samples.join(" "))?;
     }
 
     writeln!(
-        output,
+        out,
         "X\tSB:i:{}\tSA:i:{}\tLB:i:{}\tLA:i:{}\tST:i:{}\tNR:i:{}\tSN:i:{}\tBR:i:{}\tUM:i:{}\tTW:i:{}\tNW:i:{}\tNS:i:{}\tTS:i:{}",
         stats.segments_before,
         stats.segments_after,
@@ -235,52 +286,45 @@ pub fn write_reduced<W: Write>(
         stats.total_sequence_bp,
     )?;
 
-    for seg in gfa.segments.iter() {
-        let wc = node_cov.get(&seg.id).copied().unwrap_or(0);
-        output.write_all(b"S\t")?;
-        output.write_all(seg.id.as_bytes())?;
-        output.write_all(b"\t")?;
-        output.write_all(&seg.seq)?;
-        writeln!(output, "\tWC:i:{}", wc)?;
+    for (i, seg) in segments.iter().enumerate() {
+        out.write_all(b"S\t")?;
+        seg.write_id(out)?;
+        out.write_all(b"\t")?;
+        out.write_all(&seg.seq)?;
+        writeln!(out, "\tWC:i:{}", node_cov.get(i).copied().unwrap_or(0))?;
     }
 
-    for l in &gfa.links {
-        let wc = edge_cov.get(&pair_key(&l.from, &l.to)).copied().unwrap_or(0);
-        writeln!(
-            output,
-            "L\t{}\t{}\t{}\t{}\t0M\tWC:i:{}",
-            l.from,
-            if l.from_rev { '-' } else { '+' },
-            l.to,
-            if l.to_rev { '-' } else { '+' },
-            wc,
-        )?;
+    for &(from, from_rev, to, to_rev) in links {
+        let wc = edge_cov.get(&edge_key(from, to)).copied().unwrap_or(0);
+        out.write_all(b"L\t")?;
+        segments[from as usize].write_id(out)?;
+        out.write_all(if from_rev { b"\t-\t" } else { b"\t+\t" })?;
+        segments[to as usize].write_id(out)?;
+        out.write_all(if to_rev { b"\t-\t0M\t" } else { b"\t+\t0M\t" })?;
+        writeln!(out, "WC:i:{}", wc)?;
     }
 
-    if let Some(ri) = ref_idx {
-        let w = &gfa.walks[ri];
-        output.write_all(b"W\t")?;
-        output.write_all(w.sample.as_bytes())?;
-        write!(output, "\t{}\t", w.hap)?;
-        output.write_all(w.seq_id.as_bytes())?;
-        write!(output, "\t{}\t{}\t", w.start, w.end)?;
-        let mut walk = Vec::with_capacity(w.steps.len() * 4);
-        for s in &w.steps {
-            walk.push(if s.rev { b'<' } else { b'>' });
-            walk.extend_from_slice(s.id.as_bytes());
+    if let Some(w) = ref_walk {
+        out.write_all(b"W\t")?;
+        out.write_all(w.sample.as_bytes())?;
+        write!(out, "\t{}\t", w.hap)?;
+        out.write_all(w.seq_id.as_bytes())?;
+        write!(out, "\t{}\t{}\t", w.start, w.end)?;
+        for &(idx, rev) in ref_steps_out {
+            out.write_all(if rev { b"<" } else { b">" })?;
+            segments[idx as usize].write_id(out)?;
         }
-        output.write_all(&walk)?;
-        output.write_all(b"\n")?;
+        out.write_all(b"\n")?;
     }
 
     Ok(())
 }
 
-/// Canonical (order-independent) key for an undirected node pair.
-pub fn pair_key(a: &str, b: &str) -> (String, String) {
-    if a < b {
-        (a.to_string(), b.to_string())
+/// Canonical (order-independent) key for an undirected edge between output segments.
+pub fn edge_key(a: u32, b: u32) -> (u32, u32) {
+    if a <= b {
+        (a, b)
     } else {
-        (b.to_string(), a.to_string())
+        (b, a)
     }
 }
