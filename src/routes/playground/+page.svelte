@@ -15,7 +15,6 @@
 
 	let selectedId = $state(ALL_FIXTURES[0].id);
 	let maxVariant = $state(50);
-	let showSimplified = $state(true);
 
 	const fixture = $derived<Fixture>(
 		ALL_FIXTURES.find((f) => f.id === selectedId) ?? ALL_FIXTURES[0]
@@ -123,9 +122,6 @@
 				collapse variants ≤
 				<input type="number" min="1" max="2000" bind:value={maxVariant} /> bp
 			</label>
-			<label class="chk">
-				<input type="checkbox" bind:checked={showSimplified} /> show simplified side
-			</label>
 		</div>
 		<p class="desc">{fixture.description}</p>
 	</section>
@@ -166,23 +162,21 @@
 		{/if}
 	</section>
 
-	<div class="compare" class:solo={!showSimplified}>
+	<div class="compare">
 		<section class="panel">
 			<h2 class="panel-title">Original · {parsed.segments.size} nodes</h2>
 			<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} />
 		</section>
-		{#if showSimplified}
-			<section class="panel">
-				<h2 class="panel-title">
-					Simplified · {reduced ? reduced.segments.size : '…'} nodes
-				</h2>
-				{#if reduced}
-					<GraphLayoutView gfa={reduced} referenceSample={fixture.referenceSample} />
-				{:else}
-					<p class="muted small">{running ? 'reducing…' : 'no result'}</p>
-				{/if}
-			</section>
-		{/if}
+		<section class="panel">
+			<h2 class="panel-title">
+				Simplified · {reduced ? reduced.segments.size : '…'} nodes
+			</h2>
+			{#if reduced}
+				<GraphLayoutView gfa={reduced} referenceSample={fixture.referenceSample} />
+			{:else}
+				<p class="muted small">{running ? 'reducing…' : 'no result'}</p>
+			{/if}
+		</section>
 	</div>
 
 	{#if reduced}
@@ -237,11 +231,6 @@
 		align-items: center;
 		flex-wrap: wrap;
 	}
-	.chk {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-	}
 	label {
 		font-size: 0.9rem;
 	}
@@ -280,9 +269,6 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 1rem;
-	}
-	.compare.solo {
-		grid-template-columns: 1fr;
 	}
 	.compare .panel {
 		margin-bottom: 1rem;
