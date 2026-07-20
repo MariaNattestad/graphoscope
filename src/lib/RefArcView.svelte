@@ -19,12 +19,11 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
-	// Sub-threshold variants are already collapsed in the wasm reduce, so this no
-	// longer exists to hide routine noise — anything small that survived did so
-	// because its site failed a safety check (a cycle, an inversion, an edge no
-	// walk confirms), which makes it worth seeing. Hence a default of 0: show
-	// everything that made it through, and let this filter down to big events.
-	let minLen = $state(0);
+	// Small variants under the collapse threshold are mostly gone already (the
+	// wasm reduce pops them); the ones that survive did so because their site
+	// failed a safety check. Defaulting to 50 keeps the view about structural
+	// variation — drop it to 1 to see the awkward small survivors too.
+	let minLen = $state(50);
 	let pinned = $state<Ev | null>(null);
 	let hovered = $state<Ev | null>(null);
 	let viewWin = $state<{ start: number; end: number } | null>(null);

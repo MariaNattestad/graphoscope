@@ -11,9 +11,9 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa | null; referenceSample: string } = $props();
 
-	// See RefArcView: small variants are collapsed upstream now, so the ones that
-	// survive are the structurally awkward ones worth looking at. Default to 0.
-	let minLen = $state(0);
+	// See RefArcView: keep the default at the collapse threshold so this view is
+	// about structural variation rather than the small survivors.
+	let minLen = $state(50);
 	let notice = $state('');
 	let loading = $state(false);
 	let container = $state<HTMLDivElement | null>(null);
