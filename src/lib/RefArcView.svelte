@@ -19,7 +19,12 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
-	let minLen = $state(50);
+	// Sub-threshold variants are already collapsed in the wasm reduce, so this no
+	// longer exists to hide routine noise — anything small that survived did so
+	// because its site failed a safety check (a cycle, an inversion, an edge no
+	// walk confirms), which makes it worth seeing. Hence a default of 0: show
+	// everything that made it through, and let this filter down to big events.
+	let minLen = $state(0);
 	let pinned = $state<Ev | null>(null);
 	let hovered = $state<Ev | null>(null);
 	let viewWin = $state<{ start: number; end: number } | null>(null);
@@ -131,7 +136,7 @@
 	<div class="head">
 		<span>Reference: <code>{model?.refName ?? '—'}</code></span>
 		<label class="thresh">
-			min variant size (ins/del)
+			hide variants under
 			<input type="number" min="1" max="1000" bind:value={minLen} /> bp
 		</label>
 		<span class="muted">{model?.events.length ?? 0} nodes shown</span>

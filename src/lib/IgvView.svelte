@@ -11,7 +11,9 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa | null; referenceSample: string } = $props();
 
-	let minLen = $state(50);
+	// See RefArcView: small variants are collapsed upstream now, so the ones that
+	// survive are the structurally awkward ones worth looking at. Default to 0.
+	let minLen = $state(0);
 	let notice = $state('');
 	let loading = $state(false);
 	let container = $state<HTMLDivElement | null>(null);
@@ -206,7 +208,7 @@
 			{/if}
 		</span>
 		<label class="thresh">
-			min variant size (ins/del)
+			hide variants under
 			<input type="number" min="1" max="1000" bind:value={minLen} /> bp
 		</label>
 		{#if model}<span class="muted">{model.events.length} non-reference nodes</span>{/if}

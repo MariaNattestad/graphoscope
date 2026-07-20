@@ -1,10 +1,24 @@
 <script lang="ts">
-	// Raw-data inspector: shows the parsed graph as tables plus the raw GFA text,
-	// so you can see exactly what the query returns before designing a viz.
+	// Data inspector for the simplified graph: the tables and GFA text here are
+	// the reduced output (small variants collapsed, haplotype walks aggregated
+	// into WC counts), i.e. exactly what the views above are drawing. The
+	// unsimplified subgraph is available as a download rather than a view — it
+	// is the large, walk-dominated response we deliberately never parse.
 	import type { Gfa } from './gfa';
 	import { trackEvent } from './analytics';
 
-	let { gfa, rawText }: { gfa: Gfa; rawText: string } = $props();
+	let {
+		gfa,
+		rawText,
+		downloadRaw,
+		downloadingRaw = false
+	}: {
+		gfa: Gfa;
+		rawText: string;
+		/** Fetches and downloads the unsimplified subgraph (every haplotype walk). */
+		downloadRaw?: () => void;
+		downloadingRaw?: boolean;
+	} = $props();
 
 	const PREVIEW = 25; // rows shown per table
 
@@ -34,7 +48,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = 'subgraph.gfa';
+		a.download = 'subgraph.simplified.gfa';
 		a.click();
 		URL.revokeObjectURL(url);
 	}
@@ -55,9 +69,14 @@
 		<button class:active={tab === 'links'} onclick={() => (tab = 'links')}
 			>Links ({gfa.links.length})</button
 		>
-		<button class:active={tab === 'raw'} onclick={() => (tab = 'raw')}>Raw GFA</button>
+		<button class:active={tab === 'raw'} onclick={() => (tab = 'raw')}>GFA text</button>
 		<span class="spacer"></span>
-		<button class="ghost" onclick={download}>Download .gfa</button>
+		<button class="ghost" onclick={download}>Download simplified .gfa</button>
+		{#if downloadRaw}
+			<button class="ghost" onclick={downloadRaw} disabled={downloadingRaw}>
+				{downloadingRaw ? 'Fetching…' : 'Download unsimplified .gfa'}
+			</button>
+		{/if}
 	</div>
 
 	{#if tab === 'walks'}
@@ -124,7 +143,7 @@
 		{#if gfa.links.length > PREVIEW}<p class="note">showing {PREVIEW} of {gfa.links.length} links</p>{/if}
 	{:else}
 		<pre class="rawtext">{rawPreview}</pre>
-		{#if rawLineCount > RAW_LINES}<p class="note">showing first {RAW_LINES} of {rawLineCount.toLocaleString()} lines — use “Download .gfa” for all</p>{/if}
+		{#if rawLineCount > RAW_LINES}<p class="note">showing first {RAW_LINES} of {rawLineCount.toLocaleString()} lines — use the download buttons above for all</p>{/if}
 	{/if}
 </div>
 
@@ -158,6 +177,10 @@
 	}
 	.tabs button.ghost {
 		background: #fff;
+	}
+	.tabs button:disabled {
+		opacity: 0.6;
+		cursor: default;
 	}
 	table {
 		border-collapse: collapse;

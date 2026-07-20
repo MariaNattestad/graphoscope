@@ -99,7 +99,6 @@
 	let rawGfa = $state<string>('');
 	// Set only if the reduced GFA somehow still exceeds MAX_GFA_BYTES.
 	let oversized = $state<{ bytes: number } | null>(null);
-	let maxVariant = $state(50);
 	let fetchInfo = $state<{
 		requestCount: number;
 		bytesFetched: number;
@@ -198,9 +197,11 @@
 			// The wasm query (crates/reduce) simplifies and walk-counts before it
 			// ever returns, so the browser receives a graph sized by topology, not by
 			// haplotype count. This is what keeps a large/repetitive locus from
-			// blowing up the tab.
-			locus.maxVariant = maxVariant;
-			lastQueriedMaxVariant = maxVariant;
+			// blowing up the tab. The collapse threshold is the reducer's default;
+			// it isn't exposed as a control because changing it re-runs the query
+			// and then re-runs the layout, which is a long stall for a knob most
+			// people don't need. Anyone who wants the uncollapsed graph can
+			// download it instead (downloadRaw below).
 		} catch (e) {
 			// parseLocus's own message already gives a coordinate example; just add
 			// the gene-symbol option rather than repeating the same example twice.
@@ -255,21 +256,6 @@
 		}
 	}
 
-	// Simplification happens in the wasm query now, so a different threshold needs
-	// a fresh query rather than a local re-simplify. The database blocks are
-	// already cached and the reduced response is small, so this is quick.
-	//
-	// The new value is read off the event rather than from `maxVariant`: a
-	// `bind:value` and this handler both listen for the same change event, and
-	// relying on the binding having landed first silently skipped the re-query.
-	let lastQueriedMaxVariant = 50;
-	function onMaxVariantChange(e: Event) {
-		const value = Number((e.currentTarget as HTMLSelectElement).value);
-		if (!Number.isFinite(value) || value === lastQueriedMaxVariant || !gfa) return;
-		maxVariant = value;
-		lastQueriedMaxVariant = value;
-		run();
-	}
 
 	function selectGraph(id: 'grch38' | 'chm13') {
 		if (id === graphId) return;
@@ -284,6 +270,38 @@
 	function runExampleGene(gene: string) {
 		locusText = gene;
 		run('example');
+	}
+
+	// Fetches the unsimplified subgraph — every haplotype walk — purely to hand
+	// the user a file. It is streamed straight to a download and never parsed:
+	// on a repetitive locus this is the tens-of-megabytes response that the
+	// reduced pipeline exists to avoid putting in the browser's heap.
+	let downloadingRaw = $state(false);
+	async function downloadRaw() {
+		if (!client || downloadingRaw) return;
+		downloadingRaw = true;
+		try {
+			const locus = parseLocus(locusText, graph.referenceSample);
+			locus.sample = graph.referenceSample;
+			locus.raw = true;
+			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
+			if (!result.ok) {
+				error = `${result.error}\n${result.stderr ?? ''}`.trim();
+				return;
+			}
+			trackEvent('widget_interact', { widget: 'raw_data', action: 'download_unsimplified_gfa' });
+			const blob = new Blob([result.gfa ?? ''], { type: 'text/plain' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${locus.contig}_${locus.start}-${locus.end}.unsimplified.gfa`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			downloadingRaw = false;
+		}
 	}
 
 	function fmtBytes(n: number): string {
@@ -440,24 +458,13 @@
 					a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
 				</p>
 			{/if}
-			<div class="simplify-bar">
-				<label class="opt">
-					collapse variants ≤
-					<select value={maxVariant} onchange={onMaxVariantChange}>
-						{#each [10, 25, 50, 100, 250, 500] as bp (bp)}
-							<option value={bp}>{bp}</option>
-						{/each}
-					</select> bp
-				</label>
-				{#if gfa.reduced}
-					<span class="muted small">
-						{gfa.reduced.segmentsBefore.toLocaleString()} →
-						<b>{gfa.reduced.segmentsAfter.toLocaleString()}</b>
-						nodes · {gfa.reduced.sites.toLocaleString()} sites collapsed
-					</span>
-				{/if}
-				<span class="muted small">changing this re-runs the query</span>
-			</div>
+			{#if gfa.reduced}
+				<p class="muted small">
+					Simplified to <b>{gfa.reduced.segmentsAfter.toLocaleString()}</b> nodes from
+					{gfa.reduced.segmentsBefore.toLocaleString()} · {gfa.reduced.sites.toLocaleString()} sites
+					collapsed (variants under 50 bp)
+				</p>
+			{/if}
 		</section>
 
 		<section class="panel">
@@ -479,8 +486,8 @@
 		</section>
 
 		<section class="panel">
-			<h2 class="panel-title">Raw data</h2>
-			<RawDataView {gfa} rawText={rawGfa} />
+			<h2 class="panel-title">Simplified graph data</h2>
+			<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
 		</section>
 	{/if}
 
@@ -603,8 +610,7 @@
 	label {
 		font-size: 0.9rem;
 	}
-	input[type='text'],
-	select {
+	input[type='text'] {
 		font: inherit;
 		padding: 0.35rem 0.5rem;
 		border: 1px solid #ccc;
@@ -733,24 +739,6 @@
 		word-break: break-all;
 	}
 
-	.simplify-bar {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		flex-wrap: wrap;
-		margin-top: 0.6rem;
-		padding-top: 0.6rem;
-		border-top: 1px solid #f0f0f0;
-	}
-	.simplify-bar .opt {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.85rem;
-	}
-	.simplify-bar .opt select {
-		padding: 0.15rem 0.35rem;
-	}
 	.gene-tag {
 		margin: 0 0 0.6rem;
 	}
