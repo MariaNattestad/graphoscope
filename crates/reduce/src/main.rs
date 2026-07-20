@@ -57,6 +57,23 @@ fn main() {
 fn run() -> Result<(), String> {
     let config = Config::parse()?;
 
+    // `--gfa` reduces a GFA file directly, skipping GBZ-base entirely. This is
+    // how /playground runs the real pipeline over its fixture graphs, and how
+    // the tests in src/tests.rs drive it — so what the playground shows and what
+    // CI asserts are the same code path the app uses on a live locus.
+    if let Some(path) = &config.gfa_input {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
+        let stdout = io::stdout();
+        let mut out = io::BufWriter::new(stdout.lock());
+        reduce::reduce(
+            |w: &mut dyn Write| w.write_all(text.as_bytes()),
+            config.max_variant,
+            &mut out,
+        )
+        .map_err(|e| e.to_string())?;
+        return out.flush().map_err(|e| e.to_string());
+    }
+
     // Indexed retrieval (GBZ-base).
     let database = GBZBase::open(&config.filename)?;
     let mut graph_if = GraphInterface::new(&database)?;
@@ -87,6 +104,8 @@ struct Config {
     max_variant: usize,
     /// Emit the unsimplified subgraph (all walks) instead of the reduced GFA.
     raw: bool,
+    /// Reduce this GFA file directly, instead of querying a database.
+    gfa_input: Option<String>,
 }
 
 impl Config {
@@ -107,15 +126,34 @@ impl Config {
             "INT",
         );
         opts.optflag("", "raw", "emit the unsimplified subgraph, with every haplotype walk");
+        opts.optopt("", "gfa", "reduce this GFA file instead of querying a database", "FILE");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let header = format!(
-            "Usage: {} --sample STR --contig STR -i INT..INT [options] graph.gbz.db",
-            program
+            "Usage: {} --sample STR --contig STR -i INT..INT [options] graph.gbz.db\n   or: {} --gfa FILE [--max-variant INT]",
+            program, program
         );
         if matches.opt_present("help") {
             eprint!("{}", opts.usage(&header));
             process::exit(0);
+        }
+
+        let max_variant_of = |m: &getopts::Matches| -> Result<usize, String> {
+            match m.opt_str("max-variant") {
+                Some(s) => s.parse().map_err(|e| format!("Failed to parse --max-variant: {}", e)),
+                None => Ok(DEFAULT_MAX_VARIANT),
+            }
+        };
+
+        // GFA input needs none of the query arguments.
+        if let Some(gfa) = matches.opt_str("gfa") {
+            return Ok(Config {
+                filename: String::new(),
+                query: SubgraphQuery::path_interval(&FullPathName::reference("", ""), 0..0),
+                max_variant: max_variant_of(&matches)?,
+                raw: false,
+                gfa_input: Some(gfa),
+            });
         }
 
         let filename = matches
@@ -135,15 +173,12 @@ impl Config {
             Some(s) => s.parse().map_err(|e| format!("Failed to parse --context: {}", e))?,
             None => DEFAULT_CONTEXT,
         };
-        let max_variant = match matches.opt_str("max-variant") {
-            Some(s) => s.parse().map_err(|e| format!("Failed to parse --max-variant: {}", e))?,
-            None => DEFAULT_MAX_VARIANT,
-        };
+        let max_variant = max_variant_of(&matches)?;
 
         let path_name = FullPathName::reference(&sample, &contig);
         let query = SubgraphQuery::path_interval(&path_name, interval).with_context(context);
 
-        Ok(Config { filename, query, max_variant, raw: matches.opt_present("raw") })
+        Ok(Config { filename, query, max_variant, raw: matches.opt_present("raw"), gfa_input: None })
     }
 }
 
