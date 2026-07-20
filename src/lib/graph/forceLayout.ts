@@ -78,6 +78,10 @@ export interface LayoutOptions {
 	maxEdgesPerSegment?: number;
 	unitEdgeLength?: number;
 	iterations?: number;
+	/** Keep every non-reference bubble on one side of the backbone (above it)
+	 * instead of letting them fall either way. Halves the vertical spread and
+	 * leaves the space below the reference line free for coordinate tracks. */
+	bubblesAbove?: boolean;
 	/** Route each structural link through an invisible bend node so it curves
 	 * clear of the backbone instead of lying invisibly on top of it. Costs one
 	 * simulation node per link; turn off for a rough, faster layout. */
@@ -91,7 +95,8 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 	maxEdgesPerSegment: 60,
 	unitEdgeLength: 18,
 	iterations: 350,
-	bendNodes: true
+	bendNodes: true,
+	bubblesAbove: false
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -273,7 +278,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	for (const chain of chains) {
 		if (assignedSegIds.has(chain.segId)) continue;
 		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
-		const sign = stableUnit(chain.segId) >= 0 ? 1 : -1;
+		const sign = opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
 		const baseX = anchor.x + stableUnit(chain.segId) * BUBBLE_Y_STEP;
 		const baseY = anchor.y + sign * anchor.hops * BUBBLE_Y_STEP;
 
@@ -295,7 +300,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const a = nodesById.get(path.fromNode)!;
 		const b = nodesById.get(path.toNode)!;
 		bend.x = (a.x + b.x) / 2 + stableUnit(path.bendNode) * 6;
-		bend.y = (a.y + b.y) / 2 + (stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1) * BUBBLE_Y_STEP * 0.4;
+		const bendSign = opts.bubblesAbove ? -1 : stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1;
+		bend.y = (a.y + b.y) / 2 + bendSign * BUBBLE_Y_STEP * 0.4;
 		bend.componentBaselineY = a.componentBaselineY;
 	}
 
@@ -311,6 +317,13 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			if (node.fy != null) continue; // backbone nodes are fixed, exempt
 			const dy = node.y - node.componentBaselineY;
 			const absDy = Math.abs(dy);
+			// One-sided: anything that has drifted below the line is pushed back up
+			// through it, not away from it, so the space below stays clear.
+			if (opts.bubblesAbove && dy > -minBaselineClearance) {
+				const target = node.componentBaselineY - minBaselineClearance;
+				node.vy = (node.vy ?? 0) + (target - node.y) * BASELINE_PUSH_GAIN * alpha;
+				continue;
+			}
 			if (absDy < minBaselineClearance) {
 				const dir = dy !== 0 ? Math.sign(dy) : stableUnit(node.id) >= 0 ? 1 : -1;
 				const push = (minBaselineClearance - absDy) * BASELINE_PUSH_GAIN * alpha;

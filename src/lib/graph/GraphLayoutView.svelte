@@ -27,6 +27,11 @@
 		fast?: boolean;
 	} = $props();
 
+	// Prototype: keep all non-reference bubbles above the reference line, which
+	// halves the vertical spread and leaves the space underneath free for
+	// coordinate tracks (genes, and whatever else gets anchored to bp).
+	let bubblesAbove = $state(false);
+
 	let selected = $state<string | null>(null);
 
 	$effect(() => {
@@ -147,8 +152,15 @@
 		// to 60 sub-nodes for a smooth strand) and cuts the iterations, which is
 		// where nearly all the time goes on a big graph.
 		const options = fast
-			? { referenceSample, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
-			: { referenceSample };
+			? {
+					referenceSample,
+					maxEdgesPerSegment: 1,
+					targetTotalSubNodes: 400,
+					iterations: 60,
+					bendNodes: false,
+					bubblesAbove
+				}
+			: { referenceSample, bubblesAbove };
 		w.postMessage({ id, graph: $state.snapshot(graph), options } satisfies LayoutRequest);
 	});
 
@@ -164,6 +176,9 @@
 <div class="wrap">
 	<div class="head">
 		<span class="muted">{adapted.keptSegments.toLocaleString()} nodes</span>
+		<label class="opt" title="Keep variant bubbles on one side, freeing the space below the reference line">
+			<input type="checkbox" bind:checked={bubblesAbove} /> one-sided
+		</label>
 		{#if computing}
 			<span class="computing">computing…</span>
 		{:else if layout}
