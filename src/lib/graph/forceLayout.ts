@@ -78,6 +78,10 @@ export interface LayoutOptions {
 	maxEdgesPerSegment?: number;
 	unitEdgeLength?: number;
 	iterations?: number;
+	/** Route each structural link through an invisible bend node so it curves
+	 * clear of the backbone instead of lying invisibly on top of it. Costs one
+	 * simulation node per link; turn off for a rough, faster layout. */
+	bendNodes?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 }
@@ -86,7 +90,8 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 	targetTotalSubNodes: 2500,
 	maxEdgesPerSegment: 60,
 	unitEdgeLength: 18,
-	iterations: 350
+	iterations: 350,
+	bendNodes: true
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -177,6 +182,22 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const toNode = link.toOrient === '+' ? toChain.nodeIds[0] : toChain.nodeIds[toChain.nodeIds.length - 1];
 
 		if (fromNode === toNode) continue;
+
+		// Without bend nodes the link is a single straight edge. They roughly
+		// double the simulation's node count (one per link), which is the largest
+		// remaining cost on a dense graph — so a rough layout skips them and the
+		// canvas falls back to drawing a straight line.
+		if (!opts.bendNodes) {
+			links.push({
+				source: fromNode,
+				target: toNode,
+				distance: opts.unitEdgeLength,
+				strength: 0.3,
+				kind: 'structural'
+			});
+			structuralLinkPaths.push({ from: link.from, to: link.to, fromNode, toNode, bendNode: '' });
+			continue;
+		}
 
 		const bendNode = `bend::${bendCounter++}`;
 		nodesById.set(bendNode, {
@@ -269,6 +290,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// simulation has a direction to push in rather than starting exactly on the
 	// line it's meant to bend away from.
 	for (const path of structuralLinkPaths) {
+		if (!path.bendNode) continue;
 		const bend = nodesById.get(path.bendNode)!;
 		const a = nodesById.get(path.fromNode)!;
 		const b = nodesById.get(path.toNode)!;

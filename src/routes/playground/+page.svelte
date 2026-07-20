@@ -164,8 +164,11 @@
 
 	<div class="compare">
 		<section class="panel">
-			<h2 class="panel-title">Original · {parsed.segments.size} nodes</h2>
-			<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} />
+			<h2 class="panel-title">
+				Original · {parsed.segments.size} nodes
+				<span class="muted small">rough layout</span>
+			</h2>
+			<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} fast />
 		</section>
 		<section class="panel">
 			<h2 class="panel-title">

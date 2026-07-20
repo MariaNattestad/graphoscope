@@ -13,7 +13,19 @@
 	import GraphCanvas from './GraphCanvas.svelte';
 	import { trackEvent } from '../analytics';
 
-	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
+	let {
+		gfa,
+		referenceSample,
+		fast = false
+	}: {
+		gfa: Gfa;
+		referenceSample: string;
+		/** Trade layout quality for speed: draw each segment as a single node
+		 * instead of a smooth chain of sub-nodes, and stop the simulation early.
+		 * For showing the shape of a big unsimplified graph, where the point is
+		 * how tangled it is rather than reading any individual node. */
+		fast?: boolean;
+	} = $props();
 
 	let selected = $state<string | null>(null);
 
@@ -131,7 +143,13 @@
 		// locus can have millions), so nothing upstream de-proxies them for us
 		// — this snapshot is the one place that must, since it's the one place
 		// with a hard structured-clone requirement.
-		w.postMessage({ id, graph: $state.snapshot(graph), options: { referenceSample } } satisfies LayoutRequest);
+		// Fast mode collapses each segment to one simulation node (instead of up
+		// to 60 sub-nodes for a smooth strand) and cuts the iterations, which is
+		// where nearly all the time goes on a big graph.
+		const options = fast
+			? { referenceSample, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
+			: { referenceSample };
+		w.postMessage({ id, graph: $state.snapshot(graph), options } satisfies LayoutRequest);
 	});
 
 	onDestroy(() => worker?.terminate());
