@@ -36,6 +36,12 @@
 		return steps.length > n ? head + '…' : head;
 	}
 
+	/** "1,2,4 +47 more" — the full list is on the cell's title attribute. */
+	function membersPreview(members: string[], n = 3): string {
+		if (members.length <= n) return members.join(',');
+		return `${members.slice(0, n).join(',')} +${members.length - n} more`;
+	}
+
 	function seqPreview(seq: string, n = 40): string {
 		return seq.length > n ? seq.slice(0, n) + '…' : seq;
 	}
@@ -110,12 +116,18 @@
 		</table>
 		{#if gfa.walks.length > PREVIEW}<p class="note">showing {PREVIEW} of {gfa.walks.length} walks</p>{/if}
 	{:else if tab === 'segments'}
+		{#if isReduced}
+			<p class="desc">
+				A <code>u</code>-prefixed id is a chain of original nodes that unchop merged into one; the
+				<code>from nodes</code> column lists the pangenome node ids it stands for, since the merged
+				name itself exists only here.
+			</p>
+		{/if}
 		<table>
 			<thead
 				><tr
-					><th>id</th><th>length (bp)</th>{#if isReduced}<th>walks (WC)</th>{/if}<th
-						>sequence (preview)</th
-					></tr
+					><th>id</th><th>length (bp)</th>{#if isReduced}<th>walks (WC)</th><th>from nodes</th
+						>{/if}<th>sequence (preview)</th></tr
 				></thead
 			>
 			<tbody>
@@ -123,6 +135,8 @@
 					<tr
 						><td class="mono">{s.id}</td><td>{s.length}</td>{#if isReduced}<td
 								>{(s.coverage ?? 0).toLocaleString()}</td
+							><td class="mono members" title={s.members ? s.members.join(',') : ''}
+								>{s.members ? membersPreview(s.members) : '—'}</td
 							>{/if}<td class="mono">{seqPreview(s.seq)}</td></tr
 					>
 				{/each}
@@ -199,6 +213,10 @@
 	}
 	.mono {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	}
+	.members {
+		color: #666;
+		cursor: help;
 	}
 	.rawtext {
 		background: #0f172a;

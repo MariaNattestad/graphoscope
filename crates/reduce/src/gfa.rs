@@ -229,22 +229,49 @@ pub struct ReduceStats {
     pub total_sequence_bp: usize,
 }
 
-/// A segment in the reduced output. `members > 1` means it is an unchopped
-/// chain, which prints as `u<first member>`.
+/// A segment in the reduced output.
+///
+/// A segment that unchop merged carries all the node ids it absorbed, and is
+/// named `u<first member>` to keep it distinguishable from a real node id. The
+/// members are emitted as an `MB` tag so a node on screen can always be traced
+/// back to the pangenome nodes it stands for — without that, `u1` is a name
+/// that exists nowhere in the source graph and can't be looked up in vg,
+/// Bandage, or anything else. Node ids are small next to the sequence they
+/// carry, so recording them costs little.
 pub struct OutSegment {
-    pub first_member: NodeId,
-    pub members: usize,
+    pub members: Vec<NodeId>,
     pub seq: Vec<u8>,
     pub length: usize,
 }
 
 impl OutSegment {
+    pub fn first_member(&self) -> NodeId {
+        self.members.first().copied().unwrap_or(0)
+    }
+    pub fn is_chain(&self) -> bool {
+        self.members.len() > 1
+    }
     pub fn write_id<W: Write>(&self, out: &mut W) -> io::Result<()> {
-        if self.members > 1 {
-            write!(out, "u{}", self.first_member)
+        if self.is_chain() {
+            write!(out, "u{}", self.first_member())
         } else {
-            write!(out, "{}", self.first_member)
+            write!(out, "{}", self.first_member())
         }
+    }
+    /// `MB:Z:1,2,3` — the original node ids this segment absorbed. Only written
+    /// for merged chains; a lone node's id already says it.
+    pub fn write_members<W: Write>(&self, out: &mut W) -> io::Result<()> {
+        if !self.is_chain() {
+            return Ok(());
+        }
+        out.write_all(b"\tMB:Z:")?;
+        for (i, m) in self.members.iter().enumerate() {
+            if i > 0 {
+                out.write_all(b",")?;
+            }
+            write!(out, "{}", m)?;
+        }
+        Ok(())
     }
 }
 
@@ -304,6 +331,7 @@ pub fn write_reduced<W: Write>(
         if e > 0 {
             write!(out, "\tWE:i:{}", e)?;
         }
+        seg.write_members(out)?;
         out.write_all(b"\n")?;
     }
 

@@ -583,8 +583,7 @@ pub fn plan_unchop(graph: &Graph) -> UnchopPlan {
             merges += members.len() - 1;
         }
         segments.push(OutSegment {
-            first_member: start,
-            members: members.len(),
+            members,
             seq: if has_seq { seq } else { Vec::new() },
             length,
         });
@@ -596,8 +595,7 @@ pub fn plan_unchop(graph: &Graph) -> UnchopPlan {
             let idx = segments.len() as u32;
             out_of.insert(seg.id, idx);
             segments.push(OutSegment {
-                first_member: seg.id,
-                members: 1,
+                members: vec![seg.id],
                 seq: seg.seq.clone(),
                 length: seg.seq.len(),
             });
