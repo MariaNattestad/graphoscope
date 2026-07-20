@@ -1,18 +1,32 @@
 <script lang="ts">
-	// Raw-data inspector: shows the parsed graph as tables plus the raw GFA text,
-	// so you can see exactly what the query returns before designing a viz.
+	// Data inspector for the simplified graph: the tables and GFA text here are
+	// the reduced output (small variants collapsed, haplotype walks aggregated
+	// into WC counts), i.e. exactly what the views above are drawing. The
+	// unsimplified subgraph is available as a download rather than a view — it
+	// is the large, walk-dominated response we deliberately never parse.
 	import type { Gfa } from './gfa';
 	import { trackEvent } from './analytics';
 
 	let {
 		gfa,
 		rawText,
-		reducedMode = null
-	}: { gfa: Gfa; rawText: string; reducedMode?: 'reference-only' | null } = $props();
+		downloadRaw,
+		downloadingRaw = false
+	}: {
+		gfa: Gfa;
+		rawText: string;
+		/** Fetches and downloads the unsimplified subgraph (every haplotype walk). */
+		downloadRaw?: () => void;
+		downloadingRaw?: boolean;
+	} = $props();
 
 	const PREVIEW = 25; // rows shown per table
 
 	const segments = $derived([...gfa.segments.values()]);
+	const isReduced = $derived(gfa.reduced !== undefined);
+	// Walk count to advertise: in reduced mode the non-reference walks were
+	// aggregated into coverage counts, so `gfa.walks` holds only the reference.
+	const walkCount = $derived(gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length);
 
 	function stepsPreview(steps: { id: string; orient: string }[], n = 6): string {
 		const head = steps
@@ -34,7 +48,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = 'subgraph.gfa';
+		a.download = 'subgraph.simplified.gfa';
 		a.click();
 		URL.revokeObjectURL(url);
 	}
@@ -47,7 +61,7 @@
 <div class="raw">
 	<div class="tabs">
 		<button class:active={tab === 'walks'} onclick={() => (tab = 'walks')}
-			>Walks ({gfa.walks.length})</button
+			>{isReduced ? 'Reference path' : `Walks (${walkCount.toLocaleString()})`}</button
 		>
 		<button class:active={tab === 'segments'} onclick={() => (tab = 'segments')}
 			>Segments ({gfa.segments.size})</button
@@ -55,28 +69,30 @@
 		<button class:active={tab === 'links'} onclick={() => (tab = 'links')}
 			>Links ({gfa.links.length})</button
 		>
-		<button class:active={tab === 'raw'} onclick={() => (tab = 'raw')}>Raw GFA</button>
+		<button class:active={tab === 'raw'} onclick={() => (tab = 'raw')}>GFA text</button>
 		<span class="spacer"></span>
-		<button class="ghost" onclick={download}>Download .gfa</button>
+		<button class="ghost" onclick={download}>Download simplified .gfa</button>
+		{#if downloadRaw}
+			<button class="ghost" onclick={downloadRaw} disabled={downloadingRaw}>
+				{downloadingRaw ? 'Fetching…' : 'Download unsimplified .gfa'}
+			</button>
+		{/if}
 	</div>
 
 	{#if tab === 'walks'}
-		{#if reducedMode === 'reference-only'}
-			<p class="skip-warning">
-				<b>Non-reference walks are skipped.</b> This region's full (all-haplotype) query was too large
-				to parse and render safely, so every haplotype walk except the reference's was dropped before
-				this data ever reached the browser — only the reference path is listed below. Segments and
-				links are unaffected (the full structural graph is still shown above); what's missing here is
-				specifically per-haplotype path detail for this locus.
+		{#if isReduced}
+			<p class="desc">
+				The reference path (a GFA <code>W</code>-line) through this subgraph. The other
+				{(walkCount - 1).toLocaleString()} haplotype walks were counted per node and edge — see the
+				<code>walks</code> column under Segments — and dropped before reaching the browser.
+			</p>
+		{:else}
+			<p class="desc">
+				Each row is one haplotype's path (a GFA <code>W</code>-line) through this subgraph, exactly
+				as GBZ-base <code>query</code> extracts it. Haplotypes the graph carries without a sample
+				name (e.g. anonymous minigraph paths) are reported as <code>unknown</code>.
 			</p>
 		{/if}
-		<p class="desc">
-			Each row is one haplotype's path (a GFA <code>W</code>-line) through this subgraph, exactly as
-			GBZ-base <code>query</code> extracts it — <code>sample</code>/<code>hap</code>/<code>contig</code>
-			and the <code>start</code>–<code>end</code> span come from the path metadata stored in the graph.
-			Haplotypes the graph carries without a sample name (e.g. anonymous minigraph paths) are reported
-			by the tool as <code>unknown</code>.
-		</p>
 		<table>
 			<thead>
 				<tr><th>sample</th><th>hap</th><th>contig</th><th>start</th><th>end</th><th>steps</th><th>path (first steps)</th></tr>
@@ -95,10 +111,20 @@
 		{#if gfa.walks.length > PREVIEW}<p class="note">showing {PREVIEW} of {gfa.walks.length} walks</p>{/if}
 	{:else if tab === 'segments'}
 		<table>
-			<thead><tr><th>id</th><th>length (bp)</th><th>sequence (preview)</th></tr></thead>
+			<thead
+				><tr
+					><th>id</th><th>length (bp)</th>{#if isReduced}<th>walks (WC)</th>{/if}<th
+						>sequence (preview)</th
+					></tr
+				></thead
+			>
 			<tbody>
 				{#each segments.slice(0, PREVIEW) as s (s.id)}
-					<tr><td class="mono">{s.id}</td><td>{s.length}</td><td class="mono">{seqPreview(s.seq)}</td></tr>
+					<tr
+						><td class="mono">{s.id}</td><td>{s.length}</td>{#if isReduced}<td
+								>{(s.coverage ?? 0).toLocaleString()}</td
+							>{/if}<td class="mono">{seqPreview(s.seq)}</td></tr
+					>
 				{/each}
 			</tbody>
 		</table>
@@ -117,7 +143,7 @@
 		{#if gfa.links.length > PREVIEW}<p class="note">showing {PREVIEW} of {gfa.links.length} links</p>{/if}
 	{:else}
 		<pre class="rawtext">{rawPreview}</pre>
-		{#if rawLineCount > RAW_LINES}<p class="note">showing first {RAW_LINES} of {rawLineCount.toLocaleString()} lines — use “Download .gfa” for all</p>{/if}
+		{#if rawLineCount > RAW_LINES}<p class="note">showing first {RAW_LINES} of {rawLineCount.toLocaleString()} lines — use the download buttons above for all</p>{/if}
 	{/if}
 </div>
 
@@ -151,6 +177,10 @@
 	}
 	.tabs button.ghost {
 		background: #fff;
+	}
+	.tabs button:disabled {
+		opacity: 0.6;
+		cursor: default;
 	}
 	table {
 		border-collapse: collapse;
@@ -190,17 +220,6 @@
 		font-size: 0.8rem;
 		line-height: 1.5;
 		margin: 0 0 0.7rem;
-		max-width: 80ch;
-	}
-	.skip-warning {
-		color: #92400e;
-		background: #fffbeb;
-		border: 1px solid #fde68a;
-		border-radius: 6px;
-		font-size: 0.8rem;
-		line-height: 1.5;
-		margin: 0 0 0.7rem;
-		padding: 0.5rem 0.7rem;
 		max-width: 80ch;
 	}
 	.desc code {

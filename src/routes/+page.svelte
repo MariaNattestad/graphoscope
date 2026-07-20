@@ -1,19 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
-	import {
-		parseGfa,
-		gfaStats,
-		gfaLightStats,
-		filterToReferenceWalks,
-		type Gfa,
-		type GfaStats
-	} from '$lib/gfa';
+	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RefArcView from '$lib/RefArcView.svelte';
 	import IgvView from '$lib/IgvView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
-	import { simplify } from '$lib/graph/simplify';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
 	import { searchGenes, resolveGene, geneToLocus, type GeneEntry, type RefKey } from '$lib/genes';
 	import { base } from '$app/paths';
@@ -81,14 +73,11 @@
 	let graphId = $state<'grch38' | 'chm13'>('grch38');
 	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
 
-	// A locus that returns a very large subgraph will blow up the browser: the GFA
-	// is parsed into millions of step objects, then simplify deep-copies them, then
-	// each view walks them again — the live-object footprint is ~100× the GFA text,
-	// so the tab freezes then OOMs ("Aw Snap"). We refuse to render past this raw-GFA
-	// size (checked before parsing, so a pathological region never enters the
-	// pipeline). Calibrated empirically: the ~10.5 MB MHC locus renders smoothly, a
-	// ~17 MB (150 kb) region already wedges the tab, so the ceiling sits between —
-	// all built-in example loci are ≤ ~10.5 MB and clear it with headroom.
+	// Backstop only. The walks that used to dominate GFA size (and blow up the tab
+	// once parsed into per-step objects) are aggregated away in the wasm query, so
+	// a reduced response is governed by topology: measured loci from 10 kb to
+	// 3.2 Mb all came back three orders of magnitude under this ceiling. Reaching
+	// it means something pathological, and we refuse rather than try to render.
 	const MAX_GFA_BYTES = 13 * 1024 * 1024;
 
 	// ---- Query state -----------------------------------------------------------
@@ -102,23 +91,14 @@
 	// State
 	let running = $state(false);
 	let error = $state<string | null>(null);
-	// `parsed` is the raw graph from the query; `gfa` is what the widgets see
-	// (simplified upfront, unless the user turns it off).
-	let parsed = $state<Gfa | null>(null);
+	// The graph the widgets see. It arrives already simplified + walk-counted from
+	// the wasm `query --format reduced` step (small-variant popping, unchop, and
+	// per-node/edge coverage tags), so the browser never parses the full,
+	// walk-dominated GFA — that server-side reduction is the whole memory win.
+	let gfa = $state<Gfa | null>(null);
 	let rawGfa = $state<string>('');
-	// Set when even the locally-filtered reference-only graph is still more GFA
-	// than MAX_GFA_BYTES (rare — see run()); the heavy views are skipped and
-	// these line-counted-only stats (never fully parsed) are shown instead.
+	// Set only if the reduced GFA somehow still exceeds MAX_GFA_BYTES.
 	let oversized = $state<{ bytes: number } | null>(null);
-	let lightStats = $state<GfaStats | null>(null);
-	// Set when the full (all-haplotype) query was too big and we locally
-	// dropped every walk but the reference's (see filterToReferenceWalks):
-	// same segments/links (full topology), but only the reference walk — no
-	// per-haplotype coverage/heatmap, raw walk listing, or endpoint-artifact
-	// hints for this locus.
-	let reducedMode = $state<'reference-only' | null>(null);
-	let simplifyOn = $state(true);
-	let maxVariant = $state(50);
 	let fetchInfo = $state<{
 		requestCount: number;
 		bytesFetched: number;
@@ -126,10 +106,6 @@
 		elapsedMs: number;
 	} | null>(null);
 
-	const simplified = $derived(
-		parsed ? simplify(parsed, { referenceSample: graph.referenceSample, maxVariant }) : null
-	);
-	const gfa = $derived(simplifyOn && simplified ? simplified.gfa : parsed);
 	const stats = $derived(gfa ? gfaStats(gfa, graph.referenceSample) : null);
 
 	// ---- Gene-name autocomplete for the Locus field ----------------------------
@@ -202,8 +178,6 @@
 		error = null;
 		oversized = null;
 		queriedGene = null;
-		lightStats = null;
-		reducedMode = null;
 		showSuggest = false;
 		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
@@ -220,7 +194,14 @@
 			}
 			locus = parseLocus(locusText, graph.referenceSample);
 			locus.sample = graph.referenceSample;
-			locus.haplotypes = 'all';
+			// The wasm query (crates/reduce) simplifies and walk-counts before it
+			// ever returns, so the browser receives a graph sized by topology, not by
+			// haplotype count. This is what keeps a large/repetitive locus from
+			// blowing up the tab. The collapse threshold is the reducer's default;
+			// it isn't exposed as a control because changing it re-runs the query
+			// and then re-runs the layout, which is a long stall for a knob most
+			// people don't need. Anyone who wants the uncollapsed graph can
+			// download it instead (downloadRaw below).
 		} catch (e) {
 			// parseLocus's own message already gives a coordinate example; just add
 			// the gene-symbol option rather than repeating the same example twice.
@@ -234,48 +215,31 @@
 				error = `${result.error}\n${result.stderr ?? ''}`.trim();
 				return;
 			}
-			let gfaText = result.gfa ?? '';
+			const gfaText = result.gfa ?? '';
 			fetchInfo = result.stats ?? null;
 
 			if (gfaText.length > MAX_GFA_BYTES) {
-				// Full (all-haplotype) query too big. On a large or repetitive locus,
-				// haplotype walks — not sequence or topology — dominate GFA size (measured
-				// ~97% of bytes on a real large locus): each haplotype can traverse the
-				// same handful of nodes thousands of times. Segments/links are determined
-				// by the query interval, not by which walks reference them, so we can drop
-				// every walk but the reference locally — no second query needed, and no
-				// extra network round-trip for data we already have in hand. This is
-				// typically ~35x smaller, so it usually succeeds where the full query
-				// didn't. Cost: no per-haplotype coverage heatmap, no raw walk listing, no
-				// endpoint-artifact hints for this locus.
-				const refOnlyText = filterToReferenceWalks(gfaText, graph.referenceSample);
-
-				if (refOnlyText.length <= MAX_GFA_BYTES) {
-					gfaText = refOnlyText;
-					reducedMode = 'reference-only';
-				} else {
-					// Even reference-only is too big (rare — topology itself is huge).
-					// Final fallback: line-counted stats only, never fully parsed, so
-					// there's no size this can't at least summarize.
-					lightStats = gfaLightStats(refOnlyText, graph.referenceSample);
-					oversized = { bytes: gfaText.length };
-					parsed = null;
-					rawGfa = '';
-					trackEvent('query', {
-						graph: graph.id,
-						contig: locus.contig,
-						start: locus.start,
-						end: locus.end,
-						span: locus.end - locus.start,
-						input: sourceKind,
-						oversized: true
-					});
-					return;
-				}
+				// Backstop only. The walks are aggregated away before this point, so
+				// the reduced graph is governed by topology and is normally tiny —
+				// measured loci up to 3.2 Mb land three orders of magnitude under this
+				// ceiling. Reaching it means something pathological, so just refuse.
+				oversized = { bytes: gfaText.length };
+				gfa = null;
+				rawGfa = '';
+				trackEvent('query', {
+					graph: graph.id,
+					contig: locus.contig,
+					start: locus.start,
+					end: locus.end,
+					span: locus.end - locus.start,
+					input: sourceKind,
+					oversized: true
+				});
+				return;
 			}
 
 			rawGfa = gfaText;
-			parsed = parseGfa(gfaText);
+			gfa = parseGfa(gfaText);
 			trackEvent('query', {
 				graph: graph.id,
 				contig: locus.contig,
@@ -283,7 +247,6 @@
 				end: locus.end,
 				span: locus.end - locus.start,
 				input: sourceKind,
-				reducedMode: !!reducedMode,
 				oversized: false
 			});
 		} catch (e) {
@@ -292,6 +255,7 @@
 			running = false;
 		}
 	}
+
 
 	function selectGraph(id: 'grch38' | 'chm13') {
 		if (id === graphId) return;
@@ -306,6 +270,38 @@
 	function runExampleGene(gene: string) {
 		locusText = gene;
 		run('example');
+	}
+
+	// Fetches the unsimplified subgraph — every haplotype walk — purely to hand
+	// the user a file. It is streamed straight to a download and never parsed:
+	// on a repetitive locus this is the tens-of-megabytes response that the
+	// reduced pipeline exists to avoid putting in the browser's heap.
+	let downloadingRaw = $state(false);
+	async function downloadRaw() {
+		if (!client || downloadingRaw) return;
+		downloadingRaw = true;
+		try {
+			const locus = parseLocus(locusText, graph.referenceSample);
+			locus.sample = graph.referenceSample;
+			locus.raw = true;
+			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
+			if (!result.ok) {
+				error = `${result.error}\n${result.stderr ?? ''}`.trim();
+				return;
+			}
+			trackEvent('widget_interact', { widget: 'raw_data', action: 'download_unsimplified_gfa' });
+			const blob = new Blob([result.gfa ?? ''], { type: 'text/plain' });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `${locus.contig}_${locus.start}-${locus.end}.unsimplified.gfa`;
+			a.click();
+			URL.revokeObjectURL(url);
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			downloadingRaw = false;
+		}
 	}
 
 	function fmtBytes(n: number): string {
@@ -433,44 +429,9 @@
 	{#if oversized}
 		<section class="panel">
 			<p class="oversized">
-				<b>This region is too large to render, even reference-only.</b> Here's what we can tell
-				you about it without parsing the full thing:
-			</p>
-			{#if lightStats}
-				<div class="stats">
-					<div><b>{lightStats.segments.toLocaleString()}</b><span>segments</span></div>
-					<div><b>{lightStats.links.toLocaleString()}</b><span>links</span></div>
-					<div><b>{lightStats.walks.toLocaleString()}</b><span>haplotype walks</span></div>
-					{#if lightStats.referencePathBp != null}
-						<div><b>{lightStats.referencePathBp.toLocaleString()}</b><span>bp of reference path</span></div>
-					{/if}
-					<div><b>{lightStats.totalSequenceBp.toLocaleString()}</b><span>bp of total sequence</span></div>
-					<div><b>{lightStats.samples.toLocaleString()}</b><span>samples</span></div>
-				</div>
-			{/if}
-			<p class="muted small">
-				~{fmtBytes(oversized.bytes)} of raw graph — parsing and laying that out would use enough
-				memory to crash the tab, so it's been skipped entirely. Try a smaller window (a few
-				hundred kb or less; the built-in examples are ≤ ~100 kb) or a specific gene.
-			</p>
-			{#if fetchInfo}
-				<p class="muted small">
-					Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads · {fetchInfo.elapsedMs}
-					ms
-				</p>
-			{/if}
-		</section>
-	{/if}
-
-	{#if reducedMode === 'reference-only'}
-		<section class="panel reduced-mode">
-			<p class="reduced-note">
-				<b>Showing reference topology only.</b> The full query (every haplotype) was too large to
-				render — on a large or repetitive locus, haplotype walks dominate the data, not sequence or
-				topology. This falls back to the reference path plus the full structural graph (every
-				variant node/edge that exists anywhere in the pangenome is still here), just without
-				per-haplotype coverage: no coverage heatmap, no raw walk listing below, no "N haplotypes
-				support this" counts.
+				<b>This region's graph is too tangled to render.</b> Even after simplification it came back
+				at ~{fmtBytes(oversized.bytes)}, which is far past anything we've seen from a normal locus —
+				try a smaller window or a specific gene.
 			</p>
 		</section>
 	{/if}
@@ -497,24 +458,13 @@
 					a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
 				</p>
 			{/if}
-			<div class="simplify-bar">
-				<label class="opt">
-					<input type="checkbox" bind:checked={simplifyOn} /> simplify graph
-				</label>
-				{#if simplifyOn}
-					<label class="opt">
-						collapse variants ≤
-						<input type="number" min="1" max="1000" bind:value={maxVariant} /> bp
-					</label>
-					{#if simplified && parsed}
-						<span class="muted small">
-							{parsed.segments.size.toLocaleString()} → <b>{simplified.stats.segmentsAfter.toLocaleString()}</b>
-							nodes · {simplified.stats.sites.toLocaleString()} sites collapsed
-							({simplified.stats.snpCount.toLocaleString()} SNPs, {simplified.stats.basesRemoved.toLocaleString()} alt bp)
-						</span>
-					{/if}
-				{/if}
-			</div>
+			{#if gfa.reduced}
+				<p class="muted small">
+					Simplified to <b>{gfa.reduced.segmentsAfter.toLocaleString()}</b> nodes from
+					{gfa.reduced.segmentsBefore.toLocaleString()} · {gfa.reduced.sites.toLocaleString()} sites
+					collapsed (variants under 50 bp)
+				</p>
+			{/if}
 		</section>
 
 		<section class="panel">
@@ -536,8 +486,8 @@
 		</section>
 
 		<section class="panel">
-			<h2 class="panel-title">Raw data</h2>
-			<RawDataView gfa={parsed ?? gfa} rawText={rawGfa} {reducedMode} />
+			<h2 class="panel-title">Simplified graph data</h2>
+			<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
 		</section>
 	{/if}
 
@@ -660,8 +610,7 @@
 	label {
 		font-size: 0.9rem;
 	}
-	input[type='text'],
-	input[type='number'] {
+	input[type='text'] {
 		font: inherit;
 		padding: 0.35rem 0.5rem;
 		border: 1px solid #ccc;
@@ -790,25 +739,6 @@
 		word-break: break-all;
 	}
 
-	.simplify-bar {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		flex-wrap: wrap;
-		margin-top: 0.6rem;
-		padding-top: 0.6rem;
-		border-top: 1px solid #f0f0f0;
-	}
-	.simplify-bar .opt {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.85rem;
-	}
-	.simplify-bar .opt input[type='number'] {
-		width: 4rem;
-		padding: 0.15rem 0.35rem;
-	}
 	.gene-tag {
 		margin: 0 0 0.6rem;
 	}
@@ -845,16 +775,6 @@
 		margin: 0 0 0.4rem;
 		color: #92400e;
 		font-size: 0.9rem;
-		line-height: 1.5;
-	}
-	.reduced-mode {
-		background: #f8faff;
-		border-color: #dbeafe;
-	}
-	.reduced-note {
-		margin: 0;
-		color: #444;
-		font-size: 0.85rem;
 		line-height: 1.5;
 	}
 	.ack-list {

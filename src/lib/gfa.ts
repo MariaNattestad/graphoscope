@@ -8,6 +8,14 @@ export interface Segment {
 	id: string;
 	seq: string;
 	length: number;
+	/** Distinct non-reference walks through this node (from a `WC` tag in the
+	 * reduced GFA). Undefined in full GFA, where coverage is counted from walks. */
+	coverage?: number;
+	/** Non-reference walks that begin (`WS`) or end (`WE`) exactly at this node.
+	 * A walk stopping inside the graph, rather than at the subgraph boundary or
+	 * the far side of a bubble, is the tell for a fragmentary haplotype. */
+	walkStarts?: number;
+	walkEnds?: number;
 }
 
 export interface Link {
@@ -15,6 +23,8 @@ export interface Link {
 	fromOrient: Orient;
 	to: string;
 	toOrient: Orient;
+	/** Distinct non-reference walks across this edge (from a `WC` tag). */
+	coverage?: number;
 }
 
 export interface Step {
@@ -34,6 +44,26 @@ export interface Walk {
 	tags: Record<string, string>;
 }
 
+/** Locus-level counts carried by the reduced GFA's `X` stats line, so the viewer
+ * can report walk/site/collapse totals without ever seeing the dropped walks. */
+export interface ReducedStats {
+	segmentsBefore: number;
+	segmentsAfter: number;
+	linksBefore: number;
+	linksAfter: number;
+	sites: number;
+	nodesRemoved: number;
+	snpCount: number;
+	basesRemoved: number;
+	unchopMerges: number;
+	/** All walks in the subgraph (reference + haplotypes), before aggregation. */
+	totalWalks: number;
+	/** Non-reference walks (the ones aggregated into coverage tags). */
+	nonRefWalks: number;
+	samples: number;
+	totalSequenceBp: number;
+}
+
 export interface Gfa {
 	headers: string[];
 	segments: Map<string, Segment>;
@@ -41,11 +71,28 @@ export interface Gfa {
 	walks: Walk[];
 	/** Reference sample names from the header RS tag, if present. */
 	referenceSamples: string[];
+	/** Present when parsed from a reduced GFA (server-side simplified + walk-counted). */
+	reduced?: ReducedStats;
+}
+
+/** Reads an integer GFA tag like `WC:i:42` from a line's trailing fields. */
+function intTag(fields: string[], tag: string): number | undefined {
+	const prefix = `${tag}:i:`;
+	for (const f of fields) {
+		if (f.startsWith(prefix)) {
+			const n = Number(f.slice(prefix.length));
+			return Number.isFinite(n) ? n : undefined;
+		}
+	}
+	return undefined;
 }
 
 function parseSteps(walk: string): Step[] {
 	const steps: Step[] = [];
-	const re = /([<>])(\d+)/g;
+	// A step is an orientation (`>`/`<`) followed by a segment id. The id is not
+	// always numeric: the reduced GFA's unchop-merged chains have ids like `u1`,
+	// so match any run of non-orientation, non-space characters, not just digits.
+	const re = /([<>])([^<>\s]+)/g;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(walk)) !== null) {
 		steps.push({ id: m[2], orient: m[1] === '>' ? '+' : '-' });
@@ -59,6 +106,7 @@ export function parseGfa(text: string): Gfa {
 	const links: Link[] = [];
 	const walks: Walk[] = [];
 	let referenceSamples: string[] = [];
+	let reduced: ReducedStats | undefined;
 
 	for (const line of text.split('\n')) {
 		if (line.length === 0) continue;
@@ -73,9 +121,36 @@ export function parseGfa(text: string): Gfa {
 				}
 				break;
 			}
+			case 'X': {
+				// Reduced-GFA stats line (custom record emitted by `query --format reduced`).
+				reduced = {
+					segmentsBefore: intTag(f, 'SB') ?? 0,
+					segmentsAfter: intTag(f, 'SA') ?? 0,
+					linksBefore: intTag(f, 'LB') ?? 0,
+					linksAfter: intTag(f, 'LA') ?? 0,
+					sites: intTag(f, 'ST') ?? 0,
+					nodesRemoved: intTag(f, 'NR') ?? 0,
+					snpCount: intTag(f, 'SN') ?? 0,
+					basesRemoved: intTag(f, 'BR') ?? 0,
+					unchopMerges: intTag(f, 'UM') ?? 0,
+					totalWalks: intTag(f, 'TW') ?? 0,
+					nonRefWalks: intTag(f, 'NW') ?? 0,
+					samples: intTag(f, 'NS') ?? 0,
+					totalSequenceBp: intTag(f, 'TS') ?? 0
+				};
+				break;
+			}
 			case 'S': {
 				const seq = f[2] ?? '';
-				segments.set(f[1], { id: f[1], seq, length: seq.length });
+				const tags = f.slice(3);
+				segments.set(f[1], {
+					id: f[1],
+					seq,
+					length: seq.length,
+					coverage: intTag(tags, 'WC'),
+					walkStarts: intTag(tags, 'WS'),
+					walkEnds: intTag(tags, 'WE')
+				});
 				break;
 			}
 			case 'L': {
@@ -83,7 +158,8 @@ export function parseGfa(text: string): Gfa {
 					from: f[1],
 					fromOrient: f[2] as Orient,
 					to: f[3],
-					toOrient: f[4] as Orient
+					toOrient: f[4] as Orient,
+					coverage: intTag(f.slice(5), 'WC')
 				});
 				break;
 			}
@@ -109,7 +185,7 @@ export function parseGfa(text: string): Gfa {
 		}
 	}
 
-	return { headers, segments, links, walks, referenceSamples };
+	return { headers, segments, links, walks, referenceSamples, reduced };
 }
 
 export interface GfaStats {
@@ -129,118 +205,18 @@ export interface GfaStats {
 export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 	let totalSequenceBp = 0;
 	for (const s of gfa.segments.values()) totalSequenceBp += s.length;
-	const samples = new Set(gfa.walks.map((w) => w.sample));
 	const ref = referenceSample ? gfa.walks.find((w) => w.sample === referenceSample) : undefined;
+	// In reduced mode the non-reference walks have been aggregated away, so the
+	// live `walks`/sample counts would undercount — use the totals the reducer
+	// recorded on the `X` line instead.
+	const walks = gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length;
+	const samples = gfa.reduced ? gfa.reduced.samples : new Set(gfa.walks.map((w) => w.sample)).size;
 	return {
 		segments: gfa.segments.size,
 		links: gfa.links.length,
-		walks: gfa.walks.length,
+		walks,
 		totalSequenceBp,
-		samples: samples.size,
+		samples,
 		referencePathBp: ref ? ref.end - ref.start : null
 	};
-}
-
-/**
- * Same output shape as `gfaStats(parseGfa(text))`, but without ever building a
- * `Gfa` object: no `segments` Map, no `Link[]`, and critically no per-step
- * `Step` objects for every walk (parseGfa's `parseSteps` regex is what turns a
- * huge/repetitive locus into millions of tiny objects and crashes the tab).
- * This only reads the handful of fixed fields at the front of each line —
- * for W-lines that means stopping before the walk-string field entirely, so
- * a walk with thousands of steps costs the same as one with a handful.
- * Used as the final fallback for a locus too large to parse/render at all.
- */
-export function gfaLightStats(text: string, referenceSample?: string): GfaStats {
-	let segments = 0;
-	let links = 0;
-	let walks = 0;
-	let totalSequenceBp = 0;
-	const samples = new Set<string>();
-	let referencePathBp: number | null = null;
-
-	const n = text.length;
-	let i = 0;
-	while (i < n) {
-		let eol = text.indexOf('\n', i);
-		if (eol === -1) eol = n;
-		if (eol > i) {
-			const tag = text.charCodeAt(i);
-			if (tag === 83 /* 'S' */) {
-				segments++;
-				// S <id> <seq> — seq is everything after the 2nd tab.
-				const t1 = text.indexOf('\t', i + 2);
-				const t2 = t1 === -1 ? -1 : text.indexOf('\t', t1 + 1);
-				if (t1 !== -1) totalSequenceBp += (t2 === -1 || t2 > eol ? eol : t2) - (t1 + 1);
-			} else if (tag === 76 /* 'L' */) {
-				links++;
-			} else if (tag === 87 /* 'W' */) {
-				walks++;
-				// W <sample> <hapIndex> <seqId> <start> <end> <walk-string...>
-				// The sample field runs from i+2 (right after "W\t") up to the
-				// tab that terminates it — never touch the walk-string field.
-				const t1 = text.indexOf('\t', i + 2);
-				const sampleValid = t1 !== -1 && t1 <= eol;
-				const sample = sampleValid ? text.slice(i + 2, t1) : '';
-				if (sampleValid) samples.add(sample);
-				// Only the reference walk's start/end are worth the extra field
-				// scan (still stops well before the walk-string): <hapIndex>
-				// <seqId> <start> <end> are fields 3-6, i.e. tabs 2-5 after t1.
-				if (sampleValid && referenceSample && sample === referenceSample && referencePathBp === null) {
-					let pos = t1;
-					const tabs: number[] = [];
-					for (let f = 0; f < 4; f++) {
-						pos = text.indexOf('\t', pos + 1);
-						if (pos === -1 || pos > eol) { pos = -1; break; }
-						tabs.push(pos);
-					}
-					if (pos !== -1) {
-						const start = Number(text.slice(tabs[1] + 1, tabs[2]));
-						const end = Number(text.slice(tabs[2] + 1, tabs[3]));
-						if (Number.isFinite(start) && Number.isFinite(end)) referencePathBp = end - start;
-					}
-				}
-			}
-		}
-		i = eol + 1;
-	}
-
-	return { segments, links, walks, totalSequenceBp, samples: samples.size, referencePathBp };
-}
-
-/**
- * Drops every W-line except the reference sample's, keeping every other line
- * (headers, segments, links) untouched. This is a client-side equivalent of
- * `query`'s `--reference-only` flag: on a large or repetitive locus, haplotype
- * walks dominate GFA size (measured ~97% of bytes on a real large locus), not
- * sequence or topology — segments/links are determined by the query interval,
- * not by which walks reference them, so filtering after the fact produces the
- * same result as asking the query tool to skip non-reference walks in the
- * first place (confirmed byte-for-byte against a real `--reference-only`
- * response). Doing this locally means an oversized query's already-fetched
- * response can be downsized without paying for a second round-trip query.
- *
- * Only ever holds the lines being kept in memory, not the discarded walks — a
- * dropped W-line's (potentially huge) walk-string is never even sliced out.
- */
-export function filterToReferenceWalks(text: string, referenceSample: string): string {
-	const out: string[] = [];
-	const n = text.length;
-	let i = 0;
-	while (i < n) {
-		let eol = text.indexOf('\n', i);
-		if (eol === -1) eol = n;
-		if (eol > i) {
-			if (text.charCodeAt(i) === 87 /* 'W' */) {
-				// W <sample> <hapIndex> ... — only the sample field decides keep/drop.
-				const t1 = text.indexOf('\t', i + 2);
-				const sample = t1 !== -1 && t1 <= eol ? text.slice(i + 2, t1) : '';
-				if (sample === referenceSample) out.push(text.slice(i, eol));
-			} else {
-				out.push(text.slice(i, eol));
-			}
-		}
-		i = eol + 1;
-	}
-	return out.join('\n') + '\n';
 }

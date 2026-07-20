@@ -322,18 +322,27 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	const segmentLengths = new Map<string, number>();
 	for (const seg of graph.segments.values()) segmentLengths.set(seg.id, seg.length);
 
-	// Coverage heatmap: count non-reference path traversals per segment.
-	// "Non-reference" excludes whichever path (if any) was picked as the
-	// backbone for its component.
-	const backboneSourceNames = new Set(backbones.filter((b) => b.source !== 'synthetic').map((b) => b.source));
+	// Coverage heatmap: distinct non-reference walks per segment. In reduced mode
+	// this is precomputed server-side (segment.coverage from the `WC` tag), since
+	// the non-reference walks were aggregated away to save memory. Otherwise (full
+	// GFA / playground fixtures) count it from the walks directly, excluding
+	// whichever path was picked as the backbone for its component.
 	const pathCoverage = new Map<string, number>();
-	for (const path of graph.paths) {
-		if (backboneSourceNames.has(path.name)) continue;
-		const seenInThisPath = new Set<string>();
-		for (const step of path.steps) {
-			if (seenInThisPath.has(step.id)) continue; // count each path once per segment
-			seenInThisPath.add(step.id);
-			pathCoverage.set(step.id, (pathCoverage.get(step.id) ?? 0) + 1);
+	const hasReducedCoverage = [...graph.segments.values()].some((s) => s.coverage !== undefined);
+	if (hasReducedCoverage) {
+		for (const seg of graph.segments.values()) pathCoverage.set(seg.id, seg.coverage ?? 0);
+	} else {
+		const backboneSourceNames = new Set(
+			backbones.filter((b) => b.source !== 'synthetic').map((b) => b.source)
+		);
+		for (const path of graph.paths) {
+			if (backboneSourceNames.has(path.name)) continue;
+			const seenInThisPath = new Set<string>();
+			for (const step of path.steps) {
+				if (seenInThisPath.has(step.id)) continue; // count each path once per segment
+				seenInThisPath.add(step.id);
+				pathCoverage.set(step.id, (pathCoverage.get(step.id) ?? 0) + 1);
+			}
 		}
 	}
 	let maxPathCoverage = 0;

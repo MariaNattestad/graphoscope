@@ -31,7 +31,7 @@ export function gfaToGraph(gfa: Gfa, opts: AdaptOptions = {}): AdaptResult {
 
 	const segments: GfaGraph['segments'] = new Map();
 	for (const s of gfa.segments.values()) {
-		segments.set(s.id, { id: s.id, length: s.length, sequence: s.seq, tags: {} });
+		segments.set(s.id, { id: s.id, length: s.length, sequence: s.seq, tags: {}, coverage: s.coverage });
 	}
 
 	const links: GfaLink[] = [];

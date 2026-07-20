@@ -17,8 +17,12 @@ export interface LocusQuery {
 	contig: string; // e.g. "chr6"
 	start: number; // 0-based
 	end: number; // half-open
-	/** Haplotype output mode. */
-	haplotypes?: 'all' | 'distinct' | 'reference-only';
+	/** Longest-path bp threshold for collapsing a small variant. */
+	maxVariant?: number;
+	/** Ask for the unsimplified subgraph (every haplotype walk) instead of the
+	 * reduced GFA. Only for the download button — this is the response the app
+	 * deliberately never parses. */
+	raw?: boolean;
 }
 
 export class GbzClient {
@@ -46,7 +50,11 @@ export class GbzClient {
 		});
 	}
 
-	/** Extract the subgraph for a locus as GFA text. Uses an interval query. */
+	/**
+	 * Extract the subgraph for a locus. The wasm binary (crates/reduce) always
+	 * returns the reduced GFA — simplified, with haplotype walks aggregated into
+	 * per-node/edge counts — so there's no output-format choice to make here.
+	 */
 	query(source: QuerySource, locus: LocusQuery): Promise<QueryResult> {
 		const args = [
 			'--sample',
@@ -56,8 +64,8 @@ export class GbzClient {
 			'--interval',
 			`${locus.start}..${locus.end}`
 		];
-		if (locus.haplotypes === 'distinct') args.push('--distinct');
-		else if (locus.haplotypes === 'reference-only') args.push('--reference-only');
+		if (locus.raw) args.push('--raw');
+		else if (locus.maxVariant != null) args.push('--max-variant', String(locus.maxVariant));
 		return this.send(source, args);
 	}
 

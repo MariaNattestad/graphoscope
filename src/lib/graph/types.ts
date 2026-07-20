@@ -5,6 +5,9 @@ export interface GfaSegment {
 	length: number;
 	sequence?: string;
 	tags: Record<string, string>;
+	/** Distinct non-reference walks through this node, from a reduced GFA's `WC`
+	 * tag. Undefined for full GFA, where coverage is counted from the walks. */
+	coverage?: number;
 }
 
 export interface GfaLink {
