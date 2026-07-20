@@ -3,7 +3,6 @@
 	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RefArcView from '$lib/RefArcView.svelte';
-	import IgvView from '$lib/IgvView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
@@ -483,12 +482,7 @@
 
 		<section class="panel">
 			<h2 class="panel-title">Large non-reference nodes</h2>
-			<RefArcView {gfa} referenceSample={graph.referenceSample} />
-		</section>
-
-		<section class="panel">
-			<h2 class="panel-title">Genome browser (IGV.js)</h2>
-			<IgvView {gfa} referenceSample={graph.referenceSample} />
+			<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
 		</section>
 
 		<section class="panel">
@@ -520,9 +514,9 @@
 					Web Worker and pulls only the few megabytes of database pages a locus actually touches
 					from the file on Cloudflare R2 — an approach inspired by
 					<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
-					The visualizations above (graph layout, variant arcs, the IGV.js
-					track, and the reference-guided simplification) are a few prototypes we built for
-					inspecting a graph's complex patterns around a particular reference locus.
+					The visualizations above (graph layout, variant arcs with a gene track, and the
+					reference-guided simplification) are a few prototypes we built for inspecting a graph's
+					complex patterns around a particular reference locus.
 				</p>
 				<p>
 					Currently showing: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus

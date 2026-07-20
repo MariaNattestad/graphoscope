@@ -51,6 +51,27 @@ export function loadGenes(ref: RefKey): Promise<Map<string, GeneEntry>> {
 	return p;
 }
 
+/**
+ * Genes overlapping a coordinate window, for drawing a gene track against a
+ * locus. Scans the whole map (~20k entries, once per locus) rather than
+ * carrying an interval index — at this size the scan is not worth optimizing.
+ * Sorted by start so a caller can pack them into rows left to right.
+ */
+export async function genesInRange(
+	ref: RefKey,
+	contig: string,
+	start: number,
+	end: number
+): Promise<GeneEntry[]> {
+	const genes = await loadGenes(ref);
+	const out: GeneEntry[] = [];
+	for (const g of genes.values()) {
+		if (g.contig === contig && g.start < end && g.end > start) out.push(g);
+	}
+	out.sort((a, b) => a.start - b.start || a.end - b.end);
+	return out;
+}
+
 /** Exact (case-insensitive) symbol lookup. Returns null if not a known gene. */
 export async function resolveGene(ref: RefKey, symbol: string): Promise<GeneEntry | null> {
 	const genes = await loadGenes(ref);

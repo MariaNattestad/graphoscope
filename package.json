@@ -34,7 +34,6 @@
     "@bjorn3/browser_wasi_shim": "^0.4.2",
     "d3-force": "^3.0.0",
     "d3-selection": "^3.0.0",
-    "d3-zoom": "^3.0.0",
-    "igv": "^3.8.4"
+    "d3-zoom": "^3.0.0"
   }
 }

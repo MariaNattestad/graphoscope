@@ -16,8 +16,13 @@
 		coverageColor,
 		type NonRefEvent as Ev
 	} from './nonRefNodes';
+	import { genesInRange, type GeneEntry, type RefKey } from './genes';
 
-	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
+	let {
+		gfa,
+		referenceSample,
+		refKey
+	}: { gfa: Gfa; referenceSample: string; refKey?: RefKey } = $props();
 
 	// Small variants under the collapse threshold are mostly gone already (the
 	// wasm reduce pops them); the ones that survive did so because their site
@@ -30,13 +35,17 @@
 	let copied = $state(false);
 
 	const W = 1000;
-	const H = 250;
 	const ML = 10;
 	const MR = 10;
 	const TOP = 16;
 	const baseY = 168;
 	const hmY = 176;
 	const hmH = 12;
+	// Gene track sits under the axis labels, in as many rows as it takes to keep
+	// overlapping genes readable.
+	const GENE_TOP = hmY + hmH + 26;
+	const GENE_ROW = 15;
+	const GENE_H = 9;
 
 	// Reset zoom/pin when a new subgraph is loaded.
 	$effect(() => {
@@ -46,6 +55,55 @@
 	});
 
 	const model = $derived(computeNonRefNodes(gfa, referenceSample, minLen));
+
+	// --- gene track -----------------------------------------------------------
+	// Genes are drawn against the same reference axis as the arcs, from the maps
+	// already shipped for the locus search. This replaced an embedded IGV.js
+	// browser, which pulled in a whole genome-browser stack to render what is
+	// really a row of labelled rectangles.
+	let genes = $state<GeneEntry[]>([]);
+	$effect(() => {
+		const m = model;
+		const key = refKey;
+		if (!m || !key) {
+			genes = [];
+			return;
+		}
+		let cancelled = false;
+		genesInRange(key, m.contig, m.genomicStart, m.genomicStart + m.refLen).then((g) => {
+			if (!cancelled) genes = g;
+		});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	/** Packs genes into rows so labels don't collide, greedily left to right. */
+	const geneRows = $derived.by(() => {
+		if (!model || genes.length === 0) return [];
+		const s = win.start;
+		const span = Math.max(1, win.end - win.start);
+		const toX = (bp: number) => ML + ((bp - s) / span) * (W - ML - MR);
+		const rows: Array<Array<{ gene: GeneEntry; x1: number; x2: number; labelEnd: number }>> = [];
+		for (const gene of genes) {
+			const rel1 = gene.start - model.genomicStart;
+			const rel2 = gene.end - model.genomicStart;
+			if (rel2 < s || rel1 > win.end) continue; // outside the zoom window
+			const x1 = Math.max(ML, toX(rel1));
+			const x2 = Math.min(W - MR, toX(rel2));
+			// Reserve room for the label, which is drawn just past the box.
+			const labelEnd = Math.max(x2, x1) + 8 + gene.name.length * 5.6;
+			const item = { gene, x1, x2, labelEnd };
+			const row = rows.find((r) => r.length === 0 || r[r.length - 1].labelEnd + 6 < x1);
+			if (row) row.push(item);
+			else rows.push([item]);
+			if (rows.length > 8) break; // keep the track bounded on gene-dense loci
+		}
+		return rows;
+	});
+
+	// The svg grows with however many gene rows the locus needs.
+	const H = $derived(GENE_TOP + Math.max(1, geneRows.length) * GENE_ROW + 20);
 
 	const win = $derived(viewWin ?? { start: 0, end: model?.refLen ?? 1 });
 	const zoomFactor = $derived(model ? model.refLen / (win.end - win.start) : 1);
@@ -195,7 +253,33 @@
 				<line x1={t.x} y1={hmY + hmH} x2={t.x} y2={hmY + hmH + 4} stroke="#999" stroke-width="1" />
 				<text x={t.x} y={hmY + hmH + 18} font-size="10" fill="#666" text-anchor="middle">{t.label}</text>
 			{/each}
-			<text x={(ML + W - MR) / 2} y={H - 6} font-size="10" fill="#999" text-anchor="middle">{model.contig} reference position (bp)</text>
+			<text x={ML} y={hmY + hmH + 18} font-size="10" fill="#999">{model.contig} reference position (bp)</text>
+
+			<!-- gene track -->
+			{#each geneRows as row, ri (ri)}
+				{#each row as g (g.gene.name)}
+					{@const y = GENE_TOP + ri * GENE_ROW}
+					<rect
+						x={g.x1}
+						y={y}
+						width={Math.max(1.5, g.x2 - g.x1)}
+						height={GENE_H}
+						rx="2"
+						fill="#7c8ea8"
+						opacity="0.85"
+					>
+						<title>{g.gene.name} · {model.contig}:{g.gene.start.toLocaleString()}-{g.gene.end.toLocaleString()}</title>
+					</rect>
+					<text x={Math.max(g.x2, g.x1) + 5} y={y + GENE_H - 1} font-size="9.5" fill="#556">
+						{g.gene.name}
+					</text>
+				{/each}
+			{/each}
+			{#if geneRows.length === 0}
+				<text x={ML} y={GENE_TOP + GENE_H} font-size="9.5" fill="#aaa">
+					{refKey ? 'no annotated genes in this window' : ''}
+				</text>
+			{/if}
 		</svg>
 
 		<div class="legends">
@@ -303,7 +387,7 @@
 		width: 90px;
 		height: 10px;
 		border-radius: 3px;
-		background: linear-gradient(90deg, rgb(56, 142, 60), rgb(16, 60, 24));
+		background: linear-gradient(90deg, rgb(255, 214, 10), rgb(214, 30, 30));
 	}
 	.hover {
 		font-size: 0.85rem;
