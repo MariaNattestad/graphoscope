@@ -31,6 +31,13 @@ export interface SimNode {
 	fy?: number | null;
 	/** The y of this node's component's backbone line, used to keep bubbles from overlapping it. */
 	componentBaselineY: number;
+	/** Where this node was seeded relative to the backbone: the x of the reference
+	 * attachment it hangs off, and the y its BFS depth earns it. Bubbles are pulled
+	 * back toward these so they stay near the reference position they belong to,
+	 * and so depth actually spreads them vertically instead of everything piling
+	 * up against the baseline. Undefined for backbone nodes (which are pinned). */
+	anchorX?: number;
+	targetY?: number;
 }
 
 interface SimLink {
@@ -101,8 +108,19 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 
 /** Vertical spacing between stacked components' backbone baselines. */
 const COMPONENT_V_GAP = 500;
-/** How far off the backbone baseline a bubble node is seeded, per BFS hop. */
+/** Floor for the per-BFS-hop vertical offset of a bubble node. The actual step
+ * is derived from the backbone's width (see bubbleYStep) so the graph keeps a
+ * readable aspect ratio instead of flattening as the locus gets wider. */
 const BUBBLE_Y_STEP = 70;
+/** Ceiling for that derived step, so a whole-chromosome span stays bounded. */
+const MAX_BUBBLE_Y_STEP = 4000;
+/** Backbone width : one hop of vertical offset. ~8 hops then fills a quarter of
+ * the width, which lands near a 4:1 overall aspect on real loci. */
+const BUBBLE_Y_STEP_DIVISOR = 32;
+/** Pull back toward the reference x a bubble attaches to (stops long sideways drift). */
+const ANCHOR_X_STRENGTH = 0.12;
+/** Pull toward the depth-derived y (spreads bubbles vertically). */
+const SPREAD_Y_STRENGTH = 0.08;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
 /** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
@@ -254,6 +272,24 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	});
 
+	// Vertical spacing has to scale with the layout's horizontal extent, which is
+	// set by the locus's bp span. A fixed step made every real locus render as a
+	// flat smear: SMN1 came out 57,366 x 1,085 units — 53:1 — so fitting it to a
+	// 1200x460 canvas left the whole vertical structure occupying 23px. Deriving
+	// the step from the backbone's width targets a readable aspect ratio instead,
+	// clamped so tiny graphs don't explode and huge ones stay bounded.
+	let backboneMinX = Infinity;
+	let backboneMaxX = -Infinity;
+	for (const a of anchors.values()) {
+		backboneMinX = Math.min(backboneMinX, a.x);
+		backboneMaxX = Math.max(backboneMaxX, a.x);
+	}
+	const backboneWidth = Number.isFinite(backboneMinX) ? backboneMaxX - backboneMinX : 0;
+	const bubbleYStep = Math.max(
+		BUBBLE_Y_STEP,
+		Math.min(MAX_BUBBLE_Y_STEP, backboneWidth / BUBBLE_Y_STEP_DIVISOR)
+	);
+
 	// --- Seed off-backbone (bubble) nodes near their nearest backbone attachment ---
 	const adjacency = buildAdjacency(graph);
 	const nearestAnchor = new Map<string, { x: number; y: number; hops: number }>();
@@ -279,14 +315,19 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		if (assignedSegIds.has(chain.segId)) continue;
 		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
 		const sign = opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
-		const baseX = anchor.x + stableUnit(chain.segId) * BUBBLE_Y_STEP;
-		const baseY = anchor.y + sign * anchor.hops * BUBBLE_Y_STEP;
+		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
+		const baseY = anchor.y + sign * anchor.hops * bubbleYStep;
 
 		chain.nodeIds.forEach((nodeId, i) => {
 			const node = nodesById.get(nodeId)!;
 			node.x = baseX + i * opts.unitEdgeLength + stableUnit(nodeId) * 6;
 			node.y = baseY + stableUnit(nodeId + ':y') * 6;
 			node.componentBaselineY = anchor.y;
+			// Remember where this belongs, so the simulation can pull it back
+			// (see anchorForce): the reference x it attaches to, and a y that grows
+			// with BFS depth so nested bubbles stack outward.
+			node.anchorX = anchor.x + i * opts.unitEdgeLength;
+			node.targetY = baseY;
 		});
 	}
 
@@ -301,7 +342,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const b = nodesById.get(path.toNode)!;
 		bend.x = (a.x + b.x) / 2 + stableUnit(path.bendNode) * 6;
 		const bendSign = opts.bubblesAbove ? -1 : stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1;
-		bend.y = (a.y + b.y) / 2 + bendSign * BUBBLE_Y_STEP * 0.4;
+		bend.y = (a.y + b.y) / 2 + bendSign * bubbleYStep * 0.4;
 		bend.componentBaselineY = a.componentBaselineY;
 	}
 
@@ -332,6 +373,25 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	}
 
+	// Pulls each bubble node back toward where it was seeded. Without this,
+	// charge repulsion is the only thing acting along x, so a bubble slides
+	// arbitrarily far from the reference position it actually attaches to — the
+	// long thin strands trailing across the canvas. The y half does the opposite
+	// job: it *spreads*, since a node's target grows with its BFS depth, where
+	// the clearance force below only ever enforced a minimum and so left
+	// everything stacked in one band against the backbone.
+	function anchorForce(alpha: number) {
+		for (const node of nodeArray) {
+			if (node.fy != null) continue; // backbone nodes are pinned
+			if (node.anchorX != null) {
+				node.vx = (node.vx ?? 0) + (node.anchorX - node.x) * ANCHOR_X_STRENGTH * alpha;
+			}
+			if (node.targetY != null) {
+				node.vy = (node.vy ?? 0) + (node.targetY - node.y) * SPREAD_Y_STRENGTH * alpha;
+			}
+		}
+	}
+
 	const simulation = forceSimulation(nodeArray)
 		.force(
 			'link',
@@ -342,6 +402,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		)
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
 		.force('collide', forceCollide(5))
+		.force('anchor', anchorForce)
 		.force('avoidBaseline', avoidBaselineForce)
 		.stop();
 
