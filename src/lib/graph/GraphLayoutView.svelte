@@ -13,19 +13,7 @@
 	import GraphCanvas from './GraphCanvas.svelte';
 	import { trackEvent } from '../analytics';
 
-	let {
-		gfa,
-		referenceSample,
-		fast = false
-	}: {
-		gfa: Gfa;
-		referenceSample: string;
-		/** Trade layout quality for speed: draw each segment as a single node
-		 * instead of a smooth chain of sub-nodes, and stop the simulation early.
-		 * For showing the shape of a big unsimplified graph, where the point is
-		 * how tangled it is rather than reading any individual node. */
-		fast?: boolean;
-	} = $props();
+	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
 	// Prototype: keep all non-reference bubbles above the reference line, which
 	// halves the vertical spread and leaves the space underneath free for
@@ -114,6 +102,12 @@
 	// seconds. Below this, graphs typically lay out in well under 20s.
 	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
 
+	// Past that threshold the full-quality layout takes minutes, so switch to a
+	// rough one automatically rather than making people wait or choose. Below it,
+	// quality is cheap and rough mode looked wrong on small graphs — which is why
+	// it isn't offered as a manual toggle.
+	const roughLayout = $derived(adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD);
+
 	// --- layout worker ---
 	let worker: Worker | null = null;
 	let reqId = 0;
@@ -148,10 +142,11 @@
 		// locus can have millions), so nothing upstream de-proxies them for us
 		// — this snapshot is the one place that must, since it's the one place
 		// with a hard structured-clone requirement.
-		// Fast mode collapses each segment to one simulation node (instead of up
-		// to 60 sub-nodes for a smooth strand) and cuts the iterations, which is
-		// where nearly all the time goes on a big graph.
-		const options = fast
+		// Rough mode collapses each segment to one simulation node (instead of up
+		// to 60 sub-nodes for a smooth strand), cuts the iterations, and drops the
+		// per-link bend nodes — which is where nearly all the time goes on a big
+		// graph (62.5s -> 6.0s measured on a 9,892-node fixture).
+		const options = roughLayout
 			? {
 					referenceSample,
 					maxEdgesPerSegment: 1,
@@ -183,6 +178,11 @@
 			<span class="computing">computing…</span>
 		{:else if layout}
 			<span class="muted">· layout {ms} ms</span>
+		{/if}
+		{#if roughLayout}
+			<span class="rough" title="Too many nodes for the full-quality layout; positions are approximate">
+				rough layout
+			</span>
 		{/if}
 	</div>
 

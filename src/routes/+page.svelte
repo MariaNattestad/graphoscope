@@ -277,6 +277,65 @@
 		run('example');
 	}
 
+	// ---- Break-glass: view the unsimplified graph -------------------------------
+	// Simplification is what makes a locus renderable, but sometimes you want to
+	// see the whole thing — the workaround was downloading the GFA and opening it
+	// in Bandage. This loads it into the layout instead.
+	//
+	// Guarded on node count rather than offered unconditionally: the unsimplified
+	// graph is what the reduce exists to avoid, so it has to be a deliberate
+	// choice, and past MAX_UNSIMPLIFIED_NODES it would take minutes to lay out
+	// and gigabytes to hold. Between the two, the layout drops to rough mode on
+	// its own (see GraphLayoutView).
+	const MAX_UNSIMPLIFIED_NODES = 25000;
+	let unsimplified = $state<Gfa | null>(null);
+	let loadingUnsimplified = $state(false);
+	let showUnsimplified = $state(false);
+	/** Nodes the unsimplified graph would have, known from the reduced X line. */
+	const unsimplifiedNodes = $derived(gfa?.reduced?.segmentsBefore ?? 0);
+	const canShowUnsimplified = $derived(
+		unsimplifiedNodes > 0 && unsimplifiedNodes <= MAX_UNSIMPLIFIED_NODES
+	);
+	/** What the layout is actually drawing. */
+	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
+
+	async function toggleUnsimplified() {
+		if (showUnsimplified) {
+			showUnsimplified = false;
+			return;
+		}
+		if (unsimplified) {
+			showUnsimplified = true;
+			return;
+		}
+		if (!client || loadingUnsimplified) return;
+		loadingUnsimplified = true;
+		try {
+			const locus = parseLocus(locusText, graph.referenceSample);
+			locus.sample = graph.referenceSample;
+			locus.raw = true;
+			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
+			if (!result.ok) {
+				error = `${result.error}\n${result.stderr ?? ''}`.trim();
+				return;
+			}
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'view_unsimplified' });
+			unsimplified = parseGfa(result.gfa ?? '');
+			showUnsimplified = true;
+		} catch (e) {
+			error = e instanceof Error ? e.message : String(e);
+		} finally {
+			loadingUnsimplified = false;
+		}
+	}
+
+	// A new query invalidates the cached unsimplified graph.
+	$effect(() => {
+		gfa;
+		unsimplified = null;
+		showUnsimplified = false;
+	});
+
 	// Fetches the unsimplified subgraph — every haplotype walk — purely to hand
 	// the user a file. It is streamed straight to a download and never parsed:
 	// on a repetitive locus this is the tens-of-megabytes response that the
@@ -408,8 +467,31 @@
 					{#if queriedGene}<span class="muted small">· {queriedGene} · <code>{locusText}</code></span
 						>{/if}
 				</h2>
+				{#if canShowUnsimplified}
+					<button
+						class="mini-toggle"
+						class:on={showUnsimplified}
+						onclick={toggleUnsimplified}
+						disabled={loadingUnsimplified}
+						title="Load every node, before small-variant collapsing — {unsimplifiedNodes.toLocaleString()} nodes"
+					>
+						{#if loadingUnsimplified}
+							loading…
+						{:else if showUnsimplified}
+							showing all {unsimplifiedNodes.toLocaleString()} nodes — simplify
+						{:else}
+							show all {unsimplifiedNodes.toLocaleString()} nodes
+						{/if}
+					</button>
+				{:else if unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+					<span class="muted small" title="Download it from the data panel below to inspect elsewhere">
+						{unsimplifiedNodes.toLocaleString()} nodes unsimplified — too many to render
+					</span>
+				{/if}
 			</div>
-			<GraphLayoutView {gfa} referenceSample={graph.referenceSample} />
+			{#if displayGfa}
+				<GraphLayoutView gfa={displayGfa} referenceSample={graph.referenceSample} />
+			{/if}
 		</section>
 
 		<section class="panel">
@@ -647,6 +729,28 @@
 	}
 	.toolbar .go {
 		padding: 0.4rem 1rem;
+	}
+	.mini-toggle {
+		font: inherit;
+		font-size: 0.75rem;
+		padding: 0.2rem 0.6rem;
+		border: 1px solid #d0d0d0;
+		background: #fff;
+		border-radius: 6px;
+		color: #444;
+		cursor: pointer;
+	}
+	.mini-toggle:hover:not(:disabled) {
+		border-color: #999;
+	}
+	.mini-toggle.on {
+		background: #2563eb;
+		border-color: #2563eb;
+		color: #fff;
+	}
+	.mini-toggle:disabled {
+		opacity: 0.6;
+		cursor: default;
 	}
 	.graph-panel {
 		margin-bottom: 0.75rem;
