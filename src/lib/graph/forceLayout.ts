@@ -114,13 +114,18 @@ const COMPONENT_V_GAP = 500;
 const BUBBLE_Y_STEP = 70;
 /** Ceiling for that derived step, so a whole-chromosome span stays bounded. */
 const MAX_BUBBLE_Y_STEP = 4000;
-/** Backbone width : one hop of vertical offset. ~8 hops then fills a quarter of
- * the width, which lands near a 4:1 overall aspect on real loci. */
-const BUBBLE_Y_STEP_DIVISOR = 32;
+/** Backbone width : one unit of vertical offset. */
+const BUBBLE_Y_STEP_DIVISOR = 20;
+/** Ceiling on the sqrt(depth) multiplier, so the deepest nodes in a tangled
+ * graph stay within a few steps of the backbone instead of defining the whole
+ * canvas's scale. */
+const MAX_DEPTH_OFFSET = 3;
 /** Pull back toward the reference x a bubble attaches to (stops long sideways drift). */
 const ANCHOR_X_STRENGTH = 0.12;
+/** Only nodes this close to the backbone get that pull — see where it's set. */
+const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
-const SPREAD_Y_STRENGTH = 0.08;
+const SPREAD_Y_STRENGTH = 0.15;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
 /** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
@@ -316,7 +321,14 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
 		const sign = opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
 		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
-		const baseY = anchor.y + sign * anchor.hops * bubbleYStep;
+		// Depth has to grow the offset sub-linearly and stop growing at some point.
+		// Multiplying by hops directly meant a deep BFS (routine in an
+		// unsimplified graph) flung a handful of nodes thousands of units out —
+		// fit-to-view then zoomed out to contain them and squashed everything
+		// else into a band. sqrt spaces the first few levels clearly and the cap
+		// keeps the tail bounded.
+		const depth = Math.min(Math.sqrt(anchor.hops), MAX_DEPTH_OFFSET);
+		const baseY = anchor.y + sign * depth * bubbleYStep;
 
 		chain.nodeIds.forEach((nodeId, i) => {
 			const node = nodesById.get(nodeId)!;
@@ -324,9 +336,14 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			node.y = baseY + stableUnit(nodeId + ':y') * 6;
 			node.componentBaselineY = anchor.y;
 			// Remember where this belongs, so the simulation can pull it back
-			// (see anchorForce): the reference x it attaches to, and a y that grows
-			// with BFS depth so nested bubbles stack outward.
-			node.anchorX = anchor.x + i * opts.unitEdgeLength;
+			// (see anchorForce). The x anchor applies only to nodes that actually
+			// attach to the backbone nearby: everything in a BFS subtree shares one
+			// anchor, so pulling deep nodes to it dragged whole clusters onto a
+			// single x and left their links stretching across the canvas. Past a
+			// hop or two, the link forces place a node better than its anchor can.
+			if (anchor.hops <= ANCHOR_X_MAX_HOPS) {
+				node.anchorX = anchor.x + i * opts.unitEdgeLength;
+			}
 			node.targetY = baseY;
 		});
 	}
