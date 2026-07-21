@@ -16,7 +16,8 @@
 		coverageColor,
 		type NonRefEvent as Ev
 	} from './nonRefNodes';
-	import { genesInRange, type GeneEntry, type RefKey } from './genes';
+	import type { RefKey } from './genes';
+	import { transcriptsInRange, representativeTranscripts, type Transcript } from './geneTrack';
 
 	let {
 		gfa,
@@ -67,7 +68,8 @@
 	// already shipped for the locus search. This replaced an embedded IGV.js
 	// browser, which pulled in a whole genome-browser stack to render what is
 	// really a row of labelled rectangles.
-	let genes = $state<GeneEntry[]>([]);
+	let genes = $state<Transcript[]>([]);
+	let geneError = $state(false);
 	$effect(() => {
 		const m = model;
 		const key = refKey;
@@ -76,13 +78,32 @@
 			return;
 		}
 		let cancelled = false;
-		genesInRange(key, m.contig, m.genomicStart, m.genomicStart + m.refLen).then((g) => {
-			if (!cancelled) genes = g;
-		});
+		geneError = false;
+		transcriptsInRange(key, m.contig, m.genomicStart, m.genomicStart + m.refLen)
+			.then((t) => {
+				if (!cancelled) genes = representativeTranscripts(t);
+			})
+			.catch(() => {
+				// The annotation lives on someone else's server; a locus is still
+				// perfectly usable without it, so fail quietly rather than loudly.
+				if (!cancelled) {
+					genes = [];
+					geneError = true;
+				}
+			});
 		return () => {
 			cancelled = true;
 		};
 	});
+
+	interface GeneShape {
+		gene: Transcript;
+		x1: number;
+		x2: number;
+		labelEnd: number;
+		/** Exon boxes, split at the CDS boundary so UTRs can render thinner. */
+		blocks: { x: number; w: number; coding: boolean }[];
+	}
 
 	/** Packs genes into rows so labels don't collide, greedily left to right. */
 	const geneRows = $derived.by(() => {
@@ -90,16 +111,40 @@
 		const s = win.start;
 		const span = Math.max(1, win.end - win.start);
 		const toX = (bp: number) => ML + ((bp - s) / span) * (W - ML - MR);
-		const rows: Array<Array<{ gene: GeneEntry; x1: number; x2: number; labelEnd: number }>> = [];
+		const rel = (bp: number) => bp - model.genomicStart;
+		const rows: GeneShape[][] = [];
 		for (const gene of genes) {
-			const rel1 = gene.start - model.genomicStart;
-			const rel2 = gene.end - model.genomicStart;
-			if (rel2 < s || rel1 > win.end) continue; // outside the zoom window
-			const x1 = Math.max(ML, toX(rel1));
-			const x2 = Math.min(W - MR, toX(rel2));
-			// Reserve room for the label, which is drawn just past the box.
-			const labelEnd = Math.max(x2, x1) + 8 + gene.name.length * 5.6;
-			const item = { gene, x1, x2, labelEnd };
+			if (rel(gene.end) < s || rel(gene.start) > win.end) continue; // outside the zoom window
+			const x1 = Math.max(ML, toX(rel(gene.start)));
+			const x2 = Math.min(W - MR, toX(rel(gene.end)));
+
+			// Each exon becomes one or two boxes: the coding part and any UTR
+			// overhang either side of it, so the reading frame is visible rather
+			// than implied.
+			const blocks: GeneShape['blocks'] = [];
+			for (const ex of gene.exons) {
+				const segments: [number, number, boolean][] = [];
+				const cs = Math.max(ex.start, gene.cdsStart);
+				const ce = Math.min(ex.end, gene.cdsEnd);
+				if (cs < ce) {
+					if (ex.start < cs) segments.push([ex.start, cs, false]);
+					segments.push([cs, ce, true]);
+					if (ce < ex.end) segments.push([ce, ex.end, false]);
+				} else {
+					segments.push([ex.start, ex.end, false]);
+				}
+				for (const [a, b, coding] of segments) {
+					const xa = toX(rel(a));
+					const xb = toX(rel(b));
+					if (xb < ML || xa > W - MR) continue;
+					const cx = Math.max(ML, xa);
+					blocks.push({ x: cx, w: Math.max(0.8, Math.min(W - MR, xb) - cx), coding });
+				}
+			}
+
+			// Reserve room for the label, which is drawn just past the gene.
+			const labelEnd = Math.max(x2, x1) + 8 + gene.symbol.length * 5.6;
+			const item: GeneShape = { gene, x1, x2, labelEnd, blocks };
 			const row = rows.find((r) => r.length === 0 || r[r.length - 1].labelEnd + 6 < x1);
 			if (row) row.push(item);
 			else rows.push([item]);
@@ -291,25 +336,49 @@
 			{#each geneRows as row, ri (ri)}
 				{#each row as g (g.gene.name)}
 					{@const y = GENE_TOP + ri * GENE_ROW}
-					<rect
-						x={g.x1}
-						y={y}
-						width={Math.max(1.5, g.x2 - g.x1)}
-						height={GENE_H}
-						rx="2"
-						fill="#7c8ea8"
-						opacity="0.85"
-					>
-						<title>{g.gene.name} · {model.contig}:{g.gene.start.toLocaleString()}-{g.gene.end.toLocaleString()}</title>
+					{@const mid = y + GENE_H / 2}
+					<!-- intron line spanning the transcript -->
+					<line x1={g.x1} y1={mid} x2={g.x2} y2={mid} stroke="#8b9bb4" stroke-width="1" />
+					<!-- strand direction ticks along the intron line -->
+					{#each Array(Math.min(14, Math.max(0, Math.floor((g.x2 - g.x1) / 34)))) as _, k (k)}
+						{@const ax = g.x1 + 17 + k * 34}
+						<path
+							d={g.gene.strand === '+'
+								? `M ${ax - 2} ${mid - 2.5} L ${ax + 2} ${mid} L ${ax - 2} ${mid + 2.5}`
+								: `M ${ax + 2} ${mid - 2.5} L ${ax - 2} ${mid} L ${ax + 2} ${mid + 2.5}`}
+							fill="none"
+							stroke="#8b9bb4"
+							stroke-width="1"
+						/>
+					{/each}
+					<!-- exons: taller where coding, thinner across UTRs -->
+					{#each g.blocks as b, bi (bi)}
+						<rect
+							x={b.x}
+							y={b.coding ? y : y + 2}
+							width={b.w}
+							height={b.coding ? GENE_H : GENE_H - 4}
+							fill="#5b6f8c"
+						/>
+					{/each}
+					<rect x={g.x1} y={y} width={Math.max(1, g.x2 - g.x1)} height={GENE_H} fill="transparent">
+						<title
+							>{g.gene.symbol} ({g.gene.strand}) · {g.gene.name} · {model.contig}:{g.gene.start.toLocaleString()}-{g.gene.end.toLocaleString()}
+							· {g.gene.exons.length} exons</title
+						>
 					</rect>
 					<text x={Math.max(g.x2, g.x1) + 5} y={y + GENE_H - 1} font-size="9.5" fill="#556">
-						{g.gene.name}
+						{g.gene.symbol}
 					</text>
 				{/each}
 			{/each}
 			{#if geneRows.length === 0}
 				<text x={ML} y={GENE_TOP + GENE_H} font-size="9.5" fill="#aaa">
-					{refKey ? 'no annotated genes in this window' : ''}
+					{#if geneError}
+						gene annotation unavailable
+					{:else if refKey}
+						no annotated genes in this window
+					{/if}
 				</text>
 			{/if}
 		</svg>
