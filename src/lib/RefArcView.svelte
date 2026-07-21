@@ -34,7 +34,13 @@
 	let viewWin = $state<{ start: number; end: number } | null>(null);
 	let copied = $state(false);
 
-	const W = 1000;
+	// The svg's coordinate system is kept 1:1 with its rendered size: with
+	// `preserveAspectRatio="none"` a fixed viewBox width would be stretched to the
+	// container (~1.24x here), and that stretch applies to text too — which is
+	// what made the coordinate labels run into each other. Measuring instead means
+	// one unit is one pixel and labels render at their true width.
+	let svgW = $state(1000);
+	const W = $derived(Math.max(320, svgW));
 	const ML = 10;
 	const MR = 10;
 	const TOP = 16;
@@ -43,7 +49,7 @@
 	const hmH = 12;
 	// Gene track sits under the axis labels, in as many rows as it takes to keep
 	// overlapping genes readable.
-	const GENE_TOP = hmY + hmH + 26;
+	const GENE_TOP = hmY + hmH + 42;
 	const GENE_ROW = 15;
 	const GENE_H = 9;
 
@@ -133,9 +139,16 @@
 				return { ev, x1, x2, xm, apex, lollipop, d, stroke: color(ev), heat: heatColor(ev.cov, model.totalNonRef) };
 			});
 
+		// How many coordinate labels actually fit. A formatted position is ~60px
+		// wide, and a fixed six of them collided on anything narrow — so derive the
+		// count from the available width instead of assuming it.
+		const LABEL_PX = 74;
+		// `steps` intervals means steps+1 labels, so subtract one from what fits.
+		const fits = Math.floor((W - ML - MR) / LABEL_PX);
+		const steps = Math.max(1, Math.min(5, fits - 1));
 		const ticks = [];
-		for (let i = 0; i <= 5; i++) {
-			const bp = s + (i / 5) * span;
+		for (let i = 0; i <= steps; i++) {
+			const bp = s + (i / steps) * span;
 			ticks.push({ x: xs(bp), label: Math.round(model.genomicStart + bp).toLocaleString() });
 		}
 		return { shapes, ticks };
@@ -206,7 +219,15 @@
 	</div>
 
 	{#if render && model}
-		<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" ondblclick={onDblClick} role="img" aria-label="reference arc view">
+		<svg
+			bind:clientWidth={svgW}
+			viewBox="0 0 {W} {H}"
+			style="height: {H}px"
+			preserveAspectRatio="none"
+			ondblclick={onDblClick}
+			role="img"
+			aria-label="reference arc view"
+		>
 			<!-- vertical position guides -->
 			{#each render.ticks as t, i (i)}
 				<line x1={t.x} y1={TOP} x2={t.x} y2={baseY} stroke="#eee" stroke-width="1" />
@@ -251,9 +272,20 @@
 			<!-- axis ticks + labels -->
 			{#each render.ticks as t, i (i)}
 				<line x1={t.x} y1={hmY + hmH} x2={t.x} y2={hmY + hmH + 4} stroke="#999" stroke-width="1" />
-				<text x={t.x} y={hmY + hmH + 18} font-size="10" fill="#666" text-anchor="middle">{t.label}</text>
+				<text
+					x={t.x}
+					y={hmY + hmH + 18}
+					font-size="10"
+					fill="#666"
+					text-anchor={i === 0 ? 'start' : i === render.ticks.length - 1 ? 'end' : 'middle'}
+					>{t.label}</text
+				>
 			{/each}
-			<text x={ML} y={hmY + hmH + 18} font-size="10" fill="#999">{model.contig} reference position (bp)</text>
+			<!-- The contig label gets its own row: it used to sit at the same y as the
+			     ticks, directly on top of the leftmost coordinate. -->
+			<text x={ML} y={hmY + hmH + 32} font-size="9.5" fill="#aaa">
+				{model.contig} reference position (bp)
+			</text>
 
 			<!-- gene track -->
 			{#each geneRows as row, ri (ri)}
@@ -351,7 +383,7 @@
 	}
 	svg {
 		width: 100%;
-		height: 250px;
+		display: block;
 		border: 1px solid #eee;
 		border-radius: 8px;
 		background: #fbfbfc;
