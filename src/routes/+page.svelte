@@ -574,39 +574,51 @@
 	{/if}
 
 	<section class="panel">
-		<details class="how">
-			<summary>How the on-demand querying works</summary>
-			<div class="how-body">
-				<p>
-					The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
-					the Human Pangenome Reference Consortium. Each is distributed as a
-					<code>.gbz</code> file of several gigabytes.
-				</p>
-				<p>
-					Querying one by genomic coordinate normally means downloading the whole thing. Instead we
-					use <b>GBZ-base</b> (<code>gbz2db</code> / <code>query</code>, part of the
-					<a href="https://github.com/jltsiren/gbz-base" target="_blank" rel="noopener">vg / GBZ-base</a>
-					tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database that
-					<i>can</i> be queried by position.
-				</p>
-				<p>
-					What <b>we</b> added: we compiled GBZ-base's <code>query</code> program to WebAssembly
-					(<code>wasm32-wasip1</code>) and wrote a small WASI filesystem shim that backs SQLite's
-					page reads with <b>HTTP range requests</b>. So the browser runs the real query engine in a
-					Web Worker and pulls only the few megabytes of database pages a locus actually touches
-					from the file on Cloudflare R2 — an approach inspired by
-					<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
-					The visualizations above (graph layout, variant arcs with a gene track, and the
-					reference-guided simplification) are a few prototypes we built for inspecting a graph's
-					complex patterns around a particular reference locus.
-				</p>
-				<p>
-					Currently showing: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus
-					graph, converted to a GBZ-base <code>.gbz.db</code> (SQLite) and hosted on Cloudflare R2
-					for coordinate range queries.
-				</p>
-			</div>
-		</details>
+		<h2 class="panel-title">How the on-demand querying works</h2>
+		<div class="how-body">
+			<p>
+				The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
+				the Human Pangenome Reference Consortium. Each is distributed as a
+				<code>.gbz</code> file of several gigabytes.
+			</p>
+			<p>
+				Querying one by genomic coordinate normally means downloading the whole thing. Instead we
+				use <b>GBZ-base</b> (<code>gbz2db</code> / <code>query</code>, part of the
+				<a href="https://github.com/jltsiren/gbz-base" target="_blank" rel="noopener">vg / GBZ-base</a>
+				tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database that
+				<i>can</i> be queried by position.
+			</p>
+			<p>
+				What <b>we</b> added: we compiled GBZ-base's <code>query</code> program to WebAssembly
+				(<code>wasm32-wasip1</code>) and wrote a small WASI filesystem shim that backs SQLite's
+				page reads with <b>HTTP range requests</b>. So the browser runs the real query engine in a
+				Web Worker and pulls only the few megabytes of database pages a locus actually touches
+				from the file on Cloudflare R2 — an approach inspired by
+				<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
+				The visualizations above (graph layout, variant arcs with a gene track, and the
+				simplification described next) are a few prototypes we built for inspecting a graph's
+				complex patterns around a particular reference locus.
+			</p>
+			<p>
+				A raw locus can still be far too tangled to read — and, more to the point, far too heavy to
+				hold in a browser tab, since the per-haplotype walks through the graph dominate the data
+				(for a repetitive locus like <b>LPA</b> they are the great majority of the bytes). So before
+				anything is drawn, Graphoscope runs its own <b>reference-guided simplification</b> — a second
+				WebAssembly module we wrote (<code>crates/reduce</code>, independent of GBZ-base) that reads
+				the query's output as a stream and never materialises the whole graph. Anchored on the
+				reference path, it detects the <i>superbubbles</i> hanging off it and collapses any whose
+				alternate alleles are shorter than a <b>collapse threshold</b> (50&nbsp;bp), then merges the
+				resulting non-branching runs of nodes into single segments.
+				Crucially, instead of keeping every walk it just <b>counts</b> how many pass through each node
+				and edge — that count is what the yellow&#8202;→&#8202;red colouring shows. The effect on
+				memory is large: a locus like LPA drops from hundreds of megabytes of parsed graph to a few.
+			</p>
+			<p>
+				Currently showing: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus
+				graph, converted to a GBZ-base <code>.gbz.db</code> (SQLite) and hosted on Cloudflare R2
+				for coordinate range queries.
+			</p>
+		</div>
 	</section>
 
 	<section class="panel ack">
@@ -664,18 +676,9 @@
 		margin: 0 0 0.2rem;
 		font-size: 1.5rem;
 	}
-	.how {
-		margin-bottom: 0.4rem;
-		font-size: 0.85rem;
-	}
-	.how summary {
-		cursor: pointer;
-		color: #2563eb;
-		font-weight: 600;
-		width: fit-content;
-	}
 	.how-body {
 		margin-top: 0.5rem;
+		font-size: 0.85rem;
 		padding: 0.6rem 0.9rem;
 		border-left: 3px solid #dbeafe;
 		background: #f8faff;
