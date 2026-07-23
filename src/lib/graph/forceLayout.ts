@@ -120,8 +120,11 @@ const BUBBLE_Y_STEP_DIVISOR = 20;
  * graph stay within a few steps of the backbone instead of defining the whole
  * canvas's scale. */
 const MAX_DEPTH_OFFSET = 3;
-/** Pull back toward the reference x a bubble attaches to (stops long sideways drift). */
-const ANCHOR_X_STRENGTH = 0.12;
+/** Pull back toward the reference x a bubble attaches to (stops long sideways
+ * drift). Kept gentle: too strong and every node in a bubble collapses onto the
+ * single attachment x, stacking them into one vertical line instead of letting
+ * the link forces open the bubble out horizontally. */
+const ANCHOR_X_STRENGTH = 0.07;
 /** Only nodes this close to the backbone get that pull — see where it's set. */
 const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
@@ -295,6 +298,31 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		Math.min(MAX_BUBBLE_Y_STEP, backboneWidth / BUBBLE_Y_STEP_DIVISOR)
 	);
 
+	// Where each non-backbone segment actually attaches to the reference: the x
+	// (and baseline y) of the backbone endpoint node it links to. A variant that
+	// sits between two reference segments belongs at their shared boundary, but
+	// the segment *midpoint* stored in `anchors` is half a segment to the left of
+	// that boundary — and the BFS below would propagate that leftward-biased
+	// midpoint to every bubble. Using the real link endpoint instead removes the
+	// systematic leftward lean. fromNode/toNode were resolved above and now carry
+	// real positions from backbone assignment.
+	const attach = new Map<string, { x: number; y: number; n: number }>();
+	for (const path of structuralLinkPaths) {
+		const fromBB = assignedSegIds.has(path.from);
+		const toBB = assignedSegIds.has(path.to);
+		if (fromBB === toBB) continue; // both or neither on backbone → no direct anchor
+		const bbNode = nodesById.get(fromBB ? path.fromNode : path.toNode)!;
+		const seg = fromBB ? path.to : path.from;
+		const a = attach.get(seg);
+		if (a) {
+			a.x += bbNode.x;
+			a.y += bbNode.y;
+			a.n++;
+		} else {
+			attach.set(seg, { x: bbNode.x, y: bbNode.y, n: 1 });
+		}
+	}
+
 	// --- Seed off-backbone (bubble) nodes near their nearest backbone attachment ---
 	const adjacency = buildAdjacency(graph);
 	const nearestAnchor = new Map<string, { x: number; y: number; hops: number }>();
@@ -303,6 +331,15 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const anchor = anchors.get(segId);
 		if (!anchor) continue;
 		nearestAnchor.set(segId, { ...anchor, hops: 0 });
+		bfsQueue.push(segId);
+	}
+	// Directly-attached bubbles get their true attachment point (mean, if a
+	// segment links to the reference in more than one place) and are fixed at
+	// hop 1 before the BFS runs, so the midpoint-propagating pass below can't
+	// overwrite them — it only fills in segments deeper than one hop.
+	for (const [segId, a] of attach) {
+		if (nearestAnchor.has(segId)) continue;
+		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, hops: 1 });
 		bfsQueue.push(segId);
 	}
 	let qHead = 0;
@@ -418,7 +455,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				.strength((d) => d.strength)
 		)
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
-		.force('collide', forceCollide(5))
+		.force('collide', forceCollide(8))
 		.force('anchor', anchorForce)
 		.force('avoidBaseline', avoidBaselineForce)
 		.stop();
