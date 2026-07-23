@@ -16,6 +16,10 @@ export interface Segment {
 	 * the far side of a bubble, is the tell for a fragmentary haplotype. */
 	walkStarts?: number;
 	walkEnds?: number;
+	/** Original pangenome node ids this segment stands for (`MB` tag), set only
+	 * for unchop-merged chains — whose own id (`u<first>`) exists nowhere in the
+	 * source graph, so this is what makes them traceable back to it. */
+	members?: string[];
 }
 
 export interface Link {
@@ -73,6 +77,13 @@ export interface Gfa {
 	referenceSamples: string[];
 	/** Present when parsed from a reduced GFA (server-side simplified + walk-counted). */
 	reduced?: ReducedStats;
+}
+
+/** Reads a string GFA tag like `MB:Z:1,2,3` from a line's trailing fields. */
+function stringTag(fields: string[], tag: string): string | undefined {
+	const prefix = `${tag}:Z:`;
+	for (const f of fields) if (f.startsWith(prefix)) return f.slice(prefix.length);
+	return undefined;
 }
 
 /** Reads an integer GFA tag like `WC:i:42` from a line's trailing fields. */
@@ -149,7 +160,8 @@ export function parseGfa(text: string): Gfa {
 					length: seq.length,
 					coverage: intTag(tags, 'WC'),
 					walkStarts: intTag(tags, 'WS'),
-					walkEnds: intTag(tags, 'WE')
+					walkEnds: intTag(tags, 'WE'),
+					members: stringTag(tags, 'MB')?.split(',')
 				});
 				break;
 			}

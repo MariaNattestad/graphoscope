@@ -52,7 +52,7 @@ const SYNTHETIC: [Expected; 11] = [
     Expected::new("long_run", 0, 0, 0, 0).after(1),
 ];
 
-const REAL: [&str; 4] = ["mhc_2kb", "mhc_8kb", "mhc_84kb", "chr20_200kb"];
+const REAL: [&str; 3] = ["c4a", "smn1", "chr20_200kb"];
 
 /// Every fixture, for the invariant checks.
 fn all_fixtures() -> Vec<&'static str> {

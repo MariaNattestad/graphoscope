@@ -70,13 +70,14 @@ export const NET_CODES: Record<NetClass, string> = {
 	substitution: 'sub'
 };
 
-// Coverage scale: legible green sequential (few → many haplotypes). Chosen so
-// even the low end is dark enough to read as text (IGV draws labels in this
-// color) and to stay distinct from the blue/red net-change colors.
+// Coverage scale: the same yellow → red ramp the graph layout uses for walks
+// through a node, so "how many walks carry this" reads identically in every
+// view. (These are the HEATMAP_LOW/HIGH endpoints from graph/colors.ts, kept
+// here as numbers because this module is imported by the plain-canvas views.)
 export function coverageRgb(cov: number, total: number): [number, number, number] {
 	const t = total <= 1 ? 0 : Math.min(1, Math.max(0, (cov - 1) / (total - 1)));
-	const lo: [number, number, number] = [56, 142, 60]; // #388e3c
-	const hi: [number, number, number] = [16, 60, 24]; // very dark green
+	const lo: [number, number, number] = [255, 214, 10]; // yellow: few walks
+	const hi: [number, number, number] = [214, 30, 30]; // red: many walks
 	return [
 		Math.round(lo[0] + (hi[0] - lo[0]) * t),
 		Math.round(lo[1] + (hi[1] - lo[1]) * t),

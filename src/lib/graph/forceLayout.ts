@@ -31,6 +31,13 @@ export interface SimNode {
 	fy?: number | null;
 	/** The y of this node's component's backbone line, used to keep bubbles from overlapping it. */
 	componentBaselineY: number;
+	/** Where this node was seeded relative to the backbone: the x of the reference
+	 * attachment it hangs off, and the y its BFS depth earns it. Bubbles are pulled
+	 * back toward these so they stay near the reference position they belong to,
+	 * and so depth actually spreads them vertically instead of everything piling
+	 * up against the baseline. Undefined for backbone nodes (which are pinned). */
+	anchorX?: number;
+	targetY?: number;
 }
 
 interface SimLink {
@@ -78,6 +85,14 @@ export interface LayoutOptions {
 	maxEdgesPerSegment?: number;
 	unitEdgeLength?: number;
 	iterations?: number;
+	/** Keep every non-reference bubble on one side of the backbone (above it)
+	 * instead of letting them fall either way. Halves the vertical spread and
+	 * leaves the space below the reference line free for coordinate tracks. */
+	bubblesAbove?: boolean;
+	/** Route each structural link through an invisible bend node so it curves
+	 * clear of the backbone instead of lying invisibly on top of it. Costs one
+	 * simulation node per link; turn off for a rough, faster layout. */
+	bendNodes?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 }
@@ -86,13 +101,34 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 	targetTotalSubNodes: 2500,
 	maxEdgesPerSegment: 60,
 	unitEdgeLength: 18,
-	iterations: 350
+	iterations: 350,
+	bendNodes: true,
+	bubblesAbove: false
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
 const COMPONENT_V_GAP = 500;
-/** How far off the backbone baseline a bubble node is seeded, per BFS hop. */
+/** Floor for the per-BFS-hop vertical offset of a bubble node. The actual step
+ * is derived from the backbone's width (see bubbleYStep) so the graph keeps a
+ * readable aspect ratio instead of flattening as the locus gets wider. */
 const BUBBLE_Y_STEP = 70;
+/** Ceiling for that derived step, so a whole-chromosome span stays bounded. */
+const MAX_BUBBLE_Y_STEP = 4000;
+/** Backbone width : one unit of vertical offset. */
+const BUBBLE_Y_STEP_DIVISOR = 20;
+/** Ceiling on the sqrt(depth) multiplier, so the deepest nodes in a tangled
+ * graph stay within a few steps of the backbone instead of defining the whole
+ * canvas's scale. */
+const MAX_DEPTH_OFFSET = 3;
+/** Pull back toward the reference x a bubble attaches to (stops long sideways
+ * drift). Kept gentle: too strong and every node in a bubble collapses onto the
+ * single attachment x, stacking them into one vertical line instead of letting
+ * the link forces open the bubble out horizontally. */
+const ANCHOR_X_STRENGTH = 0.07;
+/** Only nodes this close to the backbone get that pull — see where it's set. */
+const ANCHOR_X_MAX_HOPS = 2;
+/** Pull toward the depth-derived y (spreads bubbles vertically). */
+const SPREAD_Y_STRENGTH = 0.15;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
 /** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
@@ -178,6 +214,22 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 
 		if (fromNode === toNode) continue;
 
+		// Without bend nodes the link is a single straight edge. They roughly
+		// double the simulation's node count (one per link), which is the largest
+		// remaining cost on a dense graph — so a rough layout skips them and the
+		// canvas falls back to drawing a straight line.
+		if (!opts.bendNodes) {
+			links.push({
+				source: fromNode,
+				target: toNode,
+				distance: opts.unitEdgeLength,
+				strength: 0.3,
+				kind: 'structural'
+			});
+			structuralLinkPaths.push({ from: link.from, to: link.to, fromNode, toNode, bendNode: '' });
+			continue;
+		}
+
 		const bendNode = `bend::${bendCounter++}`;
 		nodesById.set(bendNode, {
 			id: bendNode,
@@ -228,6 +280,49 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	});
 
+	// Vertical spacing has to scale with the layout's horizontal extent, which is
+	// set by the locus's bp span. A fixed step made every real locus render as a
+	// flat smear: SMN1 came out 57,366 x 1,085 units — 53:1 — so fitting it to a
+	// 1200x460 canvas left the whole vertical structure occupying 23px. Deriving
+	// the step from the backbone's width targets a readable aspect ratio instead,
+	// clamped so tiny graphs don't explode and huge ones stay bounded.
+	let backboneMinX = Infinity;
+	let backboneMaxX = -Infinity;
+	for (const a of anchors.values()) {
+		backboneMinX = Math.min(backboneMinX, a.x);
+		backboneMaxX = Math.max(backboneMaxX, a.x);
+	}
+	const backboneWidth = Number.isFinite(backboneMinX) ? backboneMaxX - backboneMinX : 0;
+	const bubbleYStep = Math.max(
+		BUBBLE_Y_STEP,
+		Math.min(MAX_BUBBLE_Y_STEP, backboneWidth / BUBBLE_Y_STEP_DIVISOR)
+	);
+
+	// Where each non-backbone segment actually attaches to the reference: the x
+	// (and baseline y) of the backbone endpoint node it links to. A variant that
+	// sits between two reference segments belongs at their shared boundary, but
+	// the segment *midpoint* stored in `anchors` is half a segment to the left of
+	// that boundary — and the BFS below would propagate that leftward-biased
+	// midpoint to every bubble. Using the real link endpoint instead removes the
+	// systematic leftward lean. fromNode/toNode were resolved above and now carry
+	// real positions from backbone assignment.
+	const attach = new Map<string, { x: number; y: number; n: number }>();
+	for (const path of structuralLinkPaths) {
+		const fromBB = assignedSegIds.has(path.from);
+		const toBB = assignedSegIds.has(path.to);
+		if (fromBB === toBB) continue; // both or neither on backbone → no direct anchor
+		const bbNode = nodesById.get(fromBB ? path.fromNode : path.toNode)!;
+		const seg = fromBB ? path.to : path.from;
+		const a = attach.get(seg);
+		if (a) {
+			a.x += bbNode.x;
+			a.y += bbNode.y;
+			a.n++;
+		} else {
+			attach.set(seg, { x: bbNode.x, y: bbNode.y, n: 1 });
+		}
+	}
+
 	// --- Seed off-backbone (bubble) nodes near their nearest backbone attachment ---
 	const adjacency = buildAdjacency(graph);
 	const nearestAnchor = new Map<string, { x: number; y: number; hops: number }>();
@@ -236,6 +331,15 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const anchor = anchors.get(segId);
 		if (!anchor) continue;
 		nearestAnchor.set(segId, { ...anchor, hops: 0 });
+		bfsQueue.push(segId);
+	}
+	// Directly-attached bubbles get their true attachment point (mean, if a
+	// segment links to the reference in more than one place) and are fixed at
+	// hop 1 before the BFS runs, so the midpoint-propagating pass below can't
+	// overwrite them — it only fills in segments deeper than one hop.
+	for (const [segId, a] of attach) {
+		if (nearestAnchor.has(segId)) continue;
+		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, hops: 1 });
 		bfsQueue.push(segId);
 	}
 	let qHead = 0;
@@ -252,15 +356,32 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	for (const chain of chains) {
 		if (assignedSegIds.has(chain.segId)) continue;
 		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
-		const sign = stableUnit(chain.segId) >= 0 ? 1 : -1;
-		const baseX = anchor.x + stableUnit(chain.segId) * BUBBLE_Y_STEP;
-		const baseY = anchor.y + sign * anchor.hops * BUBBLE_Y_STEP;
+		const sign = opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
+		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
+		// Depth has to grow the offset sub-linearly and stop growing at some point.
+		// Multiplying by hops directly meant a deep BFS (routine in an
+		// unsimplified graph) flung a handful of nodes thousands of units out —
+		// fit-to-view then zoomed out to contain them and squashed everything
+		// else into a band. sqrt spaces the first few levels clearly and the cap
+		// keeps the tail bounded.
+		const depth = Math.min(Math.sqrt(anchor.hops), MAX_DEPTH_OFFSET);
+		const baseY = anchor.y + sign * depth * bubbleYStep;
 
 		chain.nodeIds.forEach((nodeId, i) => {
 			const node = nodesById.get(nodeId)!;
 			node.x = baseX + i * opts.unitEdgeLength + stableUnit(nodeId) * 6;
 			node.y = baseY + stableUnit(nodeId + ':y') * 6;
 			node.componentBaselineY = anchor.y;
+			// Remember where this belongs, so the simulation can pull it back
+			// (see anchorForce). The x anchor applies only to nodes that actually
+			// attach to the backbone nearby: everything in a BFS subtree shares one
+			// anchor, so pulling deep nodes to it dragged whole clusters onto a
+			// single x and left their links stretching across the canvas. Past a
+			// hop or two, the link forces place a node better than its anchor can.
+			if (anchor.hops <= ANCHOR_X_MAX_HOPS) {
+				node.anchorX = anchor.x + i * opts.unitEdgeLength;
+			}
+			node.targetY = baseY;
 		});
 	}
 
@@ -269,11 +390,13 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// simulation has a direction to push in rather than starting exactly on the
 	// line it's meant to bend away from.
 	for (const path of structuralLinkPaths) {
+		if (!path.bendNode) continue;
 		const bend = nodesById.get(path.bendNode)!;
 		const a = nodesById.get(path.fromNode)!;
 		const b = nodesById.get(path.toNode)!;
 		bend.x = (a.x + b.x) / 2 + stableUnit(path.bendNode) * 6;
-		bend.y = (a.y + b.y) / 2 + (stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1) * BUBBLE_Y_STEP * 0.4;
+		const bendSign = opts.bubblesAbove ? -1 : stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1;
+		bend.y = (a.y + b.y) / 2 + bendSign * bubbleYStep * 0.4;
 		bend.componentBaselineY = a.componentBaselineY;
 	}
 
@@ -289,10 +412,36 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			if (node.fy != null) continue; // backbone nodes are fixed, exempt
 			const dy = node.y - node.componentBaselineY;
 			const absDy = Math.abs(dy);
+			// One-sided: anything that has drifted below the line is pushed back up
+			// through it, not away from it, so the space below stays clear.
+			if (opts.bubblesAbove && dy > -minBaselineClearance) {
+				const target = node.componentBaselineY - minBaselineClearance;
+				node.vy = (node.vy ?? 0) + (target - node.y) * BASELINE_PUSH_GAIN * alpha;
+				continue;
+			}
 			if (absDy < minBaselineClearance) {
 				const dir = dy !== 0 ? Math.sign(dy) : stableUnit(node.id) >= 0 ? 1 : -1;
 				const push = (minBaselineClearance - absDy) * BASELINE_PUSH_GAIN * alpha;
 				node.vy = (node.vy ?? 0) + dir * push;
+			}
+		}
+	}
+
+	// Pulls each bubble node back toward where it was seeded. Without this,
+	// charge repulsion is the only thing acting along x, so a bubble slides
+	// arbitrarily far from the reference position it actually attaches to — the
+	// long thin strands trailing across the canvas. The y half does the opposite
+	// job: it *spreads*, since a node's target grows with its BFS depth, where
+	// the clearance force below only ever enforced a minimum and so left
+	// everything stacked in one band against the backbone.
+	function anchorForce(alpha: number) {
+		for (const node of nodeArray) {
+			if (node.fy != null) continue; // backbone nodes are pinned
+			if (node.anchorX != null) {
+				node.vx = (node.vx ?? 0) + (node.anchorX - node.x) * ANCHOR_X_STRENGTH * alpha;
+			}
+			if (node.targetY != null) {
+				node.vy = (node.vy ?? 0) + (node.targetY - node.y) * SPREAD_Y_STRENGTH * alpha;
 			}
 		}
 	}
@@ -306,7 +455,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				.strength((d) => d.strength)
 		)
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
-		.force('collide', forceCollide(5))
+		.force('collide', forceCollide(8))
+		.force('anchor', anchorForce)
 		.force('avoidBaseline', avoidBaselineForce)
 		.stop();
 

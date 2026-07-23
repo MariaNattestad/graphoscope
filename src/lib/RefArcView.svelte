@@ -16,28 +16,43 @@
 		coverageColor,
 		type NonRefEvent as Ev
 	} from './nonRefNodes';
+	import type { RefKey } from './genes';
+	import { transcriptsInRange, representativeTranscripts, type Transcript } from './geneTrack';
 
-	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
+	let {
+		gfa,
+		referenceSample,
+		refKey
+	}: { gfa: Gfa; referenceSample: string; refKey?: RefKey } = $props();
 
-	// Sub-threshold variants are already collapsed in the wasm reduce, so this no
-	// longer exists to hide routine noise — anything small that survived did so
-	// because its site failed a safety check (a cycle, an inversion, an edge no
-	// walk confirms), which makes it worth seeing. Hence a default of 0: show
-	// everything that made it through, and let this filter down to big events.
-	let minLen = $state(0);
+	// Small variants under the collapse threshold are mostly gone already (the
+	// wasm reduce pops them); the ones that survive did so because their site
+	// failed a safety check. Defaulting to 50 keeps the view about structural
+	// variation — drop it to 1 to see the awkward small survivors too.
+	let minLen = $state(50);
 	let pinned = $state<Ev | null>(null);
 	let hovered = $state<Ev | null>(null);
 	let viewWin = $state<{ start: number; end: number } | null>(null);
 	let copied = $state(false);
 
-	const W = 1000;
-	const H = 250;
+	// The svg's coordinate system is kept 1:1 with its rendered size: with
+	// `preserveAspectRatio="none"` a fixed viewBox width would be stretched to the
+	// container (~1.24x here), and that stretch applies to text too — which is
+	// what made the coordinate labels run into each other. Measuring instead means
+	// one unit is one pixel and labels render at their true width.
+	let svgW = $state(1000);
+	const W = $derived(Math.max(320, svgW));
 	const ML = 10;
 	const MR = 10;
 	const TOP = 16;
 	const baseY = 168;
 	const hmY = 176;
 	const hmH = 12;
+	// Gene track sits under the axis labels, in as many rows as it takes to keep
+	// overlapping genes readable.
+	const GENE_TOP = hmY + hmH + 42;
+	const GENE_ROW = 15;
+	const GENE_H = 9;
 
 	// Reset zoom/pin when a new subgraph is loaded.
 	$effect(() => {
@@ -47,6 +62,99 @@
 	});
 
 	const model = $derived(computeNonRefNodes(gfa, referenceSample, minLen));
+
+	// --- gene track -----------------------------------------------------------
+	// Genes are drawn against the same reference axis as the arcs, from the maps
+	// already shipped for the locus search. This replaced an embedded IGV.js
+	// browser, which pulled in a whole genome-browser stack to render what is
+	// really a row of labelled rectangles.
+	let genes = $state<Transcript[]>([]);
+	let geneError = $state(false);
+	$effect(() => {
+		const m = model;
+		const key = refKey;
+		if (!m || !key) {
+			genes = [];
+			return;
+		}
+		let cancelled = false;
+		geneError = false;
+		transcriptsInRange(key, m.contig, m.genomicStart, m.genomicStart + m.refLen)
+			.then((t) => {
+				if (!cancelled) genes = representativeTranscripts(t);
+			})
+			.catch(() => {
+				// The annotation lives on someone else's server; a locus is still
+				// perfectly usable without it, so fail quietly rather than loudly.
+				if (!cancelled) {
+					genes = [];
+					geneError = true;
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	interface GeneShape {
+		gene: Transcript;
+		x1: number;
+		x2: number;
+		labelEnd: number;
+		/** Exon boxes, split at the CDS boundary so UTRs can render thinner. */
+		blocks: { x: number; w: number; coding: boolean }[];
+	}
+
+	/** Packs genes into rows so labels don't collide, greedily left to right. */
+	const geneRows = $derived.by(() => {
+		if (!model || genes.length === 0) return [];
+		const s = win.start;
+		const span = Math.max(1, win.end - win.start);
+		const toX = (bp: number) => ML + ((bp - s) / span) * (W - ML - MR);
+		const rel = (bp: number) => bp - model.genomicStart;
+		const rows: GeneShape[][] = [];
+		for (const gene of genes) {
+			if (rel(gene.end) < s || rel(gene.start) > win.end) continue; // outside the zoom window
+			const x1 = Math.max(ML, toX(rel(gene.start)));
+			const x2 = Math.min(W - MR, toX(rel(gene.end)));
+
+			// Each exon becomes one or two boxes: the coding part and any UTR
+			// overhang either side of it, so the reading frame is visible rather
+			// than implied.
+			const blocks: GeneShape['blocks'] = [];
+			for (const ex of gene.exons) {
+				const segments: [number, number, boolean][] = [];
+				const cs = Math.max(ex.start, gene.cdsStart);
+				const ce = Math.min(ex.end, gene.cdsEnd);
+				if (cs < ce) {
+					if (ex.start < cs) segments.push([ex.start, cs, false]);
+					segments.push([cs, ce, true]);
+					if (ce < ex.end) segments.push([ce, ex.end, false]);
+				} else {
+					segments.push([ex.start, ex.end, false]);
+				}
+				for (const [a, b, coding] of segments) {
+					const xa = toX(rel(a));
+					const xb = toX(rel(b));
+					if (xb < ML || xa > W - MR) continue;
+					const cx = Math.max(ML, xa);
+					blocks.push({ x: cx, w: Math.max(0.8, Math.min(W - MR, xb) - cx), coding });
+				}
+			}
+
+			// Reserve room for the label, which is drawn just past the gene.
+			const labelEnd = Math.max(x2, x1) + 8 + gene.symbol.length * 5.6;
+			const item: GeneShape = { gene, x1, x2, labelEnd, blocks };
+			const row = rows.find((r) => r.length === 0 || r[r.length - 1].labelEnd + 6 < x1);
+			if (row) row.push(item);
+			else rows.push([item]);
+			if (rows.length > 8) break; // keep the track bounded on gene-dense loci
+		}
+		return rows;
+	});
+
+	// The svg grows with however many gene rows the locus needs.
+	const H = $derived(GENE_TOP + Math.max(1, geneRows.length) * GENE_ROW + 20);
 
 	const win = $derived(viewWin ?? { start: 0, end: model?.refLen ?? 1 });
 	const zoomFactor = $derived(model ? model.refLen / (win.end - win.start) : 1);
@@ -76,9 +184,16 @@
 				return { ev, x1, x2, xm, apex, lollipop, d, stroke: color(ev), heat: heatColor(ev.cov, model.totalNonRef) };
 			});
 
+		// How many coordinate labels actually fit. A formatted position is ~60px
+		// wide, and a fixed six of them collided on anything narrow — so derive the
+		// count from the available width instead of assuming it.
+		const LABEL_PX = 74;
+		// `steps` intervals means steps+1 labels, so subtract one from what fits.
+		const fits = Math.floor((W - ML - MR) / LABEL_PX);
+		const steps = Math.max(1, Math.min(5, fits - 1));
 		const ticks = [];
-		for (let i = 0; i <= 5; i++) {
-			const bp = s + (i / 5) * span;
+		for (let i = 0; i <= steps; i++) {
+			const bp = s + (i / steps) * span;
 			ticks.push({ x: xs(bp), label: Math.round(model.genomicStart + bp).toLocaleString() });
 		}
 		return { shapes, ticks };
@@ -149,7 +264,15 @@
 	</div>
 
 	{#if render && model}
-		<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" ondblclick={onDblClick} role="img" aria-label="reference arc view">
+		<svg
+			bind:clientWidth={svgW}
+			viewBox="0 0 {W} {H}"
+			style="height: {H}px"
+			preserveAspectRatio="none"
+			ondblclick={onDblClick}
+			role="img"
+			aria-label="reference arc view"
+		>
 			<!-- vertical position guides -->
 			{#each render.ticks as t, i (i)}
 				<line x1={t.x} y1={TOP} x2={t.x} y2={baseY} stroke="#eee" stroke-width="1" />
@@ -194,9 +317,70 @@
 			<!-- axis ticks + labels -->
 			{#each render.ticks as t, i (i)}
 				<line x1={t.x} y1={hmY + hmH} x2={t.x} y2={hmY + hmH + 4} stroke="#999" stroke-width="1" />
-				<text x={t.x} y={hmY + hmH + 18} font-size="10" fill="#666" text-anchor="middle">{t.label}</text>
+				<text
+					x={t.x}
+					y={hmY + hmH + 18}
+					font-size="10"
+					fill="#666"
+					text-anchor={i === 0 ? 'start' : i === render.ticks.length - 1 ? 'end' : 'middle'}
+					>{t.label}</text
+				>
 			{/each}
-			<text x={(ML + W - MR) / 2} y={H - 6} font-size="10" fill="#999" text-anchor="middle">{model.contig} reference position (bp)</text>
+			<!-- The contig label gets its own row: it used to sit at the same y as the
+			     ticks, directly on top of the leftmost coordinate. -->
+			<text x={ML} y={hmY + hmH + 32} font-size="9.5" fill="#aaa">
+				{model.contig} reference position (bp)
+			</text>
+
+			<!-- gene track -->
+			{#each geneRows as row, ri (ri)}
+				{#each row as g (g.gene.name)}
+					{@const y = GENE_TOP + ri * GENE_ROW}
+					{@const mid = y + GENE_H / 2}
+					<!-- intron line spanning the transcript -->
+					<line x1={g.x1} y1={mid} x2={g.x2} y2={mid} stroke="#8b9bb4" stroke-width="1" />
+					<!-- strand direction ticks along the intron line -->
+					{#each Array(Math.min(14, Math.max(0, Math.floor((g.x2 - g.x1) / 34)))) as _, k (k)}
+						{@const ax = g.x1 + 17 + k * 34}
+						<path
+							d={g.gene.strand === '+'
+								? `M ${ax - 2} ${mid - 2.5} L ${ax + 2} ${mid} L ${ax - 2} ${mid + 2.5}`
+								: `M ${ax + 2} ${mid - 2.5} L ${ax - 2} ${mid} L ${ax + 2} ${mid + 2.5}`}
+							fill="none"
+							stroke="#8b9bb4"
+							stroke-width="1"
+						/>
+					{/each}
+					<!-- exons: taller where coding, thinner across UTRs -->
+					{#each g.blocks as b, bi (bi)}
+						<rect
+							x={b.x}
+							y={b.coding ? y : y + 2}
+							width={b.w}
+							height={b.coding ? GENE_H : GENE_H - 4}
+							fill="#5b6f8c"
+						/>
+					{/each}
+					<rect x={g.x1} y={y} width={Math.max(1, g.x2 - g.x1)} height={GENE_H} fill="transparent">
+						<title
+							>{g.gene.symbol} ({g.gene.strand}) · {g.gene.name} · {model.contig}:{g.gene.start.toLocaleString()}-{g.gene.end.toLocaleString()}
+							· {g.gene.exons.length} exons</title
+						>
+					</rect>
+					<text x={Math.max(g.x2, g.x1) + 5} y={y + GENE_H - 1} font-size="9.5" fill="#556">
+						{g.gene.symbol}
+					</text>
+				{/each}
+			{/each}
+			{#if geneRows.length === 0}
+				<text x={ML} y={GENE_TOP + GENE_H} font-size="9.5" fill="#aaa">
+					{#if geneError}
+						gene annotation unavailable
+					{:else if refKey}
+						no annotated genes in this window
+					{/if}
+				</text>
+			{/if}
 		</svg>
 
 		<div class="legends">
@@ -268,7 +452,7 @@
 	}
 	svg {
 		width: 100%;
-		height: 250px;
+		display: block;
 		border: 1px solid #eee;
 		border-radius: 8px;
 		background: #fbfbfc;
@@ -304,7 +488,7 @@
 		width: 90px;
 		height: 10px;
 		border-radius: 3px;
-		background: linear-gradient(90deg, rgb(56, 142, 60), rgb(16, 60, 24));
+		background: linear-gradient(90deg, rgb(255, 214, 10), rgb(214, 30, 30));
 	}
 	.hover {
 		font-size: 0.85rem;

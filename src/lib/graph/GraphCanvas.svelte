@@ -28,6 +28,28 @@
 	let transform: ZoomTransform = zoomIdentity;
 	let zoomBehavior = zoom<HTMLCanvasElement, unknown>().scaleExtent([0.02, 40]);
 
+	// EXPERIMENT: zoom is horizontal-only. A pangenome bubble is wide and thin —
+	// the interesting structure is variation *along* the reference, while the
+	// vertical axis is just stacking room for alternate paths. Zooming both axes
+	// together means pulling two crowded strands apart horizontally also grows
+	// the pile vertically until it leaves the viewport. So x scales with the
+	// zoom and y stays pinned at whatever fits the graph in the canvas.
+	//
+	// Consequences, both deliberate:
+	//  - the two axes fit independently, so the layout fills the vertical space
+	//    instead of being letterboxed by the (much larger) horizontal extent;
+	//  - d3-zoom's own transform.y is ignored. It assumes uniform scaling, so
+	//    its y drifts while zooming toward a point. We track vertical panning
+	//    ourselves in `panY` and only move it when k *didn't* change.
+	let baseScaleY = 1;
+	let panY = 0;
+	let prevK = 1;
+	let prevY = 0;
+
+	// World -> screen (CSS px). x rides the zoom, y rides the fixed fit.
+	const toScreenX = (wx: number) => transform.x + wx * transform.k;
+	const toScreenY = (wy: number) => panY + wy * baseScaleY;
+
 	let hoveredSegment: string | null = $state(null);
 	let hoverPos: { x: number; y: number } = $state({ x: 0, y: 0 });
 	let hoverLabel: string | null = $state(null);
@@ -81,14 +103,20 @@
 		const graphWidth = Math.max(1, maxX - minX);
 		const graphHeight = Math.max(1, maxY - minY);
 		const padding = 0.9;
-		const scale = Math.min((width / graphWidth) * padding, (height / graphHeight) * padding, 8);
 		const cx = (minX + maxX) / 2;
 		const cy = (minY + maxY) / 2;
 
-		// Centering is baked directly into the transform (not added separately
-		// in draw()) so it matches exactly what d3-zoom assumes when it keeps
-		// the point under the cursor fixed during wheel/dblclick zoom.
-		const next = zoomIdentity.translate(width / 2 - cx * scale, height / 2 - cy * scale).scale(scale);
+		// Each axis fits on its own now that they scale independently.
+		const scaleX = Math.min((width / graphWidth) * padding, 8);
+		baseScaleY = Math.min((height / graphHeight) * padding, 8);
+		panY = height / 2 - cy * baseScaleY;
+
+		// Horizontal centering is baked directly into the transform (not added
+		// separately in draw()) so it matches exactly what d3-zoom assumes when
+		// it keeps the point under the cursor fixed during wheel/dblclick zoom.
+		const next = zoomIdentity.translate(width / 2 - cx * scaleX, 0).scale(scaleX);
+		prevK = scaleX;
+		prevY = 0;
 		select(canvasEl).call(zoomBehavior.transform, next);
 	}
 
@@ -111,24 +139,34 @@
 		ctx.fillStyle = '#0b0d12';
 		ctx.fillRect(0, 0, width, height);
 
-		ctx.translate(transform.x, transform.y);
-		ctx.scale(transform.k, transform.k);
+		// Points are projected to screen coordinates individually rather than by
+		// setting a canvas transform, because the transform is now anisotropic:
+		// ctx.scale(kx, ky) would stretch every stroke into an ellipse, making
+		// line width depend on a segment's direction. Projecting by hand keeps
+		// stroke widths honest screen pixels and drops the old `/transform.k`
+		// compensation everywhere.
 
 		// structural links first, underneath strands. Drawn as a curve through the
 		// (invisible) bend node so a link between two backbone-pinned points —
 		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
 		// and disappear against it.
 		ctx.strokeStyle = 'rgba(200, 210, 230, 0.35)';
-		ctx.lineWidth = 1 / transform.k;
+		ctx.lineWidth = 1;
 		for (const link of layout.structuralLinkPaths) {
 			const a = layout.nodesById.get(link.fromNode);
 			const b = layout.nodesById.get(link.toNode);
 			const m = layout.nodesById.get(link.bendNode);
 			if (!a || !b) continue;
 			ctx.beginPath();
-			ctx.moveTo(a.x, a.y);
-			if (m) ctx.quadraticCurveTo(m.x, m.y, b.x, b.y);
-			else ctx.lineTo(b.x, b.y);
+			ctx.moveTo(toScreenX(a.x), toScreenY(a.y));
+			if (m)
+				ctx.quadraticCurveTo(
+					toScreenX(m.x),
+					toScreenY(m.y),
+					toScreenX(b.x),
+					toScreenY(b.y)
+				);
+			else ctx.lineTo(toScreenX(b.x), toScreenY(b.y));
 			ctx.stroke();
 		}
 
@@ -139,10 +177,10 @@
 			const pts = chain.nodeIds.map((id) => layout.nodesById.get(id)!);
 			if (pts.length === 0) continue;
 			ctx.beginPath();
-			ctx.moveTo(pts[0].x, pts[0].y);
-			for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+			ctx.moveTo(toScreenX(pts[0].x), toScreenY(pts[0].y));
+			for (let i = 1; i < pts.length; i++) ctx.lineTo(toScreenX(pts[i].x), toScreenY(pts[i].y));
 			ctx.strokeStyle = colorForChain(chain.segId);
-			ctx.lineWidth = (chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth) / transform.k;
+			ctx.lineWidth = chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth;
 			ctx.stroke();
 		}
 
@@ -190,9 +228,6 @@
 		}
 		if (anchors.length === 0) return;
 		anchors.sort((a, b) => a.minX - b.minX);
-
-		const toScreenX = (wx: number) => transform.x + wx * transform.k;
-		const toScreenY = (wy: number) => transform.y + wy * transform.k;
 
 		ctx.save();
 		ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -246,15 +281,22 @@
 
 	function findSegmentAt(px: number, py: number): string | null {
 		if (!canvasEl) return null;
-		const x = (px - transform.x) / transform.k;
-		const y = (py - transform.y) / transform.k;
-		const tolerance = 6 / transform.k;
+		// Hit-testing happens in screen space: with x and y on different scales
+		// there is no single world-space tolerance that means "6 pixels away".
+		const tolerance = 6;
 
 		let best: { segId: string; dist: number } | null = null;
 		for (const chain of layout.chains) {
 			const pts = chain.nodeIds.map((id) => layout.nodesById.get(id)!);
 			for (let i = 0; i < pts.length - 1; i++) {
-				const dist = distToSegment(x, y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+				const dist = distToSegment(
+					px,
+					py,
+					toScreenX(pts[i].x),
+					toScreenY(pts[i].y),
+					toScreenX(pts[i + 1].x),
+					toScreenY(pts[i + 1].y)
+				);
 				if (dist < tolerance && (!best || dist < best.dist)) {
 					best = { segId: chain.segId, dist };
 				}
@@ -291,7 +333,14 @@
 		if (!canvasEl) return;
 		const sel = select(canvasEl);
 		zoomBehavior.on('zoom', (event) => {
-			transform = event.transform;
+			const t = event.transform;
+			// A gesture that changed k is a zoom, and zoom must not move the graph
+			// vertically. Anything else is a pan, and d3's y delta there is already
+			// in screen pixels, so it carries over to panY as-is.
+			if (t.k === prevK) panY += t.y - prevY;
+			prevK = t.k;
+			prevY = t.y;
+			transform = t;
 			draw();
 		});
 		// Plain two-finger trackpad scrolling and mouse-wheel scrolling both show

@@ -15,6 +15,11 @@
 
 	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
 
+	// Prototype: keep all non-reference bubbles above the reference line, which
+	// halves the vertical spread and leaves the space underneath free for
+	// coordinate tracks (genes, and whatever else gets anchored to bp).
+	let bubblesAbove = $state(false);
+
 	let selected = $state<string | null>(null);
 
 	$effect(() => {
@@ -97,6 +102,12 @@
 	// seconds. Below this, graphs typically lay out in well under 20s.
 	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
 
+	// Past that threshold the full-quality layout takes minutes, so switch to a
+	// rough one automatically rather than making people wait or choose. Below it,
+	// quality is cheap and rough mode looked wrong on small graphs — which is why
+	// it isn't offered as a manual toggle.
+	const roughLayout = $derived(adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD);
+
 	// --- layout worker ---
 	let worker: Worker | null = null;
 	let reqId = 0;
@@ -131,7 +142,21 @@
 		// locus can have millions), so nothing upstream de-proxies them for us
 		// — this snapshot is the one place that must, since it's the one place
 		// with a hard structured-clone requirement.
-		w.postMessage({ id, graph: $state.snapshot(graph), options: { referenceSample } } satisfies LayoutRequest);
+		// Rough mode collapses each segment to one simulation node (instead of up
+		// to 60 sub-nodes for a smooth strand), cuts the iterations, and drops the
+		// per-link bend nodes — which is where nearly all the time goes on a big
+		// graph (62.5s -> 6.0s measured on a 9,892-node fixture).
+		const options = roughLayout
+			? {
+					referenceSample,
+					maxEdgesPerSegment: 1,
+					targetTotalSubNodes: 400,
+					iterations: 60,
+					bendNodes: false,
+					bubblesAbove
+				}
+			: { referenceSample, bubblesAbove };
+		w.postMessage({ id, graph: $state.snapshot(graph), options } satisfies LayoutRequest);
 	});
 
 	onDestroy(() => worker?.terminate());
@@ -146,10 +171,18 @@
 <div class="wrap">
 	<div class="head">
 		<span class="muted">{adapted.keptSegments.toLocaleString()} nodes</span>
+		<label class="opt" title="Keep variant bubbles on one side, freeing the space below the reference line">
+			<input type="checkbox" bind:checked={bubblesAbove} /> one-sided
+		</label>
 		{#if computing}
 			<span class="computing">computing…</span>
 		{:else if layout}
 			<span class="muted">· layout {ms} ms</span>
+		{/if}
+		{#if roughLayout}
+			<span class="rough" title="Too many nodes for the full-quality layout; positions are approximate">
+				rough layout
+			</span>
 		{/if}
 	</div>
 
