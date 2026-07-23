@@ -28,6 +28,8 @@ export interface Transcript {
 	cdsStart: number;
 	cdsEnd: number;
 	exons: { start: number; end: number }[];
+	/** True when the annotation project marks this the representative transcript. */
+	canonical: boolean;
 }
 
 // hg38's knownGene is GENCODE-derived and CHM13's is the RefSeq liftover —
@@ -37,15 +39,35 @@ const SOURCES: Record<RefKey, string> = {
 	chm13: 'https://hgdownload.soe.ucsc.edu/gbdb/hs1/ncbiRefSeq/ncbiRefSeqCurated.bb'
 };
 
-const readers = new Map<RefKey, BigBed>();
-function reader(ref: RefKey): BigBed {
-	let r = readers.get(ref);
+// Companion tracks listing the one transcript per gene that the annotation
+// project itself considers representative — so we don't have to guess. Each is
+// a strict subset of the track above it, keyed by the same accessions, and is
+// queried over the same window, so it costs one extra range request.
+//
+// hg38 gets MANE Select (the NCBI/EMBL-EBI joint set). CHM13 has no MANE track,
+// so it gets RefSeq Select, which is MANE Select for genes that have one and
+// RefSeq's own pick for the rest — the closest available equivalent.
+const CANONICAL_SOURCES: Record<RefKey, string> = {
+	grch38: 'https://hgdownload.soe.ucsc.edu/gbdb/hg38/mane/mane.bb',
+	chm13: 'https://hgdownload.soe.ucsc.edu/gbdb/hs1/ncbiRefSeq/ncbiRefSeqSelectCurated.bb'
+};
+
+const readers = new Map<string, BigBed>();
+function reader(url: string): BigBed {
+	let r = readers.get(url);
 	if (!r) {
-		r = new BigBed({ url: SOURCES[ref] });
-		readers.set(ref, r);
+		r = new BigBed({ url });
+		readers.set(url, r);
 	}
 	return r;
 }
+
+/**
+ * Accessions are versioned, and the version can differ between a track and its
+ * canonical companion (knownGene carries ENST00000380707.8 where MANE has .9),
+ * so compare on the accession alone.
+ */
+const unversioned = (accession: string) => accession.split('.')[0];
 
 /**
  * Field order differs between the two files — CHM13's carries the symbol in
@@ -76,6 +98,26 @@ const list = (s: string | undefined) =>
 		.filter((x) => x !== '')
 		.map(Number);
 
+/**
+ * Unversioned accessions of the canonical transcripts in a window. Failures are
+ * swallowed: without this set the track still draws, it just falls back to
+ * picking a representative by size, so a flaky companion file shouldn't take
+ * the gene track down with it.
+ */
+async function canonicalNames(
+	ref: RefKey,
+	contig: string,
+	start: number,
+	end: number
+): Promise<Set<string>> {
+	try {
+		const feats = await reader(CANONICAL_SOURCES[ref]).getFeatures(contig, start, end);
+		return new Set(feats.map((f) => unversioned(String(f.rest ?? '').split('\t')[0] ?? '')));
+	} catch {
+		return new Set();
+	}
+}
+
 /** Transcripts overlapping a window, with exon structure. */
 export async function transcriptsInRange(
 	ref: RefKey,
@@ -83,12 +125,15 @@ export async function transcriptsInRange(
 	start: number,
 	end: number
 ): Promise<Transcript[]> {
-	const bb = reader(ref);
-	const header = await bb.getHeader();
+	const bb = reader(SOURCES[ref]);
+	const [header, feats, canonical] = await Promise.all([
+		bb.getHeader(),
+		bb.getFeatures(contig, start, end),
+		canonicalNames(ref, contig, start, end)
+	]);
 	const idx = fieldIndex(header.autoSql);
 	const at = (f: string[], name: string, fallback: number) => f[idx.get(name) ?? fallback];
 
-	const feats = await bb.getFeatures(contig, start, end);
 	const out: Transcript[] = [];
 	for (const feat of feats) {
 		const f = String(feat.rest ?? '').split('\t');
@@ -114,7 +159,8 @@ export async function transcriptsInRange(
 			end: feat.end,
 			cdsStart: num(at(f, 'thickStart', 3)),
 			cdsEnd: num(at(f, 'thickEnd', 4)),
-			exons
+			exons,
+			canonical: canonical.has(unversioned(name))
 		});
 	}
 	return out;
@@ -122,8 +168,10 @@ export async function transcriptsInRange(
 
 /**
  * One transcript per gene symbol, so a gene with a dozen isoforms doesn't fill
- * the track. Prefers the longest coding span, falling back to the longest
- * overall — a reasonable stand-in for "canonical" without another lookup.
+ * the track. The canonical flag decides it where the annotation supplies one;
+ * otherwise we fall back to the longest coding span, then the longest overall.
+ * Size alone is a poor proxy — for SMN1 it picks an 8-exon isoform over the
+ * 9-exon canonical — so the flag is worth the extra range request.
  */
 export function representativeTranscripts(transcripts: Transcript[]): Transcript[] {
 	const best = new Map<string, Transcript>();
@@ -131,6 +179,10 @@ export function representativeTranscripts(transcripts: Transcript[]): Transcript
 		const prev = best.get(t.symbol);
 		if (!prev) {
 			best.set(t.symbol, t);
+			continue;
+		}
+		if (t.canonical !== prev.canonical) {
+			if (t.canonical) best.set(t.symbol, t);
 			continue;
 		}
 		const score = (x: Transcript) => [x.cdsEnd - x.cdsStart, x.end - x.start];
