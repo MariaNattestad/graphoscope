@@ -6,52 +6,14 @@
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
-	import { searchGenes, resolveGene, geneToLocus, type GeneEntry, type RefKey } from '$lib/genes';
+	import { searchGenes, resolveGene, geneToLocus, type GeneEntry } from '$lib/genes';
+	import { GRAPHS, DEFAULT_GENE, MAX_GFA_BYTES, type GraphId } from '$lib/graphs';
 	import { base } from '$app/paths';
 
 	let client: GbzClient | null = null;
 
-	// ---- The two hosted graphs -------------------------------------------------
-	// Both are HPRC Release 2 (v2.0) Minigraph-Cactus pangenome graphs. We took the
-	// public `.gbz` files, converted each to a GBZ-base `.gbz.db` (SQLite) with
-	// `gbz2db`, and host them on Cloudflare R2 with CORS + HTTP range support so the
-	// browser can query a locus without downloading the multi-GB database.
-	const R2_BASE = 'https://pub-32138fb437f04b75ac10fea079052edb.r2.dev';
-
-	interface GraphDef {
-		id: 'grch38' | 'chm13';
-		label: string;
-		/** Reference sample name inside the graph — also the coordinate system. */
-		referenceSample: string;
-		/** Which bundled gene map matches this reference. */
-		refKey: RefKey;
-		dbUrl: string;
-		/** Original public source we indexed. */
-		s3Source: string;
-	}
-
-	const GRAPHS: GraphDef[] = [
-		{
-			id: 'grch38',
-			label: 'GRCh38-based',
-			referenceSample: 'GRCh38',
-			refKey: 'grch38',
-			dbUrl: `${R2_BASE}/hprc-v2.0-mc-grch38.gbz.db`,
-			s3Source:
-				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-grch38.gbz'
-		},
-		{
-			id: 'chm13',
-			label: 'CHM13-based (T2T)',
-			referenceSample: 'CHM13',
-			refKey: 'chm13',
-			dbUrl: `${R2_BASE}/hprc-v2.0-mc-chm13.gbz.db`,
-			s3Source:
-				's3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-chm13.gbz'
-		}
-	];
-
-	// Example loci are gene symbols, not raw coordinates — resolved through the
+	// The two hosted graphs (definitions in $lib/graphs, shared with the /api
+	// route). Example loci are gene symbols, not raw coordinates — resolved through the
 	// exact same gene → coordinate lookup as manual search (below), separately
 	// per graph, so they're never out of sync with what search would actually
 	// return. Deliberately NOT the old hardcoded "MHC core" coordinate range:
@@ -70,20 +32,9 @@
 	// 3,218 → 169, C4A 758 → 58. Keeping them visible is the point — they are
 	// where the pangenome is actually interesting.
 	const EXAMPLE_GENES = ['HLA-A', 'AMY1A', 'SMN1', 'CYP2D6', 'LPA', 'MUC5B', 'C4A'];
-	// SMN1 is the lightest of the four examples (35 segments vs. HLA-A's 130,
-	// ~35 KiB less to fetch, layout in well under a second) — the default should
-	// load fast and stay responsive on mobile, not showcase the heaviest case.
-	const DEFAULT_GENE = 'SMN1';
 
-	let graphId = $state<'grch38' | 'chm13'>('grch38');
+	let graphId = $state<GraphId>('grch38');
 	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
-
-	// Backstop only. The walks that used to dominate GFA size (and blow up the tab
-	// once parsed into per-step objects) are aggregated away in the wasm query, so
-	// a reduced response is governed by topology: measured loci from 10 kb to
-	// 3.2 Mb all came back three orders of magnitude under this ceiling. Reaching
-	// it means something pathological, and we refuse rather than try to render.
-	const MAX_GFA_BYTES = 13 * 1024 * 1024;
 
 	// ---- Query state -----------------------------------------------------------
 	let locusText = $state(DEFAULT_GENE);
@@ -172,9 +123,37 @@
 		if (e.key === 'Enter') run();
 	}
 
+	// ---- Shareable URL: ?ref=grch38|chm13 & ?locus=<gene or contig:start-end> --
+	// These make a query a single link — the thing an AI agent (or a colleague)
+	// can construct, open, and reproduce. On load we adopt them; after each query
+	// we write the current state back, preferring the gene symbol over resolved
+	// coordinates so the link stays legible (e.g. ?locus=SMN1, not chr5:709…).
+	function applyUrlParams(): boolean {
+		const p = new URLSearchParams(window.location.search);
+		const ref = p.get('ref');
+		if (ref === 'grch38' || ref === 'chm13') graphId = ref;
+		const locus = p.get('locus') ?? p.get('gene');
+		if (locus && locus.trim()) {
+			locusText = locus.trim();
+			return true;
+		}
+		return false;
+	}
+
+	function syncUrlParams() {
+		const p = new URLSearchParams(window.location.search);
+		p.set('ref', graphId);
+		p.set('locus', queriedGene ?? locusText);
+		const qs = p.toString();
+		// replaceState (not a navigation) so this never reloads or adds history
+		// entries — it just keeps the address bar reproducible.
+		window.history.replaceState(window.history.state, '', `${window.location.pathname}?${qs}`);
+	}
+
 	onMount(() => {
 		initAnalytics();
 		client = new GbzClient();
+		applyUrlParams();
 		run();
 		return () => client?.terminate();
 	});
@@ -258,11 +237,15 @@
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
 			running = false;
+			// Reflect the query in the address bar so the link reproduces it. Runs
+			// on success and failure alike — a link to a bad locus is still worth
+			// being able to share.
+			syncUrlParams();
 		}
 	}
 
 
-	function selectGraph(id: 'grch38' | 'chm13') {
+	function selectGraph(id: GraphId) {
 		if (id === graphId) return;
 		graphId = id;
 		locusText = DEFAULT_GENE;
