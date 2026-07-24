@@ -64,6 +64,69 @@ node scripts/build-genes.mjs chm13  chm13v2.0_RefSeq_Liftoff_v5.2.gff3.gz
 
 (GRCh38 from GENCODE; CHM13 from the T2T-CHM13v2.0 RefSeq Liftoff annotation.)
 
+## Query by URL (and for AI agents)
+
+A query is a shareable link. Two params drive the app:
+
+- `ref` — which graph: `grch38` or `chm13`
+- `locus` — a gene symbol (`SMN1`) **or** coordinates in the graph's reference
+  system (`contig:start-end`, e.g. `chr5:70925029-70953942`)
+
+```
+# GRCh38-based graph, by gene symbol
+https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1
+
+# CHM13-based (T2T) graph, by coordinates
+https://marianattestad.github.io/graphoscope/?ref=chm13&locus=chr6:161783171-162011762
+```
+
+Opening the app writes the current `ref`/`locus` back into the address bar, so
+whatever you're looking at is always a link you can copy.
+
+### Machine-readable endpoint: `/api`
+
+For agents and scripts, `/api` runs the same query and returns **graph-complexity
+stats as JSON** instead of the visualizations:
+
+```
+https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1
+https://marianattestad.github.io/graphoscope/api?ref=chm13&locus=LPA
+```
+
+```jsonc
+{
+  "ok": true,
+  "query": { "graph": "grch38", "input": "SMN1", "gene": "SMN1",
+             "contig": "chr5", "start": 70925029, "end": 70953942, "span": 28913 },
+  "complexity": {
+    "nodes": 35, "nodesBeforeSimplification": 1064,
+    "links": 56, "linksBeforeSimplification": 1476,
+    "walks": 935, "samples": 2,
+    "totalSequenceBp": 31526, "referencePathBp": 29263,
+    "variantSites": 334, "snps": 334,
+    "nodesRemoved": 346, "basesRemoved": 386, "unchopMerges": 683,
+    "simplified": true
+  },
+  "fetch": { "requestCount": 20, "bytesFetched": 4653056,
+             "dbSizeBytes": 9861406720, "elapsedMs": 1120 }
+}
+```
+
+**How to consume it.** Graphoscope has no backend — it's a static site on GitHub
+Pages, and the query engine (`query.wasm` + HTTP range requests) only runs in a
+browser. So `/api` is **not** a plain HTTP endpoint you can `curl`; the JSON is
+produced client-side. A caller needs a JS-capable / headless browser (Puppeteer,
+Playwright, or an agent's browser tool):
+
+1. Navigate to `/api?ref=…&locus=…`.
+2. Wait until `<main>`'s `data-status` attribute is `done` (or `error`) — it
+   starts at `loading` while the wasm query runs.
+3. Read the JSON from `#result`'s text, or from `window.graphoscopeResult`.
+
+An error returns `{ "ok": false, "error": "…", "query": { … } }` with the same
+`data-status="error"` signal. The response shape is defined in
+`src/lib/apiReport.ts`.
+
 ## Data hosting
 
 The app points at the two `.gbz.db` files on Cloudflare R2 (see `R2_BASE` in
