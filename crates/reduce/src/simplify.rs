@@ -514,6 +514,21 @@ pub struct UnchopPlan {
     pub merges: usize,
 }
 
+/// A link read as a forward chain step `a+ -> b+`, if it is one.
+///
+/// GFA stores each node in an orientation the assembler picked arbitrarily, so
+/// the same non-branching run appears as `+/+` links or as `-/-` links
+/// depending on which strand the nodes happen to be stored on. Both are chain
+/// steps; `-/-` is just the reverse-complement reading of the `+/+` edge
+/// between the same two nodes, with the endpoints swapped. Everything
+/// downstream works in the forward reading, so that is what this returns.
+fn canonical_chain_step(l: &Link) -> Option<(NodeId, NodeId)> {
+    if l.from == l.to || l.from_rev != l.to_rev {
+        return None;
+    }
+    Some(if l.from_rev { (l.to, l.from) } else { (l.from, l.to) })
+}
+
 pub fn plan_unchop(graph: &Graph) -> UnchopPlan {
     let mut l_end: HashMap<NodeId, usize> = HashMap::new();
     let mut r_end: HashMap<NodeId, usize> = HashMap::new();
@@ -527,10 +542,20 @@ pub fn plan_unchop(graph: &Graph) -> UnchopPlan {
         }
         *if l.from_rev { &mut l_end } else { &mut r_end }.entry(l.from).or_insert(0) += 1;
         *if l.to_rev { &mut r_end } else { &mut l_end }.entry(l.to).or_insert(0) += 1;
-        if l.from != l.to && !l.from_rev && !l.to_rev {
-            fwd_out.insert(l.from, l.to);
-            *fwd_out_count.entry(l.from).or_insert(0) += 1;
-            *fwd_in_count.entry(l.to).or_insert(0) += 1;
+        // A chain step is any *co-oriented* link. `a- -> b-` is the same
+        // bidirected edge as `b+ -> a+` (it leaves a's left end and enters b's
+        // right end), so canonicalising it to the forward reading lets one
+        // rule cover both. Reading it in canonical order also means chain
+        // members come out in forward orientation, so the sequence
+        // concatenation below stays correct without reverse-complementing.
+        //
+        // `+-` and `-+` links are inversions, not chain steps: the two nodes
+        // are not traversed in a consistent direction, so they can never be
+        // merged and are skipped here.
+        if let Some((a, b)) = canonical_chain_step(l) {
+            fwd_out.insert(a, b);
+            *fwd_out_count.entry(a).or_insert(0) += 1;
+            *fwd_in_count.entry(b).or_insert(0) += 1;
         }
     }
 
@@ -612,8 +637,12 @@ pub fn plan_unchop(graph: &Graph) -> UnchopPlan {
             continue;
         };
         // An internal chain link is the co-oriented step between consecutive
-        // members of the same output segment.
-        if cf == ct && merge_next.get(&l.from) == Some(&l.to) {
+        // members of the same output segment — in whichever orientation the
+        // link happens to be stored, hence the same canonicalisation used to
+        // build the chains.
+        if cf == ct
+            && canonical_chain_step(l).is_some_and(|(a, b)| merge_next.get(&a) == Some(&b))
+        {
             continue;
         }
         links.push((cf, l.from_rev, ct, l.to_rev));
