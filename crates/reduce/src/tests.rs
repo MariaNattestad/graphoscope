@@ -114,6 +114,77 @@ fn run_reduce(text: &str, max_variant: usize) -> String {
     String::from_utf8(out).expect("output is utf-8")
 }
 
+/// Rewrites a GFA so every node is stored in the opposite orientation: each
+/// segment's sequence is reverse-complemented and every reference to it flips
+/// its orientation flag. The graph this produces is the *same* bidirected
+/// graph — same nodes, same adjacencies, same haplotypes — written the other
+/// way round, which is a choice the assembler makes arbitrarily per node.
+/// Simplification must therefore be blind to it.
+fn flip_orientation(gfa: &str) -> String {
+    fn revcomp(s: &str) -> String {
+        s.chars()
+            .rev()
+            .map(|c| match c {
+                'A' => 'T',
+                'C' => 'G',
+                'G' => 'C',
+                'T' => 'A',
+                'a' => 't',
+                'c' => 'g',
+                'g' => 'c',
+                't' => 'a',
+                other => other,
+            })
+            .collect()
+    }
+    let flip = |o: &str| if o == "+" { "-" } else { "+" };
+
+    gfa.lines()
+        .map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            match f.first() {
+                // S <id> <seq> [tags]: store the other strand.
+                Some(&"S") if f.len() >= 3 => {
+                    let mut o = vec![f[0].to_string(), f[1].to_string(), revcomp(f[2])];
+                    o.extend(f[3..].iter().map(|s| s.to_string()));
+                    o.join("\t")
+                }
+                // L <a> <oa> <b> <ob> ...: the adjacency is unchanged, but both
+                // endpoints are now named in the opposite orientation.
+                Some(&"L") if f.len() >= 5 => {
+                    let mut o = vec![
+                        f[0].to_string(),
+                        f[1].to_string(),
+                        flip(f[2]).to_string(),
+                        f[3].to_string(),
+                        flip(f[4]).to_string(),
+                    ];
+                    o.extend(f[5..].iter().map(|s| s.to_string()));
+                    o.join("\t")
+                }
+                // W ... <walk>: same steps in the same order, each flipped.
+                Some(&"W") if f.len() >= 7 => {
+                    let walk: String = f[6]
+                        .chars()
+                        .map(|c| match c {
+                            '>' => '<',
+                            '<' => '>',
+                            other => other,
+                        })
+                        .collect();
+                    let mut o: Vec<String> = f[..6].iter().map(|s| s.to_string()).collect();
+                    o.push(walk);
+                    o.extend(f[7..].iter().map(|s| s.to_string()));
+                    o.join("\t")
+                }
+                _ => line.to_string(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 /// Undirected adjacencies (by node id, orientation-independent) in a GFA's L lines.
 fn edges(gfa: &str) -> HashSet<(String, String)> {
     let mut out = HashSet::new();
@@ -277,6 +348,39 @@ fn a_higher_threshold_never_keeps_more_nodes() {
                 previous
             );
             previous = count;
+        }
+    }
+}
+
+#[test]
+fn simplification_is_blind_to_stored_node_orientation() {
+    // Regression: `plan_unchop` originally built its merge-candidate set from
+    // `!from_rev && !to_rev`, so a non-branching chain stored in reverse
+    // orientation — a run of `-/-` links, topologically identical to a `+/+`
+    // run — was never merged. In HPRC v1.1 this left 13.6% of 50 kb windows
+    // with UM=0 and ~33% node reduction instead of ~99%, which the atlas then
+    // read as biological complexity.
+    for name in all_fixtures() {
+        let input = fixture(name);
+        let flipped = flip_orientation(&input);
+
+        let a = run_reduce(&input, 50);
+        let b = run_reduce(&flipped, 50);
+
+        let xa = a.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+        let xb = b.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+
+        for tag in ["SB", "SA", "UM", "ST", "NR"] {
+            assert_eq!(
+                int_tag(xa, tag),
+                int_tag(xb, tag),
+                "{}: {} differs between a graph and the same graph stored \
+                 in reverse orientation ({} vs {})",
+                name,
+                tag,
+                int_tag(xa, tag).unwrap_or(0),
+                int_tag(xb, tag).unwrap_or(0)
+            );
         }
     }
 }
