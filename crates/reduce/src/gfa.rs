@@ -169,6 +169,25 @@ pub fn walk_field(line: &[u8]) -> &[u8] {
     field(line, 6).unwrap_or_default()
 }
 
+/// The `WT` (weight) tag of a `W` line, if present.
+///
+/// GBZ-base emits `WT` only under `HaplotypeOutput::Distinct`, where identical
+/// walks are collapsed to one record and `WT` carries how many haplotypes took
+/// that route. Under the default `All` output there is no tag and every
+/// haplotype has its own record, so an absent tag means weight 1.
+pub fn walk_weight(line: &[u8]) -> usize {
+    let mut i = 7;
+    while let Some(f) = field(line, i) {
+        if f.len() > 5 && &f[..5] == b"WT:i:" {
+            if let Some(v) = parse_u64(&f[5..]) {
+                return v as usize;
+            }
+        }
+        i += 1;
+    }
+    1
+}
+
 /// Iterates a walk field's oriented steps without allocating.
 pub struct StepIter<'a> {
     b: &'a [u8],
@@ -223,9 +242,20 @@ pub struct ReduceStats {
     pub snp_count: usize,
     pub bases_removed: usize,
     pub unchop_merges: usize,
+    /// Haplotypes traversing the locus, summing the `WT` weights of the `W`
+    /// records (or counting records when GBZ-base emitted each haplotype
+    /// separately). This is the number to show a user: "how many haplotypes".
     pub total_walks: usize,
     pub non_ref_walks: usize,
+    /// Named samples on `W` lines. Subgraph extraction anonymises non-reference
+    /// walks (gbz-base builds their metadata with `WalkMetadata::anonymous`), so
+    /// on a database query this is always 2 — the reference sample plus
+    /// `unknown`. Meaningful only when reducing a GFA file with real names.
     pub samples: usize,
+    /// `W` records read, before weighting. At repetitive loci a haplotype is
+    /// split into many traversal fragments, so this can hugely exceed
+    /// `total_walks`; it is a graph-structure diagnostic, not a haplotype count.
+    pub walk_records: usize,
     pub total_sequence_bp: usize,
 }
 
@@ -299,7 +329,7 @@ pub fn write_reduced<W: Write>(
 
     writeln!(
         out,
-        "X\tSB:i:{}\tSA:i:{}\tLB:i:{}\tLA:i:{}\tST:i:{}\tNR:i:{}\tSN:i:{}\tBR:i:{}\tUM:i:{}\tTW:i:{}\tNW:i:{}\tNS:i:{}\tTS:i:{}",
+        "X\tSB:i:{}\tSA:i:{}\tLB:i:{}\tLA:i:{}\tST:i:{}\tNR:i:{}\tSN:i:{}\tBR:i:{}\tUM:i:{}\tTW:i:{}\tNW:i:{}\tNS:i:{}\tWR:i:{}\tTS:i:{}",
         stats.segments_before,
         stats.segments_after,
         stats.links_before,
@@ -312,6 +342,7 @@ pub fn write_reduced<W: Write>(
         stats.total_walks,
         stats.non_ref_walks,
         stats.samples,
+        stats.walk_records,
         stats.total_sequence_bp,
     )?;
 

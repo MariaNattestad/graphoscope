@@ -10,7 +10,7 @@ import { buildAndRunLayout } from './graph/forceLayout';
 // is an alt kept for the test). Layout: ref 1>2>3, alt node 4 off to the side.
 const REDUCED = [
 	'H\tVN:Z:1.1\tRS:Z:GRCh38',
-	'X\tSB:i:9\tSA:i:5\tLB:i:12\tLA:i:6\tST:i:2\tNR:i:3\tSN:i:2\tBR:i:2\tUM:i:1\tTW:i:20\tNW:i:19\tNS:i:10\tTS:i:120',
+	'X\tSB:i:9\tSA:i:5\tLB:i:12\tLA:i:6\tST:i:2\tNR:i:3\tSN:i:2\tBR:i:2\tUM:i:1\tTW:i:20\tNW:i:19\tNS:i:10\tWR:i:20\tTS:i:120',
 	'S\t1\tACGT\tWC:i:0',
 	'S\t2\tAAAAA\tWC:i:0',
 	'S\t3\tCCCC\tWC:i:0',

@@ -8,7 +8,7 @@ import { graphComplexity } from './apiReport';
 // 1>2>3 spanning 100..150.
 const REDUCED = [
 	'H\tVN:Z:1.1\tRS:Z:GRCh38',
-	'X\tSB:i:1064\tSA:i:35\tLB:i:1476\tLA:i:56\tST:i:334\tNR:i:346\tSN:i:334\tBR:i:386\tUM:i:683\tTW:i:935\tNW:i:933\tNS:i:2\tTS:i:31526',
+	'X\tSB:i:1064\tSA:i:35\tLB:i:1476\tLA:i:56\tST:i:334\tNR:i:346\tSN:i:334\tBR:i:386\tUM:i:683\tTW:i:935\tNW:i:933\tNS:i:2\tWR:i:1204\tTS:i:31526',
 	'S\t1\tACGT\tWC:i:0',
 	'S\t2\tAAAAA\tWC:i:0',
 	'S\t3\tCCCC\tWC:i:0',
@@ -26,10 +26,12 @@ describe('graphComplexity', () => {
 		expect(c.nodesBeforeSimplification).toBe(1064);
 		expect(c.links).toBe(2);
 		expect(c.linksBeforeSimplification).toBe(1476);
-		// In reduced mode walks/samples read the aggregate totals, not the lone
-		// reference W line that's actually present.
+		// In reduced mode the walk count reads the X-line total (haplotypes), not
+		// the lone reference W line that's actually present.
 		expect(c.walks).toBe(935);
-		expect(c.samples).toBe(2);
+		// WR counts traversal fragments, which exceeds the haplotype count at a
+		// repetitive locus — the two must not be conflated.
+		expect(c.walkRecords).toBe(1204);
 		expect(c.variantSites).toBe(334);
 		expect(c.snps).toBe(334);
 		expect(c.nodesRemoved).toBe(346);
@@ -45,5 +47,7 @@ describe('graphComplexity', () => {
 		expect(c.nodes).toBe(2);
 		expect(c.nodesBeforeSimplification).toBe(0);
 		expect(c.variantSites).toBe(0);
+		// No X line, so there is no fragment count to report.
+		expect(c.walkRecords).toBeNull();
 	});
 });

@@ -23,6 +23,7 @@ where
     let mut reference_samples: Vec<String> = Vec::new();
     let mut ref_walk: Option<RefWalk> = None;
     let mut total_walks = 0usize;
+    let mut walk_records = 0usize;
     let mut samples: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     {
@@ -43,7 +44,12 @@ where
                 }
             }
             b'W' => {
-                total_walks += 1;
+                // `WT` counts the haplotypes collapsed into this record (1 when
+                // absent). Counting records instead would count traversal
+                // fragments, which at repetitive loci run into the tens of
+                // thousands — see `walk_weight`.
+                total_walks += gfa::walk_weight(line);
+                walk_records += 1;
                 let sample = gfa::walk_sample(line);
                 samples.insert(String::from_utf8_lossy(sample).into_owned());
                 let is_ref = ref_walk.is_none()
@@ -100,7 +106,7 @@ where
             }
             plan.reroute(StepIter::new(gfa::walk_field(line)), &mut rerouted);
             unchop.map_walk(&rerouted, &mut mapped);
-            cov.observe(&mapped);
+            cov.observe(&mapped, gfa::walk_weight(line));
         });
         serialize(&mut sink)?;
         sink.finish();
@@ -125,6 +131,7 @@ where
         total_walks,
         non_ref_walks: cov.non_ref_walks,
         samples: samples.len(),
+        walk_records,
         total_sequence_bp: unchop.segments.iter().map(|s| s.length).sum(),
     };
 
