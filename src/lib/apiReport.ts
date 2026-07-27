@@ -22,8 +22,14 @@ export interface GraphComplexity {
 	linksBeforeSimplification: number;
 	/** Haplotype walks (paths) through the subgraph, reference included. */
 	walks: number;
-	/** Distinct haplotype samples contributing those walks. */
-	samples: number;
+	/**
+	 * Traversal fragments the reducer read, when the subgraph was reduced.
+	 *
+	 * Equals `walks` at ordinary loci. At repetitive ones a single haplotype is
+	 * split into many fragments during subgraph extraction, so a larger number
+	 * here describes the locus's repeat structure, not extra haplotypes.
+	 */
+	walkRecords: number | null;
 	/** Sum of every distinct segment's sequence length in the subgraph. */
 	totalSequenceBp: number;
 	/** The reference's own genomic span across the window, or null if unknown. */
@@ -52,7 +58,7 @@ export function graphComplexity(gfa: Gfa, referenceSample?: string): GraphComple
 		links: s.links,
 		linksBeforeSimplification: r?.linksBefore ?? 0,
 		walks: s.walks,
-		samples: s.samples,
+		walkRecords: s.walkRecords,
 		totalSequenceBp: s.totalSequenceBp,
 		referencePathBp: s.referencePathBp,
 		variantSites: r?.sites ?? 0,

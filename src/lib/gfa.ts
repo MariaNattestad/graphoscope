@@ -60,11 +60,27 @@ export interface ReducedStats {
 	snpCount: number;
 	basesRemoved: number;
 	unchopMerges: number;
-	/** All walks in the subgraph (reference + haplotypes), before aggregation. */
+	/**
+	 * Haplotypes traversing this locus (reference + haplotypes), summing the `WT`
+	 * weights of the reducer's `W` records. This is the count to show a user.
+	 */
 	totalWalks: number;
-	/** Non-reference walks (the ones aggregated into coverage tags). */
+	/** Non-reference haplotypes (the ones aggregated into coverage tags). */
 	nonRefWalks: number;
+	/**
+	 * Distinct sample names seen on `W` lines. GBZ-base anonymises haplotype
+	 * walks when it extracts a subgraph, so for any graph served from a `.gbz.db`
+	 * this is always 2 (the reference plus `unknown`) regardless of panel size —
+	 * not a meaningful number, and deliberately not surfaced in the UI.
+	 */
 	samples: number;
+	/**
+	 * `W` records the reducer read, before weighting. At repetitive loci one
+	 * haplotype is split into many traversal fragments, so this can be orders of
+	 * magnitude larger than `totalWalks` — a structure diagnostic, not a count of
+	 * haplotypes.
+	 */
+	walkRecords: number;
 	totalSequenceBp: number;
 }
 
@@ -147,6 +163,7 @@ export function parseGfa(text: string): Gfa {
 					totalWalks: intTag(f, 'TW') ?? 0,
 					nonRefWalks: intTag(f, 'NW') ?? 0,
 					samples: intTag(f, 'NS') ?? 0,
+					walkRecords: intTag(f, 'WR') ?? 0,
 					totalSequenceBp: intTag(f, 'TS') ?? 0
 				};
 				break;
@@ -206,7 +223,22 @@ export interface GfaStats {
 	walks: number;
 	/** Sum of all segment lengths — every distinct bit of sequence in the subgraph. */
 	totalSequenceBp: number;
+	/**
+	 * Distinct sample names on the subgraph's `W` lines.
+	 *
+	 * Unreliable for graphs served from a `.gbz.db`: gbz-base anonymises the
+	 * haplotype walks during subgraph extraction, so this is always 2 (the
+	 * reference plus `unknown`) whatever the panel size. Meaningful only for a
+	 * GFA parsed with real sample names. Do not present it as a panel size.
+	 */
 	samples: number;
+	/**
+	 * Traversal fragments the reducer read. Equals `walks` at ordinary loci; at
+	 * repetitive ones a single haplotype is broken into many fragments, so a much
+	 * larger number here means "this locus is fragmented", not "more haplotypes".
+	 * Null when the subgraph wasn't reduced.
+	 */
+	walkRecords: number | null;
 	/** bp spanned by the reference walk (its own W-line start/end), or null if
 	 * `referenceSample` wasn't given or has no walk in this subgraph. Distinct
 	 * from `totalSequenceBp`: it's just the reference's own genomic span, not
@@ -229,6 +261,7 @@ export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 		walks,
 		totalSequenceBp,
 		samples,
+		walkRecords: gfa.reduced ? gfa.reduced.walkRecords : null,
 		referencePathBp: ref ? ref.end - ref.start : null
 	};
 }

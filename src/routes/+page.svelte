@@ -531,10 +531,21 @@
 						<th>sequence shown</th>
 						<td colspan="2">{stats.totalSequenceBp.toLocaleString()} bp</td>
 					</tr>
-					<tr>
-						<th>samples</th>
-						<td colspan="2">{stats.samples.toLocaleString()}</td>
-					</tr>
+					{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
+						<!-- Only worth showing where it differs: at a repetitive locus one
+						     haplotype is broken into many traversal fragments, and that gap
+						     is itself the interesting fact about the locus. -->
+						<tr>
+							<th>traversal fragments</th>
+							<td colspan="2"
+								>{stats.walkRecords.toLocaleString()}
+								<span class="muted"
+									>({(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× per haplotype —
+									repetitive locus)</span
+								></td
+							>
+						</tr>
+					{/if}
 				</tbody>
 			</table>
 			{#if fetchInfo}

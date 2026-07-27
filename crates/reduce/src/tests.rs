@@ -313,6 +313,76 @@ fn the_graph_never_grows() {
     }
 }
 
+/// A `W` record carrying `WT:i:k` stands for k haplotypes that took the same
+/// route — GBZ-base emits that form when asked for distinct haplotypes. Counting
+/// records instead of summing weights would undercount haplotypes, and the
+/// counts on the `X` line are shown to the user as "haplotypes", so weighting
+/// one deduplicated record by k must give exactly what k separate records give.
+#[test]
+fn a_weighted_walk_counts_as_many_haplotypes_as_it_stands_for() {
+    // Two haplotypes taking the same route through a bubble, written both ways.
+    let separate = "\
+H\tVN:Z:1.1\tRS:Z:ref
+S\t1\tACGTACGTAC
+S\t2\tT
+S\t3\tG
+S\t4\tCATGCATGCA
+L\t1\t+\t2\t+\t0M
+L\t1\t+\t3\t+\t0M
+L\t2\t+\t4\t+\t0M
+L\t3\t+\t4\t+\t0M
+W\tref\t0\tchr1\t0\t21\t>1>2>4
+W\tunknown\t1\tchr1\t0\t21\t>1>3>4
+W\tunknown\t2\tchr1\t0\t21\t>1>3>4
+W\tunknown\t3\tchr1\t0\t21\t>1>3>4
+";
+    // The same panel as GBZ-base would emit it under `HaplotypeOutput::Distinct`.
+    let weighted = "\
+H\tVN:Z:1.1\tRS:Z:ref
+S\t1\tACGTACGTAC
+S\t2\tT
+S\t3\tG
+S\t4\tCATGCATGCA
+L\t1\t+\t2\t+\t0M
+L\t1\t+\t3\t+\t0M
+L\t2\t+\t4\t+\t0M
+L\t3\t+\t4\t+\t0M
+W\tref\t0\tchr1\t0\t21\t>1>2>4\tWT:i:1
+W\tunknown\t1\tchr1\t0\t21\t>1>3>4\tWT:i:3
+";
+    let a = run_reduce(separate, 50);
+    let b = run_reduce(weighted, 50);
+    let xa = a.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+    let xb = b.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+
+    for tag in ["TW", "NW"] {
+        assert_eq!(
+            int_tag(xa, tag),
+            int_tag(xb, tag),
+            "{}: weighted form gave {:?}, separate records gave {:?}",
+            tag,
+            int_tag(xb, tag),
+            int_tag(xa, tag),
+        );
+    }
+    assert_eq!(int_tag(xa, "TW"), Some(4), "4 haplotypes in the panel");
+    // WR counts records, so it is the one tag that must differ.
+    assert_eq!(int_tag(xa, "WR"), Some(4));
+    assert_eq!(int_tag(xb, "WR"), Some(2));
+
+    // Per-node coverage must weight identically, or the S-line tags would
+    // disagree with the totals on the X line.
+    let cov = |out: &str, id: &str| -> Option<u64> {
+        out.lines()
+            .filter(|l| l.starts_with("S\t"))
+            .find(|l| l.split('\t').nth(1) == Some(id))
+            .and_then(|l| int_tag(l, "WC"))
+    };
+    for id in ["1", "2", "3", "4"] {
+        assert_eq!(cov(&a, id), cov(&b, id), "node {}: WC disagrees", id);
+    }
+}
+
 #[test]
 fn coverage_never_exceeds_the_walks_that_could_produce_it() {
     for name in all_fixtures() {

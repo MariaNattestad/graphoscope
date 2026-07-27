@@ -51,15 +51,20 @@ impl Coverage {
     }
 
     /// Folds one non-reference walk (already rerouted and chain-mapped) in.
-    pub fn observe(&mut self, steps: &[(u32, bool)]) {
-        self.non_ref_walks += 1;
+    /// Folds one walk record in. `weight` is how many haplotypes that record
+    /// stands for (its `WT` tag, or 1 when GBZ-base emitted every haplotype
+    /// separately) — so the coverage numbers count haplotypes, matching `TW`,
+    /// rather than counting deduplicated records.
+    pub fn observe(&mut self, steps: &[(u32, bool)], weight: usize) {
+        self.non_ref_walks += weight;
+        let w = weight as u32;
 
         if let (Some(&(first, _)), Some(&(last, _))) = (steps.first(), steps.last()) {
             if let Some(c) = self.starts.get_mut(first as usize) {
-                *c += 1;
+                *c += w;
             }
             if let Some(c) = self.ends.get_mut(last as usize) {
-                *c += 1;
+                *c += w;
             }
         }
 
@@ -67,20 +72,20 @@ impl Coverage {
         for &(idx, _) in steps {
             if self.seen_nodes.insert(idx) {
                 if let Some(c) = self.node.get_mut(idx as usize) {
-                    *c += 1;
+                    *c += w;
                 }
             }
         }
 
         self.seen_edges.clear();
-        for w in steps.windows(2) {
-            let (a, b) = (w[0].0, w[1].0);
+        for wd in steps.windows(2) {
+            let (a, b) = (wd[0].0, wd[1].0);
             if a == b {
                 continue;
             }
             let k = edge_key(a, b);
             if self.seen_edges.insert(k) {
-                *self.edge.entry(k).or_insert(0) += 1;
+                *self.edge.entry(k).or_insert(0) += w;
             }
         }
     }
