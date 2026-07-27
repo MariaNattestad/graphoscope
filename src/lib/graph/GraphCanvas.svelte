@@ -4,6 +4,8 @@
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
 	import { BACKBONE_COLOR, heatmapColor } from './colors';
+	import type { Transcript } from '../geneTrack';
+	import { trackEvent } from '../analytics';
 
 	interface RefCoord {
 		contig: string;
@@ -14,14 +16,26 @@
 	let {
 		layout,
 		refCoords,
+		genes = [],
 		strokeWidth = 3,
 		onSelectSegment
 	}: {
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
+		genes?: Transcript[];
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
 	} = $props();
+
+	// Reserved bottom bands, in screen (CSS) px. The coordinate axis sits directly
+	// under the backbone; the gene track (only when there are genes to show) sits
+	// below that, in the space the one-sided layout keeps clear. fitToView fits the
+	// graph into the height above both, so the backbone never overlaps them.
+	const AXIS_BAND = 22;
+	const GENE_BAND = 84;
+	const GENE_ROW = 15;
+	const GENE_MAX_ROWS = 4;
+	const geneBand = $derived(genes.length > 0 ? GENE_BAND : 0);
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let containerEl: HTMLDivElement | undefined = $state();
@@ -53,6 +67,20 @@
 	let hoveredSegment: string | null = $state(null);
 	let hoverPos: { x: number; y: number } = $state({ x: 0, y: 0 });
 	let hoverLabel: string | null = $state(null);
+
+	// Exon hit regions in screen space, rebuilt each draw so a pointer move can
+	// resolve which exon it's over without re-deriving geometry.
+	interface ExonHit {
+		x0: number;
+		x1: number;
+		yTop: number;
+		yBot: number;
+		label: string;
+	}
+	let exonHits: ExonHit[] = [];
+	// Flip the tooltip above the cursor near the bottom of the stage (the gene
+	// track lives there, and a tooltip below would clip against the frame).
+	const tooltipAbove = $derived(hoverPos.y > 360);
 
 	function setHovered(segId: string | null) {
 		hoveredSegment = segId;
@@ -106,10 +134,15 @@
 		const cx = (minX + maxX) / 2;
 		const cy = (minY + maxY) / 2;
 
-		// Each axis fits on its own now that they scale independently.
+		// Fit the graph into the height above the reserved bottom bands, so the
+		// backbone and its coordinate axis clear the gene track. The axis band is
+		// only reserved when there are reference coordinates to draw (the
+		// playground graphs have none), and the gene band only when there are genes.
+		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
+		const fitH = Math.max(1, height - axisBand - geneBand);
 		const scaleX = Math.min((width / graphWidth) * padding, 8);
-		baseScaleY = Math.min((height / graphHeight) * padding, 8);
-		panY = height / 2 - cy * baseScaleY;
+		baseScaleY = Math.min((fitH / graphHeight) * padding, 8);
+		panY = fitH / 2 - cy * baseScaleY;
 
 		// Horizontal centering is baked directly into the transform (not added
 		// separately in draw()) so it matches exactly what d3-zoom assumes when
@@ -195,21 +228,23 @@
 		// coordinates — reapply the DPR scale so they still land in the right spot.
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawRefCoordLabels(ctx, width, height);
+		drawGeneTrack(ctx, width, height);
 	}
 
-	function drawRefCoordLabels(ctx: CanvasRenderingContext2D, width: number, height: number) {
-		if (!refCoords || refCoords.size === 0) return;
-
-		// Bounds (world) of each reference segment's chain, so we can anchor a label
-		// to its left edge (genomic start) and know where its right edge (end) is.
-		interface Anchor {
-			segId: string;
-			minX: number;
-			maxX: number;
-			y: number;
-			coord: RefCoord;
-		}
-		const anchors: Anchor[] = [];
+	// Bounds (world) of each reference segment's chain, so we can anchor genomic
+	// coordinates to on-screen positions — used by both the coordinate axis and
+	// the gene track. Sorted by minX, which (since the backbone is monotonic) is
+	// also sorted by genomic start.
+	interface RefAnchor {
+		segId: string;
+		minX: number;
+		maxX: number;
+		y: number;
+		coord: RefCoord;
+	}
+	function buildRefAnchors(): RefAnchor[] {
+		if (!refCoords || refCoords.size === 0) return [];
+		const anchors: RefAnchor[] = [];
 		for (const chain of layout.chains) {
 			const coord = refCoords.get(chain.segId);
 			if (!coord) continue;
@@ -226,8 +261,87 @@
 			if (!Number.isFinite(minX)) continue;
 			anchors.push({ segId: chain.segId, minX, maxX, y, coord });
 		}
-		if (anchors.length === 0) return;
 		anchors.sort((a, b) => a.minX - b.minX);
+		return anchors;
+	}
+
+	// A genomic position -> screen x, piecewise-linear through the reference
+	// anchors (so it respects each segment's own on-screen length), with linear
+	// extrapolation past the first/last segment for genes that overrun the window.
+	function genomicToScreenX(bp: number, anchors: RefAnchor[]): number {
+		const first = anchors[0];
+		if (bp <= first.coord.start) {
+			const span = Math.max(1, first.coord.end - first.coord.start);
+			const scale = (toScreenX(first.maxX) - toScreenX(first.minX)) / span;
+			return toScreenX(first.minX) + (bp - first.coord.start) * scale;
+		}
+		for (const a of anchors) {
+			if (bp <= a.coord.end) {
+				const f = (bp - a.coord.start) / Math.max(1, a.coord.end - a.coord.start);
+				return toScreenX(a.minX) + f * (toScreenX(a.maxX) - toScreenX(a.minX));
+			}
+		}
+		const last = anchors[anchors.length - 1];
+		const span = Math.max(1, last.coord.end - last.coord.start);
+		const scale = (toScreenX(last.maxX) - toScreenX(last.minX)) / span;
+		return toScreenX(last.maxX) + (bp - last.coord.end) * scale;
+	}
+
+	// Guards for the two assumptions the coordinate mapping makes. Neither should
+	// ever fire for a normal reference path — they exist to catch it loudly (and
+	// in telemetry) if a locus ever violates them, since it would silently corrupt
+	// the axis and gene-track positions rather than crash.
+	function checkRefInvariants() {
+		const anchors = buildRefAnchors();
+		if (anchors.length === 0) return;
+
+		// Anchors are sorted by on-screen position (minX). Genomic starts must
+		// ascend in that same order, or "left-to-right = increasing bp" — which the
+		// axis and the gene track both rely on — is false.
+		for (let i = 1; i < anchors.length; i++) {
+			if (anchors[i].coord.start < anchors[i - 1].coord.start) {
+				console.error(
+					`GraphCanvas: reference is not monotonically increasing — segment ${anchors[i].segId} ` +
+						`is drawn right of ${anchors[i - 1].segId} but has a smaller genomic start ` +
+						`(${anchors[i].coord.start} < ${anchors[i - 1].coord.start}). The coordinate axis and ` +
+						`gene-track bp→x mapping are unreliable for this locus.`
+				);
+				trackEvent('ref_invariant_violation', {
+					kind: 'non_monotonic',
+					seg: anchors[i].segId,
+					contig: anchors[i].coord.contig
+				});
+				break;
+			}
+		}
+
+		// A reference segment drawn right-to-left (its chain's last node sits left of
+		// its first). The mapping treats each segment's left edge as its genomic
+		// start, so bp within a reversed segment would be mirrored on the axis and
+		// gene track.
+		const reversed: string[] = [];
+		for (const chain of layout.chains) {
+			if (!refCoords?.has(chain.segId) || chain.nodeIds.length < 2) continue;
+			const first = layout.nodesById.get(chain.nodeIds[0]);
+			const last = layout.nodesById.get(chain.nodeIds[chain.nodeIds.length - 1]);
+			if (first && last && last.x < first.x) reversed.push(chain.segId);
+		}
+		if (reversed.length > 0) {
+			console.warn(
+				`GraphCanvas: ${reversed.length} reference segment(s) drawn in reverse orientation ` +
+					`(${reversed.slice(0, 6).join(', ')}${reversed.length > 6 ? '…' : ''}). Coordinates within ` +
+					`these segments may be mirrored on the axis and gene track.`
+			);
+			trackEvent('ref_invariant_violation', {
+				kind: 'reverse_orientation',
+				count: reversed.length
+			});
+		}
+	}
+
+	function drawRefCoordLabels(ctx: CanvasRenderingContext2D, width: number, height: number) {
+		const anchors = buildRefAnchors();
+		if (anchors.length === 0) return;
 
 		ctx.save();
 		ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -279,6 +393,131 @@
 		ctx.restore();
 	}
 
+	// Gene models drawn in the reserved bottom band: intron line + strand arrows,
+	// exon boxes (taller where coding), one representative transcript per gene,
+	// packed into rows. Positioned by genomic coordinate through the same anchors
+	// as the axis, so it tracks the backbone under pan/zoom. Display-only — the
+	// arc view is where genes are interactive.
+	function drawGeneTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
+		exonHits = [];
+		if (genes.length === 0) return;
+		const anchors = buildRefAnchors();
+		if (anchors.length === 0) return;
+		const gx = (bp: number) => genomicToScreenX(bp, anchors);
+		const contig = anchors[0].coord.contig;
+
+		const bandTop = height - GENE_BAND;
+		ctx.save();
+		// clip to the band so nothing bleeds up into the graph
+		ctx.beginPath();
+		ctx.rect(0, bandTop, width, GENE_BAND);
+		ctx.clip();
+		ctx.strokeStyle = 'rgba(150, 165, 190, 0.16)';
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		ctx.moveTo(0, bandTop + 0.5);
+		ctx.lineTo(width, bandTop + 0.5);
+		ctx.stroke();
+
+		ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+		ctx.textBaseline = 'middle';
+
+		interface Placed {
+			g: Transcript;
+			x1: number;
+			x2: number;
+			labelEnd: number;
+		}
+		const rows: Placed[][] = [];
+		const sorted = [...genes].sort((a, b) => a.start - b.start);
+		for (const g of sorted) {
+			const x1 = gx(g.start);
+			const x2 = gx(g.end);
+			if (Math.max(x1, x2) < -20 || Math.min(x1, x2) > width + 20) continue; // off-screen
+			const labelEnd = Math.max(x1, x2) + 6 + ctx.measureText(g.symbol).width;
+			const p: Placed = { g, x1, x2, labelEnd };
+			const row = rows.find((r) => r.length === 0 || r[r.length - 1].labelEnd + 6 < x1);
+			if (row) row.push(p);
+			else if (rows.length < GENE_MAX_ROWS) rows.push([p]);
+		}
+
+		for (let ri = 0; ri < rows.length; ri++) {
+			const y = bandTop + 12 + ri * GENE_ROW;
+			for (const { g } of rows[ri]) {
+				const lo = Math.max(-2, Math.min(gx(g.start), gx(g.end)));
+				const hi = Math.min(width + 2, Math.max(gx(g.start), gx(g.end)));
+
+				// intron line
+				ctx.strokeStyle = 'rgba(140, 162, 196, 0.6)';
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(lo, y);
+				ctx.lineTo(hi, y);
+				ctx.stroke();
+
+				// strand direction chevrons
+				const dir = g.strand === '-' ? -1 : 1;
+				ctx.strokeStyle = 'rgba(140, 162, 196, 0.8)';
+				for (let ax = lo + 10; ax < hi - 3; ax += 24) {
+					ctx.beginPath();
+					ctx.moveTo(ax - dir * 3, y - 3);
+					ctx.lineTo(ax, y);
+					ctx.lineTo(ax - dir * 3, y + 3);
+					ctx.stroke();
+				}
+
+				// exons: coding boxes taller than UTR. Exon numbering follows the
+				// transcript's direction, so exon 1 is the first one transcribed.
+				const nExons = g.exons.length;
+				for (let ei = 0; ei < nExons; ei++) {
+					const ex = g.exons[ei];
+					const exNum = g.strand === '-' ? nExons - ei : ei + 1;
+					const cs = Math.max(ex.start, g.cdsStart);
+					const ce = Math.min(ex.end, g.cdsEnd);
+					const segs: [number, number, boolean][] = [];
+					if (cs < ce) {
+						if (ex.start < cs) segs.push([ex.start, cs, false]);
+						segs.push([cs, ce, true]);
+						if (ce < ex.end) segs.push([ce, ex.end, false]);
+					} else {
+						segs.push([ex.start, ex.end, false]);
+					}
+					for (const [a, b, coding] of segs) {
+						const bx = Math.max(0, Math.min(gx(a), gx(b)));
+						const bw = Math.min(width, Math.max(gx(a), gx(b))) - bx;
+						if (bw <= 0) continue;
+						const h = coding ? 7 : 4;
+						ctx.fillStyle = coding ? '#6f9dff' : 'rgba(111, 157, 255, 0.5)';
+						ctx.fillRect(bx, y - h / 2, Math.max(0.8, bw), h);
+					}
+					// one hover region per exon, spanning its whole extent
+					const ex0 = Math.max(0, Math.min(gx(ex.start), gx(ex.end)));
+					const ex1 = Math.min(width, Math.max(gx(ex.start), gx(ex.end)));
+					if (ex1 > ex0) {
+						exonHits.push({
+							x0: ex0,
+							x1: ex1,
+							yTop: y - 6,
+							yBot: y + 6,
+							label:
+								`${g.symbol} · exon ${exNum}/${nExons} · ` +
+								`${contig}:${ex.start.toLocaleString()}–${ex.end.toLocaleString()} · ` +
+								`${(ex.end - ex.start).toLocaleString()} bp · ${g.name}`
+						});
+					}
+				}
+
+				// label just past the gene, clamped into view
+				const tw = ctx.measureText(g.symbol).width;
+				const labelX = Math.min(hi + 5, width - tw - 2);
+				ctx.fillStyle = 'rgba(214, 224, 245, 0.92)';
+				ctx.textAlign = 'left';
+				ctx.fillText(g.symbol, Math.max(2, labelX), y);
+			}
+		}
+		ctx.restore();
+	}
+
 	function findSegmentAt(px: number, py: number): string | null {
 		if (!canvasEl) return null;
 		// Hit-testing happens in screen space: with x and y on different scales
@@ -316,17 +555,35 @@
 		return Math.hypot(px - cx, py - cy);
 	}
 
+	function findExonAt(px: number, py: number): string | null {
+		for (const h of exonHits) {
+			if (px >= h.x0 && px <= h.x1 && py >= h.yTop && py <= h.yBot) return h.label;
+		}
+		return null;
+	}
+
 	$effect(() => {
 		// re-fit and re-draw whenever a new layout is loaded — untrack the body so
 		// that reads of hoveredSegment/transform inside draw()/fitToView() don't
 		// turn every hover/pan into an implicit dependency of this effect (which
 		// was resetting the zoom back to the fitted view on every hover change).
+		// Also re-runs when genes load, since that changes the reserved band height
+		// and so the vertical fit.
 		layout;
+		genes;
 		untrack(() => {
 			setHovered(null);
 			fitToView();
 			draw();
 		});
+	});
+
+	$effect(() => {
+		// Verify the reference-coordinate assumptions once per layout/coords change,
+		// outside the hot draw path.
+		layout;
+		refCoords;
+		untrack(() => checkRefInvariants());
 	});
 
 	$effect(() => {
@@ -388,20 +645,36 @@
 			const rect = canvasEl!.getBoundingClientRect();
 			const px = e.clientX - rect.left;
 			const py = e.clientY - rect.top;
+			hoverPos = { x: px, y: py };
+
+			// Exons win: they live in the bottom band, clear of the strands.
+			const exon = findExonAt(px, py);
+			if (exon) {
+				if (hoveredSegment !== null) {
+					setHovered(null);
+					draw();
+				}
+				hoverLabel = exon;
+				canvasEl!.style.cursor = 'default';
+				return;
+			}
+
 			const segId = findSegmentAt(px, py);
 			if (segId !== hoveredSegment) {
 				setHovered(segId);
 				canvasEl!.style.cursor = segId ? 'pointer' : 'grab';
 				draw();
+			} else if (hoveredSegment === null && hoverLabel !== null) {
+				// moved off an exon into empty space — clear the lingering label
+				hoverLabel = null;
+				canvasEl!.style.cursor = 'grab';
 			}
-			hoverPos = { x: px, y: py };
 		}
 		function onPointerLeave() {
-			if (hoveredSegment !== null) {
-				setHovered(null);
-				canvasEl!.style.cursor = 'grab';
-				draw();
-			}
+			const wasStrand = hoveredSegment !== null;
+			setHovered(null); // also clears hoverLabel
+			canvasEl!.style.cursor = 'grab';
+			if (wasStrand) draw();
 		}
 		canvasEl.addEventListener('wheel', onWheelPan, { passive: false });
 		canvasEl.addEventListener('pointerdown', onPointerDown);
@@ -427,7 +700,11 @@
 <div class="canvas-container" bind:this={containerEl}>
 	<canvas bind:this={canvasEl}></canvas>
 	{#if hoverLabel}
-		<div class="tooltip" style="left: {hoverPos.x + 14}px; top: {hoverPos.y + 14}px">
+		<div
+			class="tooltip"
+			class:above={tooltipAbove}
+			style="left: {hoverPos.x + 14}px; top: {tooltipAbove ? hoverPos.y - 10 : hoverPos.y + 14}px"
+		>
 			{hoverLabel}
 		</div>
 	{/if}
@@ -459,5 +736,8 @@
 		border-radius: 4px;
 		white-space: nowrap;
 		z-index: 10;
+	}
+	.tooltip.above {
+		transform: translateY(-100%);
 	}
 </style>
