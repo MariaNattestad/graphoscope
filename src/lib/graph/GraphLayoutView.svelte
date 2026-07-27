@@ -12,13 +12,20 @@
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
 	import GraphCanvas from './GraphCanvas.svelte';
 	import { trackEvent } from '../analytics';
+	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
+	import type { RefKey } from '../genes';
 
-	let { gfa, referenceSample }: { gfa: Gfa; referenceSample: string } = $props();
+	let {
+		gfa,
+		referenceSample,
+		refKey
+	}: { gfa: Gfa; referenceSample: string; refKey?: RefKey } = $props();
 
-	// Prototype: keep all non-reference bubbles above the reference line, which
-	// halves the vertical spread and leaves the space underneath free for
-	// coordinate tracks (genes, and whatever else gets anchored to bp).
-	let bubblesAbove = $state(false);
+	// Keep all non-reference bubbles on one side (above the reference line). This
+	// halves the vertical spread and, more importantly, leaves the space below the
+	// backbone free for the gene track. On by default; the toggle restores the
+	// symmetric two-sided layout.
+	let bubblesAbove = $state(true);
 
 	let selected = $state<string | null>(null);
 
@@ -94,6 +101,45 @@
 			cursor += len;
 		}
 		return map;
+	});
+
+	// The reference genomic span this subgraph covers — the window to fetch genes
+	// for. Derived from the reference coordinates so it always matches what the
+	// backbone actually shows.
+	const locusWindow = $derived.by(() => {
+		let contig: string | null = null;
+		let start = Infinity;
+		let end = -Infinity;
+		for (const c of refCoords.values()) {
+			contig = c.contig;
+			if (c.start < start) start = c.start;
+			if (c.end > end) end = c.end;
+		}
+		return contig && Number.isFinite(start) ? { contig, start, end } : null;
+	});
+
+	// Gene models for the track under the backbone, fetched from UCSC bigBed (same
+	// source as the arc view). Best-effort: on any failure the track just stays
+	// empty and the graph is unaffected.
+	let genes = $state<Transcript[]>([]);
+	$effect(() => {
+		const win = locusWindow;
+		const key = refKey;
+		if (!win || !key) {
+			genes = [];
+			return;
+		}
+		let cancelled = false;
+		transcriptsInRange(key, win.contig, win.start, win.end)
+			.then((t) => {
+				if (!cancelled) genes = representativeTranscripts(t);
+			})
+			.catch(() => {
+				if (!cancelled) genes = [];
+			});
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	// Past this node count, layout time stops scaling gently — e.g. a
@@ -191,6 +237,7 @@
 			<GraphCanvas
 				{layout}
 				{refCoords}
+				{genes}
 				onSelectSegment={(id) => {
 					selected = id;
 					if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });

@@ -473,7 +473,11 @@
 				{/if}
 			</div>
 			{#if displayGfa}
-				<GraphLayoutView gfa={displayGfa} referenceSample={graph.referenceSample} />
+				<GraphLayoutView
+					gfa={displayGfa}
+					referenceSample={graph.referenceSample}
+					refKey={graph.refKey}
+				/>
 			{/if}
 		</section>
 
