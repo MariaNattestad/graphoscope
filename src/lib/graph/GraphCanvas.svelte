@@ -196,10 +196,6 @@
 		// stroke widths honest screen pixels and drops the old `/transform.k`
 		// compensation everywhere.
 
-		// While disco-walks is running, dim the whole base graph so the spotlit
-		// walk drawn on top reads clearly against it.
-		if (discoActive) ctx.globalAlpha = 0.22;
-
 		// structural links first, underneath strands. Drawn as a curve through the
 		// (invisible) bend node so a link between two backbone-pinned points —
 		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
@@ -239,8 +235,7 @@
 		}
 
 		// Spotlight overlay: the current disco walk, traced through its segments'
-		// chains and stroked as a glowing line over the dimmed base graph.
-		ctx.globalAlpha = 1;
+		// chains and stroked as a glowing line over the full-brightness base graph.
 		drawDiscoWalk(ctx);
 
 		ctx.restore();
