@@ -541,43 +541,72 @@
 
 	// Trace the current disco walk as a single polyline through the layout: for each
 	// step, append its chain's nodes (reversed when the walk traverses the segment
-	// backwards), then stroke it with a colored glow and a bright white core so it
-	// stands out over the dimmed base graph.
+	// backwards). Its two kinds of segment are drawn at the base graph's own
+	// widths, just with a colored glow added: each segment's node-strand at full
+	// strand thickness (with a bright white core), and the link connectors between
+	// consecutive segments as thin as a normal link.
 	function drawDiscoWalk(ctx: CanvasRenderingContext2D) {
 		if (!discoActive || !discoPath || discoPath.length === 0) return;
-		const pts: { x: number; y: number }[] = [];
+
+		// Split the walk into per-segment node-strands and the link connectors that
+		// join them, so the two can be stroked at different widths (a single merged
+		// polyline can't tell "inside a node" from "hopping between nodes").
+		const strands: { x: number; y: number }[][] = [];
+		const links: [{ x: number; y: number }, { x: number; y: number }][] = [];
+		let prevEnd: { x: number; y: number } | null = null;
 		for (const step of discoPath) {
 			const chain = chainBySeg.get(step.id);
 			if (!chain) continue;
 			const ids = step.orient === '-' ? [...chain.nodeIds].reverse() : chain.nodeIds;
+			const pts: { x: number; y: number }[] = [];
 			for (const id of ids) {
 				const n = layout.nodesById.get(id);
 				if (n) pts.push({ x: toScreenX(n.x), y: toScreenY(n.y) });
 			}
+			if (pts.length === 0) continue;
+			if (prevEnd) links.push([prevEnd, pts[0]]);
+			strands.push(pts);
+			prevEnd = pts[pts.length - 1];
 		}
-		if (pts.length < 2) return;
+		if (strands.length === 0) return;
 
-		ctx.save();
-		ctx.lineJoin = 'round';
-		ctx.lineCap = 'round';
-		const trace = () => {
+		const strokePolyline = (pts: { x: number; y: number }[]) => {
 			ctx.beginPath();
 			ctx.moveTo(pts[0].x, pts[0].y);
 			for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
 			ctx.stroke();
 		};
-		// colored glow
+
+		ctx.save();
+		ctx.lineJoin = 'round';
+		ctx.lineCap = 'round';
 		ctx.shadowColor = discoColor;
 		ctx.shadowBlur = 18;
 		ctx.strokeStyle = discoColor;
-		ctx.lineWidth = strokeWidth * 2.4;
 		ctx.globalAlpha = 0.9;
-		trace();
-		// bright core, no shadow
+
+		// link connectors: thin, matching the base graph's 1px links, glow only
+		ctx.lineWidth = 1;
+		for (const [a, b] of links) {
+			ctx.beginPath();
+			ctx.moveTo(a.x, a.y);
+			ctx.lineTo(b.x, b.y);
+			ctx.stroke();
+		}
+
+		// node strands: full strand thickness, glow
+		ctx.lineWidth = strokeWidth;
+		for (const pts of strands) strokePolyline(pts);
+
+		// bright white core down the node strands only, no glow
 		ctx.shadowBlur = 0;
 		ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
-		ctx.lineWidth = Math.max(1, strokeWidth * 0.7);
-		trace();
+		ctx.lineWidth = Math.max(1, strokeWidth * 0.5);
+		ctx.globalAlpha = 0.95;
+		for (const pts of strands) {
+			if (pts.length < 2) continue;
+			strokePolyline(pts);
+		}
 		ctx.restore();
 	}
 
