@@ -12,6 +12,11 @@ export type { QuerySource, QueryResult };
 // for why deriving this inside the worker is unsafe.
 const WASM_URL = `${base}/query.wasm`;
 
+/** Subgraph context margin (bp) the wasm query defaults to when `--context` is
+ * omitted (matches DEFAULT_CONTEXT in crates/reduce). Shared so the app and the
+ * /api endpoint agree on what "no context param" means. */
+export const DEFAULT_CONTEXT = 100;
+
 export interface LocusQuery {
 	sample: string; // e.g. "GRCh38"
 	contig: string; // e.g. "chr6"

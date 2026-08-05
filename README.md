@@ -100,18 +100,22 @@ copy.
 ### Machine-readable endpoint: `/api`
 
 For agents and scripts, `/api` runs the same query and returns **graph-complexity
-stats as JSON** instead of the visualizations:
+stats as JSON** instead of the visualizations. It takes the same params as the app
+(`ref`, `locus`, and optional `context`; default `100`) and echoes the effective
+`context` back in the response:
 
 ```
 https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1
 https://marianattestad.github.io/graphoscope/api?ref=chm13&locus=LPA
+https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=2000
 ```
 
 ```jsonc
 {
   "ok": true,
   "query": { "graph": "grch38", "input": "SMN1", "gene": "SMN1",
-             "contig": "chr5", "start": 70925029, "end": 70953942, "span": 28913 },
+             "contig": "chr5", "start": 70925029, "end": 70953942, "span": 28913,
+             "context": 100 },
   "complexity": {
     "nodes": 35, "nodesBeforeSimplification": 1064,
     "links": 56, "linksBeforeSimplification": 1476,

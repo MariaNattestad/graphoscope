@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
+	import { GbzClient, parseLocus, DEFAULT_CONTEXT, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RefArcView from '$lib/RefArcView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
@@ -41,7 +41,7 @@
 	// Subgraph context radius in bp (GBZ-base's `--context`, wasm default 100): how
 	// far past the locus haplotypes are followed before they're cut off. Applied on
 	// the next query, so changing it takes a Query click like the locus does.
-	const DEFAULT_CONTEXT_BP = 100;
+	const DEFAULT_CONTEXT_BP = DEFAULT_CONTEXT;
 	let contextBp = $state(DEFAULT_CONTEXT_BP);
 	// Set to the resolved gene's symbol whenever the current results came from a
 	// gene-name search (manual or an example chip) — kept alongside the

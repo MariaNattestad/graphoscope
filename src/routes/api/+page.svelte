@@ -17,7 +17,7 @@
 	// The JSON shape is ApiReport | ApiError from $lib/apiReport.
 
 	import { onMount } from 'svelte';
-	import { GbzClient, parseLocus } from '$lib/gbzClient';
+	import { GbzClient, parseLocus, DEFAULT_CONTEXT } from '$lib/gbzClient';
 	import { parseGfa } from '$lib/gfa';
 	import { resolveGene, geneToLocus } from '$lib/genes';
 	import { graphById, MAX_GFA_BYTES } from '$lib/graphs';
@@ -50,11 +50,27 @@
 			} satisfies ApiError);
 			return;
 		}
+
+		// Optional subgraph context margin; defaults to the wasm's own default.
+		const contextParam = p.get('context');
+		let context = DEFAULT_CONTEXT;
+		if (contextParam != null) {
+			const c = Number(contextParam);
+			if (!Number.isFinite(c) || c < 0) {
+				publish({
+					ok: false,
+					error: `Invalid context "${contextParam}". Pass a non-negative number of bp, e.g. context=2000.`,
+					query: { graph: graph.id, referenceSample: graph.referenceSample, context: DEFAULT_CONTEXT }
+				} satisfies ApiError);
+				return;
+			}
+			context = c;
+		}
 		if (!input) {
 			publish({
 				ok: false,
 				error: 'Missing locus. Pass ?locus=<gene symbol or contig:start-end>, e.g. locus=SMN1.',
-				query: { graph: graph.id, referenceSample: graph.referenceSample }
+				query: { graph: graph.id, referenceSample: graph.referenceSample, context }
 			} satisfies ApiError);
 			return;
 		}
@@ -70,7 +86,7 @@
 					publish({
 						ok: false,
 						error: `"${input}" is neither a contig:start-end locus nor a known gene symbol for ${graph.label}.`,
-						query: { graph: graph.id, referenceSample: graph.referenceSample, input }
+						query: { graph: graph.id, referenceSample: graph.referenceSample, input, context }
 					} satisfies ApiError);
 					return;
 				}
@@ -79,6 +95,7 @@
 			}
 			const locus = parseLocus(coordText, graph.referenceSample);
 			locus.sample = graph.referenceSample;
+			locus.context = context;
 
 			const client = new GbzClient();
 			try {
@@ -95,7 +112,8 @@
 							contig: locus.contig,
 							start: locus.start,
 							end: locus.end,
-							span: locus.end - locus.start
+							span: locus.end - locus.start,
+							context
 						}
 					} satisfies ApiError);
 					return;
@@ -113,7 +131,8 @@
 							contig: locus.contig,
 							start: locus.start,
 							end: locus.end,
-							span: locus.end - locus.start
+							span: locus.end - locus.start,
+							context
 						}
 					} satisfies ApiError);
 					return;
@@ -129,7 +148,8 @@
 						contig: locus.contig,
 						start: locus.start,
 						end: locus.end,
-						span: locus.end - locus.start
+						span: locus.end - locus.start,
+						context
 					},
 					complexity: graphComplexity(gfa, graph.referenceSample),
 					fetch: result.stats
@@ -148,7 +168,7 @@
 			publish({
 				ok: false,
 				error: e instanceof Error ? e.message : String(e),
-				query: { graph: graph.id, referenceSample: graph.referenceSample, input }
+				query: { graph: graph.id, referenceSample: graph.referenceSample, input, context }
 			} satisfies ApiError);
 		}
 	}
@@ -166,8 +186,9 @@
 <main data-status={status}>
 	<p class="note">
 		Graphoscope query API. This page runs the pangenome query in your browser and prints the result
-		as JSON below. Parameters: <code>ref</code> (grch38 | chm13) and <code>locus</code> (a gene
-		symbol or <code>contig:start-end</code>). Wait for <code>data-status="done"</code> on
+		as JSON below. Parameters: <code>ref</code> (grch38 | chm13), <code>locus</code> (a gene
+		symbol or <code>contig:start-end</code>), and optional <code>context</code> (subgraph margin
+		in bp, default {DEFAULT_CONTEXT}). Wait for <code>data-status="done"</code> on
 		<code>&lt;main&gt;</code>, then read <code>#result</code> or
 		<code>window.graphoscopeResult</code>.
 	</p>
