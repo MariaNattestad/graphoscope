@@ -51,7 +51,14 @@
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
 	// per-node/edge coverage tags), so the browser never parses the full,
 	// walk-dominated GFA — that server-side reduction is the whole memory win.
-	let gfa = $state<Gfa | null>(null);
+	//
+	// `$state.raw`: the parsed GFA is large (segments, links, and walks with many
+	// steps) and only ever reassigned wholesale, never mutated. Plain `$state`
+	// would deep-proxy all of it, and then every read — including the deep clone
+	// the layout worker needs — pays Svelte's proxy-trap cost per access, which was
+	// blocking the main thread ~1s when re-laying-out the full graph. Raw keeps it
+	// as plain objects: fast to read and to structured-clone across the worker.
+	let gfa = $state.raw<Gfa | null>(null);
 	let rawGfa = $state<string>('');
 	// Set only if the reduced GFA somehow still exceeds MAX_GFA_BYTES.
 	let oversized = $state<{ bytes: number } | null>(null);
@@ -271,7 +278,9 @@
 	// and gigabytes to hold. Between the two, the layout drops to rough mode on
 	// its own (see GraphLayoutView).
 	const MAX_UNSIMPLIFIED_NODES = 25000;
-	let unsimplified = $state<Gfa | null>(null);
+	// Raw for the same reason as `gfa` above: large, reassigned wholesale, and deep
+	// cloned to the layout worker — proxying it would tax every read.
+	let unsimplified = $state.raw<Gfa | null>(null);
 	let loadingUnsimplified = $state(false);
 	let showUnsimplified = $state(false);
 	/** Nodes the unsimplified graph would have, known from the reduced X line. */

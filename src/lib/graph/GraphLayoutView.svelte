@@ -392,15 +392,14 @@
 		return worker;
 	}
 
-	// `graph` traces back into `gfa`, which is (or is derived from) `$state` — Svelte
-	// 5 deep-reactivity wraps its nested objects/arrays in Proxies, and
-	// `postMessage`'s structured-clone can't clone a Proxy (DataCloneError).
-	// simplify.ts and gfaToGraph.ts deliberately share step objects internally
-	// rather than copying them (a large locus can have millions), so nothing
-	// upstream de-proxies them for us — this snapshot is the one place that must.
+	// `graph` traces back into `gfa`, which the parent now holds as `$state.raw` —
+	// so its nodes/links/steps are plain objects, not Svelte Proxies, and
+	// `postMessage` can structured-clone the graph directly. (Under plain `$state`
+	// this needed a `$state.snapshot` to de-proxy first, and that de-proxy was the
+	// ~1s main-thread stall when re-laying-out the full graph.)
 	function postLayout(graph: GfaGraph, options: LayoutRequest['options']): number {
 		const id = ++nextReqId;
-		ensureWorker().postMessage({ id, graph: $state.snapshot(graph), options } satisfies LayoutRequest);
+		ensureWorker().postMessage({ id, graph, options } satisfies LayoutRequest);
 		return id;
 	}
 
