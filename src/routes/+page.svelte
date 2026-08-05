@@ -333,19 +333,19 @@
 	// but the layout is still the reduced graph — disco's pending-start effect keys
 	// off exactly that transition and would otherwise be dropped in the gap.
 	// Returns whether the full graph is now showing.
-	async function loadUnsimplified(): Promise<boolean> {
-		if (unsimplified) {
-			showUnsimplified = true;
-			return true;
-		}
-		if (loadingUnsimplified) return false;
+	// Fetch + parse the full graph into `unsimplified` without switching the view to
+	// it. Used both by the "show all nodes" toggle (which then shows it) and by
+	// disco-walks (which hands it off for background layout, showing it only once
+	// laid out).
+	async function ensureUnsimplifiedParsed(): Promise<Gfa | null> {
+		if (unsimplified) return unsimplified;
+		if (loadingUnsimplified) return null;
 		loadingUnsimplified = true;
 		try {
 			const text = await fetchUnsimplifiedGfa();
-			if (text === null) return false;
+			if (text === null) return null;
 			unsimplified = parseGfa(text);
-			showUnsimplified = true;
-			return true;
+			return unsimplified;
 		} finally {
 			loadingUnsimplified = false;
 		}
@@ -359,13 +359,36 @@
 		if (!unsimplified) {
 			trackEvent('widget_interact', { widget: 'graph_layout', action: 'view_unsimplified' });
 		}
-		await loadUnsimplified();
+		if (await ensureUnsimplifiedParsed()) showUnsimplified = true;
 	}
 
-	// disco-walks asked for the full-walk graph: load it (if needed) and show it, so
-	// GraphLayoutView sees the real walks and can start the animation itself.
+	// disco-walks asked for the full-walk graph. Load it, then hand it to the layout
+	// view as `discoPrewarmGfa` to lay out *in the background* — the reduced graph
+	// stays on screen and interactive meanwhile. When its layout is ready the view
+	// calls onDiscoLayoutReady (below), and only then do we switch to it.
+	let discoPrewarmGfa = $state<Gfa | null>(null);
 	async function requestDiscoGraph() {
-		await loadUnsimplified();
+		if (unsimplified) {
+			discoPrewarmGfa = unsimplified;
+			return;
+		}
+		if (loadingUnsimplified) return;
+		loadingUnsimplified = true;
+		try {
+			const text = await fetchUnsimplifiedGfa();
+			if (text === null) return;
+			unsimplified = parseGfa(text);
+			// Set the prewarm target before the `finally` clears the loading flag, so
+			// there's no frame where loading is done but no background layout is queued
+			// (the view would read that as a failed load and abandon the pending disco).
+			discoPrewarmGfa = unsimplified;
+		} finally {
+			loadingUnsimplified = false;
+		}
+	}
+	function onDiscoLayoutReady() {
+		showUnsimplified = true;
+		discoPrewarmGfa = null;
 	}
 
 	// A new query invalidates every cached form of the previous locus's full graph.
@@ -374,6 +397,7 @@
 		unsimplifiedGfaText = null;
 		unsimplified = null;
 		showUnsimplified = false;
+		discoPrewarmGfa = null;
 	});
 
 	// Hands the user the unsimplified subgraph — every haplotype walk — as a file.
@@ -534,6 +558,8 @@
 					discoAvailable={canShowUnsimplified}
 					discoLoading={loadingUnsimplified}
 					onRequestDiscoGraph={requestDiscoGraph}
+					{discoPrewarmGfa}
+					{onDiscoLayoutReady}
 				/>
 			{/if}
 		</section>

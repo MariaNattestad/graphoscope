@@ -5,9 +5,10 @@
 	// bubbles relax locally around it. The force layout runs in a Web Worker so a
 	// dense subgraph never freezes the tab. Graph simplification happens upstream,
 	// so this component just lays out and draws whatever graph it's given.
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import type { Gfa } from '../gfa';
 	import { gfaToGraph } from './gfaToGraph';
+	import type { GfaGraph } from './types';
 	import type { LayoutResult } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
 	import GraphCanvas from './GraphCanvas.svelte';
@@ -21,7 +22,9 @@
 		refKey,
 		discoAvailable = false,
 		discoLoading = false,
-		onRequestDiscoGraph
+		onRequestDiscoGraph,
+		discoPrewarmGfa = null,
+		onDiscoLayoutReady
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
@@ -31,8 +34,13 @@
 		discoAvailable?: boolean;
 		/** Parent is currently fetching that full graph. */
 		discoLoading?: boolean;
-		/** Ask the parent to load + show the full-walk graph (for disco-walks). */
+		/** Ask the parent to load the full-walk graph (for disco-walks). */
 		onRequestDiscoGraph?: () => void;
+		/** The full-walk graph to lay out in the background (without disturbing the
+		 * graph currently on screen), so disco can switch to it already laid out. */
+		discoPrewarmGfa?: Gfa | null;
+		/** Fired once that background layout is ready — the parent then swaps it in. */
+		onDiscoLayoutReady?: () => void;
 	} = $props();
 
 	// Keep all non-reference bubbles on one side (above the reference line). This
@@ -150,19 +158,25 @@
 		onRequestDiscoGraph?.();
 	}
 
-	// Start disco the moment the full-walk graph arrives after a pending request.
-	$effect(() => {
+	// Start a pending disco run, but only once the layout being displayed is the
+	// full-walk graph's own (canDiscoNow) — called right after a layout is applied,
+	// never on a bare `canDiscoNow` transition. Starting on the transition alone
+	// would light up the walk against whatever layout is still on screen (the
+	// simplified one) for the frames until the real layout lands.
+	function maybeStartDisco() {
 		if (pendingDisco && canDiscoNow) {
 			pendingDisco = false;
 			discoIndex = 0;
 			disco = true;
 		}
-	});
+	}
 
-	// The full-graph load finished (or failed) without producing walks — give up
-	// on the pending start rather than showing "loading" forever.
+	// The full-graph load failed (no graph fetched, and none being laid out in the
+	// background) — give up on the pending start rather than showing "loading"
+	// forever. `discoPrewarmGfa` being set means the background layout is still in
+	// flight, which is a valid wait, not a failure.
 	$effect(() => {
-		if (pendingDisco && !discoLoading && !canDiscoNow) pendingDisco = false;
+		if (pendingDisco && !discoLoading && !discoPrewarmGfa && !canDiscoNow) pendingDisco = false;
 	});
 
 	// If the walks disappear (e.g. a new query reverted to the reduced graph), stop.
@@ -272,7 +286,12 @@
 
 	// --- layout worker ---
 	let worker: Worker | null = null;
-	let reqId = 0;
+	// One monotonic id source; `mainReqId`/`prewarmReqId` track the id each channel
+	// is currently awaiting, so a response is matched to its channel and stale ones
+	// (superseded within a channel) are dropped.
+	let nextReqId = 0;
+	let mainReqId = -1;
+	let prewarmReqId = -1;
 	// `$state.raw`, not `$state`: the layout is a large graph structure (a
 	// `nodesById` Map of thousands of nodes, the chains array, every SimNode) that
 	// GraphCanvas reads hundreds of thousands of times per draw. Plain `$state`
@@ -284,38 +303,18 @@
 	let ms = $state(0);
 	let computing = $state(false);
 
-	function ensureWorker(): Worker {
-		if (!worker) {
-			worker = new Worker(new URL('./layout.worker.ts', import.meta.url), { type: 'module' });
-			worker.onmessage = (ev: MessageEvent<LayoutResponse>) => {
-				if (ev.data.id !== reqId) return; // superseded by a newer request
-				layout = ev.data.layout;
-				ms = ev.data.ms;
-				computing = false;
-			};
-		}
-		return worker;
-	}
+	// A layout computed ahead of time for a graph we're not showing yet (disco's
+	// unsimplified graph), so the switch to it is instant — no "computing" takeover
+	// of the current view. Keyed by the exact gfa + bubblesAbove it was built for.
+	let prewarmed = $state.raw<{ gfa: Gfa; bubblesAbove: boolean; layout: LayoutResult; ms: number } | null>(
+		null
+	);
+	let prewarmTarget: { gfa: Gfa; bubblesAbove: boolean } | null = null;
 
-	// Kick off a (re)layout whenever the graph changes.
-	$effect(() => {
-		const graph = adapted.graph;
-		const id = ++reqId;
-		computing = true;
-		const w = ensureWorker();
-		// `graph` traces back into `gfa`, which is (or is derived from) `$state`
-		// — Svelte 5 deep-reactivity wraps its nested objects/arrays in Proxies,
-		// and `postMessage`'s structured-clone algorithm can't clone a Proxy
-		// (throws DataCloneError). simplify.ts and gfaToGraph.ts deliberately
-		// share step objects internally rather than copying them (a large
-		// locus can have millions), so nothing upstream de-proxies them for us
-		// — this snapshot is the one place that must, since it's the one place
-		// with a hard structured-clone requirement.
-		// Rough mode collapses each segment to one simulation node (instead of up
-		// to 60 sub-nodes for a smooth strand), cuts the iterations, and drops the
-		// per-link bend nodes — which is where nearly all the time goes on a big
-		// graph (62.5s -> 6.0s measured on a 9,892-node fixture).
-		const options = roughLayout
+	// Layout options for a graph of this size: past the threshold, a rough, much
+	// faster layout (see the 62.5s→6.0s note); below it, the full-quality one.
+	function layoutOptionsFor(keptSegments: number): LayoutRequest['options'] {
+		return keptSegments > LARGE_LAYOUT_NODE_THRESHOLD
 			? {
 					referenceSample,
 					maxEdgesPerSegment: 1,
@@ -325,7 +324,74 @@
 					bubblesAbove
 				}
 			: { referenceSample, bubblesAbove };
-		w.postMessage({ id, graph: $state.snapshot(graph), options } satisfies LayoutRequest);
+	}
+
+	function ensureWorker(): Worker {
+		if (!worker) {
+			worker = new Worker(new URL('./layout.worker.ts', import.meta.url), { type: 'module' });
+			worker.onmessage = (ev: MessageEvent<LayoutResponse>) => {
+				if (ev.data.id === mainReqId) {
+					layout = ev.data.layout;
+					ms = ev.data.ms;
+					computing = false;
+					maybeStartDisco();
+				} else if (ev.data.id === prewarmReqId && prewarmTarget) {
+					prewarmed = { ...prewarmTarget, layout: ev.data.layout, ms: ev.data.ms };
+					prewarmReqId = -1;
+					onDiscoLayoutReady?.();
+				}
+				// else: superseded within its channel — drop it.
+			};
+		}
+		return worker;
+	}
+
+	// `graph` traces back into `gfa`, which is (or is derived from) `$state` — Svelte
+	// 5 deep-reactivity wraps its nested objects/arrays in Proxies, and
+	// `postMessage`'s structured-clone can't clone a Proxy (DataCloneError).
+	// simplify.ts and gfaToGraph.ts deliberately share step objects internally
+	// rather than copying them (a large locus can have millions), so nothing
+	// upstream de-proxies them for us — this snapshot is the one place that must.
+	function postLayout(graph: GfaGraph, options: LayoutRequest['options']): number {
+		const id = ++nextReqId;
+		ensureWorker().postMessage({ id, graph: $state.snapshot(graph), options } satisfies LayoutRequest);
+		return id;
+	}
+
+	// Kick off a (re)layout whenever the displayed graph changes — unless we already
+	// prewarmed a layout for exactly this graph (the disco swap), in which case apply
+	// it instantly with no worker roundtrip and no "computing" state.
+	$effect(() => {
+		const graph = adapted.graph;
+		const ba = bubblesAbove;
+		const pre = untrack(() => prewarmed);
+		if (pre && pre.gfa === gfa && pre.bubblesAbove === ba) {
+			layout = pre.layout;
+			ms = pre.ms;
+			computing = false;
+			untrack(() => maybeStartDisco());
+			return;
+		}
+		computing = true;
+		mainReqId = postLayout(graph, layoutOptionsFor(adapted.keptSegments));
+	});
+
+	// Prewarm the disco graph's layout in the background: build and lay it out
+	// without touching `layout`/`computing`, so the graph on screen is undisturbed
+	// and fully interactive while it runs. Notify the parent once it's ready.
+	$effect(() => {
+		const pg = discoPrewarmGfa;
+		const ba = bubblesAbove;
+		if (!pg) return;
+		const pre = untrack(() => prewarmed);
+		if (pre && pre.gfa === pg && pre.bubblesAbove === ba) {
+			onDiscoLayoutReady?.();
+			return;
+		}
+		if (prewarmTarget && prewarmTarget.gfa === pg && prewarmTarget.bubblesAbove === ba) return; // in flight
+		const pAdapted = gfaToGraph(pg, { referenceSample });
+		prewarmTarget = { gfa: pg, bubblesAbove: ba };
+		prewarmReqId = postLayout(pAdapted.graph, layoutOptionsFor(pAdapted.keptSegments));
 	});
 
 	onDestroy(() => worker?.terminate());
