@@ -3,7 +3,7 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
-	import { BACKBONE_COLOR, heatmapColor } from './colors';
+	import { heatmapColor, darkTheme, lightTheme } from './colors';
 	import type { Transcript } from '../geneTrack';
 	import { trackEvent } from '../analytics';
 
@@ -13,19 +13,63 @@
 		end: number;
 	}
 
+	interface DiscoStep {
+		id: string;
+		orient: '+' | '-';
+	}
+
 	let {
 		layout,
 		refCoords,
 		genes = [],
 		strokeWidth = 3,
-		onSelectSegment
+		onSelectSegment,
+		discoPath = null,
+		discoColor = '#ff3ce0',
+		discoActive = false,
+		lightMode = false,
+		showExits = true,
+		onReady,
+		nodeTooltip
 	}: {
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
+		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
+		 * Falls back to a default line when not supplied. */
+		nodeTooltip?: (segId: string) => string;
+		/** Steps of the walk currently being spotlit by disco-walks, or null. */
+		discoPath?: DiscoStep[] | null;
+		/** Cycling glow color for the current disco walk. */
+		discoColor?: string;
+		/** When true, dim the base graph so the spotlit walk pops. */
+		discoActive?: boolean;
+		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
+		lightMode?: boolean;
+		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
+		showExits?: boolean;
+		/** Hands the parent a small API (currently just PNG export) once mounted. */
+		onReady?: (api: { exportImage: (filename: string) => void }) => void;
 	} = $props();
+
+	const theme = $derived(lightMode ? lightTheme : darkTheme);
+
+	// segId -> its chain, for tracing a walk's polyline through the layout.
+	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
+
+	// Node ids that a structural link attaches to. A non-backbone chain end that
+	// isn't in here is a strand that just stops — a haplotype chopped at the
+	// subgraph boundary — which drawExitCues() marks as leaving the locus.
+	const linkedNodeIds = $derived.by(() => {
+		const s = new Set<string>();
+		for (const l of layout.structuralLinkPaths) {
+			s.add(l.fromNode);
+			s.add(l.toNode);
+		}
+		return s;
+	});
 
 	// Reserved bottom bands, in screen (CSS) px. The coordinate axis sits directly
 	// under the backbone; the gene track (only when there are genes to show) sits
@@ -41,6 +85,25 @@
 	let containerEl: HTMLDivElement | undefined = $state();
 	let transform: ZoomTransform = zoomIdentity;
 	let zoomBehavior = zoom<HTMLCanvasElement, unknown>().scaleExtent([0.02, 40]);
+	// Non-null only during a PNG export, when draw() renders at this pixel ratio.
+	let exportScale: number | null = null;
+
+	// Render the current view to a PNG at a higher pixel ratio (for figures), then
+	// restore the on-screen render. Both draws are synchronous, so the user never
+	// sees the high-res frame — the browser only paints the restored one.
+	function exportImage(filename: string) {
+		if (!canvasEl) return;
+		exportScale = 4;
+		draw();
+		const url = canvasEl.toDataURL('image/png');
+		exportScale = null;
+		draw();
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'export_png' });
+	}
 
 	// EXPERIMENT: zoom is horizontal-only. A pangenome bubble is wide and thin —
 	// the interesting structure is variation *along* the reference, while the
@@ -88,6 +151,10 @@
 			hoverLabel = null;
 			return;
 		}
+		if (nodeTooltip) {
+			hoverLabel = nodeTooltip(segId);
+			return;
+		}
 		const length = layout.segmentLengths.get(segId);
 		const coord = refCoords?.get(segId);
 		const coordStr = coord
@@ -97,10 +164,10 @@
 	}
 
 	function colorForChain(segId: string): string {
-		if (layout.backboneSegIds.has(segId)) return BACKBONE_COLOR;
+		if (layout.backboneSegIds.has(segId)) return theme.backbone;
 		const coverage = layout.pathCoverage.get(segId) ?? 0;
 		const ratio = layout.maxPathCoverage > 0 ? coverage / layout.maxPathCoverage : 0;
-		return heatmapColor(ratio);
+		return heatmapColor(ratio, theme.heatmapLow, theme.heatmapHigh);
 	}
 
 	function fitToView(retriesLeft = 5) {
@@ -158,7 +225,10 @@
 		const ctx = canvasEl.getContext('2d');
 		if (!ctx) return;
 
-		const dpr = window.devicePixelRatio || 1;
+		// During a PNG export we temporarily render the canvas backing store at a
+		// higher pixel ratio, so the exported image is crisp at figure resolution
+		// while the on-screen size (fixed by CSS) is unchanged.
+		const dpr = exportScale ?? (window.devicePixelRatio || 1);
 		const width = canvasEl.clientWidth;
 		const height = canvasEl.clientHeight;
 		if (canvasEl.width !== width * dpr || canvasEl.height !== height * dpr) {
@@ -169,7 +239,7 @@
 		ctx.save();
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, width, height);
-		ctx.fillStyle = '#0b0d12';
+		ctx.fillStyle = theme.background;
 		ctx.fillRect(0, 0, width, height);
 
 		// Points are projected to screen coordinates individually rather than by
@@ -183,7 +253,7 @@
 		// (invisible) bend node so a link between two backbone-pinned points —
 		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
 		// and disappear against it.
-		ctx.strokeStyle = 'rgba(200, 210, 230, 0.35)';
+		ctx.strokeStyle = theme.structuralLink;
 		ctx.lineWidth = 1;
 		for (const link of layout.structuralLinkPaths) {
 			const a = layout.nodesById.get(link.fromNode);
@@ -216,6 +286,13 @@
 			ctx.lineWidth = chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth;
 			ctx.stroke();
 		}
+
+		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
+		drawExitCues(ctx, width);
+
+		// Spotlight overlay: the current disco walk, traced through its segments'
+		// chains and stroked as a glowing line over the full-brightness base graph.
+		drawDiscoWalk(ctx);
 
 		ctx.restore();
 
@@ -351,22 +428,31 @@
 
 		let lastLabelRight = -Infinity;
 		const drawTick = (sx: number, sy: number, text: string, align: CanvasTextAlign) => {
-			ctx.strokeStyle = 'rgba(150, 165, 190, 0.6)';
+			ctx.strokeStyle = theme.tick;
 			ctx.lineWidth = 1;
 			ctx.beginPath();
 			ctx.moveTo(sx, sy);
 			ctx.lineTo(sx, sy + 6);
 			ctx.stroke();
 			ctx.textAlign = align;
-			ctx.fillStyle = 'rgba(230, 235, 245, 0.55)';
 			// text background pill for legibility over strands
 			const w = ctx.measureText(text).width;
 			const tx = align === 'center' ? sx - w / 2 : align === 'right' ? sx - w : sx;
-			ctx.fillStyle = 'rgba(11, 13, 18, 0.72)';
+			ctx.fillStyle = theme.coordPill;
 			ctx.fillRect(tx - 2, sy + 7, w + 4, 13);
-			ctx.fillStyle = '#a9c7ff';
+			ctx.fillStyle = theme.coordText;
 			ctx.fillText(text, sx, sy + 8);
 		};
+
+		// The end coordinate of the last anchor, pinned to the far right — always
+		// shown since it bounds the view. Reserve its left edge so no start label to
+		// its left is allowed to run into it (the source of the right-side overlap:
+		// the last segment's start tick used to be force-drawn regardless of gap).
+		const last = anchors[anchors.length - 1];
+		const endX = toScreenX(last.maxX);
+		const endText = fmt(last.coord.end);
+		const endLeft = endX - ctx.measureText(endText).width;
+		const endVisible = endX >= -40 && endX <= width + 40;
 
 		for (let i = 0; i < anchors.length; i++) {
 			const a = anchors[i];
@@ -374,20 +460,19 @@
 			const sy = toScreenY(a.y);
 			if (sx < -40 || sx > width + 40) continue; // off-screen
 			const isFirst = i === 0;
-			const isLast = i === anchors.length - 1;
 			const textW = ctx.measureText(fmt(a.coord.start)).width;
-			if (isFirst || isLast || sx - lastLabelRight >= MIN_GAP) {
+			// A centered start label spans [sx - w/2, sx + w/2].
+			const clearsPrev = isFirst || sx - lastLabelRight >= MIN_GAP;
+			const clearsEnd = !endVisible || sx + textW / 2 < endLeft - 8;
+			if (clearsPrev && clearsEnd) {
 				drawTick(sx, sy, fmt(a.coord.start), 'center');
 				lastLabelRight = sx + textW / 2;
 			}
-			if (isLast) {
-				const ex = toScreenX(a.maxX);
-				drawTick(ex, sy, fmt(a.coord.end), 'right');
-			}
 		}
+		if (endVisible) drawTick(endX, toScreenY(last.y), endText, 'right');
 		// Contig label, once, at the far left.
 		ctx.textAlign = 'left';
-		ctx.fillStyle = 'rgba(169, 199, 255, 0.85)';
+		ctx.fillStyle = theme.contigLabel;
 		ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
 		ctx.fillText(anchors[0].coord.contig, 8, Math.max(4, toScreenY(anchors[0].y) - 18));
 		ctx.restore();
@@ -412,7 +497,7 @@
 		ctx.beginPath();
 		ctx.rect(0, bandTop, width, GENE_BAND);
 		ctx.clip();
-		ctx.strokeStyle = 'rgba(150, 165, 190, 0.16)';
+		ctx.strokeStyle = theme.geneBandLine;
 		ctx.lineWidth = 1;
 		ctx.beginPath();
 		ctx.moveTo(0, bandTop + 0.5);
@@ -448,7 +533,7 @@
 				const hi = Math.min(width + 2, Math.max(gx(g.start), gx(g.end)));
 
 				// intron line
-				ctx.strokeStyle = 'rgba(140, 162, 196, 0.6)';
+				ctx.strokeStyle = theme.geneIntron;
 				ctx.lineWidth = 1;
 				ctx.beginPath();
 				ctx.moveTo(lo, y);
@@ -457,7 +542,7 @@
 
 				// strand direction chevrons
 				const dir = g.strand === '-' ? -1 : 1;
-				ctx.strokeStyle = 'rgba(140, 162, 196, 0.8)';
+				ctx.strokeStyle = theme.geneChevron;
 				for (let ax = lo + 10; ax < hi - 3; ax += 24) {
 					ctx.beginPath();
 					ctx.moveTo(ax - dir * 3, y - 3);
@@ -487,7 +572,7 @@
 						const bw = Math.min(width, Math.max(gx(a), gx(b))) - bx;
 						if (bw <= 0) continue;
 						const h = coding ? 7 : 4;
-						ctx.fillStyle = coding ? '#6f9dff' : 'rgba(111, 157, 255, 0.5)';
+						ctx.fillStyle = coding ? theme.geneExonCoding : theme.geneExonUtr;
 						ctx.fillRect(bx, y - h / 2, Math.max(0.8, bw), h);
 					}
 					// one hover region per exon, spanning its whole extent
@@ -510,11 +595,123 @@
 				// label just past the gene, clamped into view
 				const tw = ctx.measureText(g.symbol).width;
 				const labelX = Math.min(hi + 5, width - tw - 2);
-				ctx.fillStyle = 'rgba(214, 224, 245, 0.92)';
+				ctx.fillStyle = theme.geneLabel;
 				ctx.textAlign = 'left';
 				ctx.fillText(g.symbol, Math.max(2, labelX), y);
 			}
 		}
+		ctx.restore();
+	}
+
+	// Trace the current disco walk as a single polyline through the layout: for each
+	// step, append its chain's nodes (reversed when the walk traverses the segment
+	// backwards). Its two kinds of segment are drawn at the base graph's own
+	// widths, just with a colored glow added: each segment's node-strand at full
+	// strand thickness (with a bright white core), and the link connectors between
+	// consecutive segments as thin as a normal link.
+	function drawDiscoWalk(ctx: CanvasRenderingContext2D) {
+		if (!discoActive || !discoPath || discoPath.length === 0) return;
+
+		// Split the walk into per-segment node-strands and the link connectors that
+		// join them, so the two can be stroked at different widths (a single merged
+		// polyline can't tell "inside a node" from "hopping between nodes").
+		const strands: { x: number; y: number }[][] = [];
+		const links: [{ x: number; y: number }, { x: number; y: number }][] = [];
+		let prevEnd: { x: number; y: number } | null = null;
+		for (const step of discoPath) {
+			const chain = chainBySeg.get(step.id);
+			if (!chain) continue;
+			const ids = step.orient === '-' ? [...chain.nodeIds].reverse() : chain.nodeIds;
+			const pts: { x: number; y: number }[] = [];
+			for (const id of ids) {
+				const n = layout.nodesById.get(id);
+				if (n) pts.push({ x: toScreenX(n.x), y: toScreenY(n.y) });
+			}
+			if (pts.length === 0) continue;
+			if (prevEnd) links.push([prevEnd, pts[0]]);
+			strands.push(pts);
+			prevEnd = pts[pts.length - 1];
+		}
+		if (strands.length === 0) return;
+
+		// Collect all the links into one path and all the strands into another (each
+		// polyline is its own subpath, so they still render separately), then stroke
+		// each path in a single call. This keeps the walk to a fixed 3 strokes no
+		// matter how many segments it spans — which matters because the glow uses
+		// shadowBlur, and shadowBlur is very expensive *per stroke*: a long walk (the
+		// reference path spans the whole backbone) stroked segment-by-segment was
+		// hundreds of shadowed strokes every frame, 10× a second.
+		const linkPath = new Path2D();
+		for (const [a, b] of links) {
+			linkPath.moveTo(a.x, a.y);
+			linkPath.lineTo(b.x, b.y);
+		}
+		const strandPath = new Path2D();
+		for (const pts of strands) {
+			strandPath.moveTo(pts[0].x, pts[0].y);
+			for (let i = 1; i < pts.length; i++) strandPath.lineTo(pts[i].x, pts[i].y);
+		}
+
+		ctx.save();
+		ctx.lineJoin = 'round';
+		ctx.lineCap = 'round';
+		ctx.shadowColor = discoColor;
+		ctx.shadowBlur = 18;
+		ctx.strokeStyle = discoColor;
+		ctx.globalAlpha = 0.9;
+
+		// link connectors: thin, matching the base graph's 1px links, glow only
+		ctx.lineWidth = 1;
+		ctx.stroke(linkPath);
+
+		// node strands: full strand thickness, glow
+		ctx.lineWidth = strokeWidth;
+		ctx.stroke(strandPath);
+
+		// bright core down the node strands only, no glow
+		ctx.shadowBlur = 0;
+		ctx.strokeStyle = theme.discoCore;
+		ctx.lineWidth = Math.max(1, strokeWidth * 0.5);
+		ctx.globalAlpha = 0.95;
+		ctx.stroke(strandPath);
+		ctx.restore();
+	}
+
+	// A haplotype that continues past the queried locus is chopped at the subgraph
+	// boundary, leaving a strand that just stops mid-air — reading as a random
+	// dangle. For each such loose end (a non-backbone chain end no link attaches to)
+	// draw a short fading dashed line toward the nearer frame edge: the direction the
+	// haplotype exits the locus. We can't know *which* node it reconnects to (it's
+	// outside the subgraph), only that it leaves this way.
+	function drawExitCues(ctx: CanvasRenderingContext2D, width: number) {
+		if (!showExits) return;
+		ctx.save();
+		ctx.setLineDash([4, 4]);
+		ctx.lineWidth = 1.5;
+		ctx.lineCap = 'butt';
+		for (const chain of layout.chains) {
+			if (layout.backboneSegIds.has(chain.segId)) continue; // the reference axis marks its own ends
+			const ids = chain.nodeIds;
+			const endIdx: number[] = [];
+			if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
+			if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
+			for (const i of endIdx) {
+				const n = layout.nodesById.get(ids[i]);
+				if (!n) continue;
+				const ex = toScreenX(n.x);
+				const ey = toScreenY(n.y);
+				const edgeX = ex < width / 2 ? 0 : width;
+				const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+				grad.addColorStop(0, theme.exitCue);
+				grad.addColorStop(1, theme.exitCueFade);
+				ctx.strokeStyle = grad;
+				ctx.beginPath();
+				ctx.moveTo(ex, ey);
+				ctx.lineTo(edgeX, ey);
+				ctx.stroke();
+			}
+		}
+		ctx.setLineDash([]);
 		ctx.restore();
 	}
 
@@ -576,6 +773,23 @@
 			fitToView();
 			draw();
 		});
+	});
+
+	$effect(() => {
+		// Redraw whenever the disco-walks spotlight changes (a new walk in the cycle,
+		// a new glow color, or disco turning on/off) or the theme flips. Untracked so
+		// draw()'s internal reads don't make this effect depend on hover/transform state.
+		discoPath;
+		discoColor;
+		discoActive;
+		theme;
+		showExits;
+		untrack(() => draw());
+	});
+
+	$effect(() => {
+		// Hand the parent the export API once the canvas exists.
+		if (canvasEl) onReady?.({ exportImage });
 	});
 
 	$effect(() => {

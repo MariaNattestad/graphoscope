@@ -83,6 +83,9 @@ export interface QueryContext {
 	start: number;
 	end: number;
 	span: number;
+	/** Subgraph context margin in bp used for this query (the `context` param, or
+	 * the default when omitted). */
+	context: number;
 }
 
 /** Range-request telemetry for the query, useful for judging query cost. */

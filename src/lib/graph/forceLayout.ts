@@ -93,6 +93,12 @@ export interface LayoutOptions {
 	 * clear of the backbone instead of lying invisibly on top of it. Costs one
 	 * simulation node per link; turn off for a rough, faster layout. */
 	bendNodes?: boolean;
+	/** Pull each bubble node horizontally back toward the reference position it
+	 * attaches to, so a bubble stacks into a tidy vertical column over its
+	 * reference node instead of trailing sideways across the canvas. On by
+	 * default; turning it off gives the older, freer relaxation where the link
+	 * forces open bubbles out into more organic shapes. */
+	anchorToReference?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 }
@@ -103,7 +109,8 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 	unitEdgeLength: 18,
 	iterations: 350,
 	bendNodes: true,
-	bubblesAbove: false
+	bubblesAbove: false,
+	anchorToReference: true
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -434,6 +441,12 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// job: it *spreads*, since a node's target grows with its BFS depth, where
 	// the clearance force below only ever enforced a minimum and so left
 	// everything stacked in one band against the backbone.
+	// The whole anchor force is what #8 added on top of the original free layout:
+	// the x-pull stacks a bubble into a vertical column over its reference node, and
+	// the y-pull spreads bubbles apart by BFS depth. With `anchorToReference` off
+	// neither runs — the simulation falls back to charge + links + collide + the
+	// baseline push, which is the older, freer relaxation (bubbles drift sideways
+	// and open into more organic shapes, seeded but not pinned).
 	function anchorForce(alpha: number) {
 		for (const node of nodeArray) {
 			if (node.fy != null) continue; // backbone nodes are pinned
@@ -456,7 +469,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		)
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
 		.force('collide', forceCollide(8))
-		.force('anchor', anchorForce)
+		.force('anchor', opts.anchorToReference ? anchorForce : null)
 		.force('avoidBaseline', avoidBaselineForce)
 		.stop();
 

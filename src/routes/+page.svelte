@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
+	import { GbzClient, parseLocus, DEFAULT_CONTEXT, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RefArcView from '$lib/RefArcView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
@@ -38,6 +38,11 @@
 
 	// ---- Query state -----------------------------------------------------------
 	let locusText = $state(DEFAULT_GENE);
+	// Subgraph context radius in bp (GBZ-base's `--context`, wasm default 100): how
+	// far past the locus haplotypes are followed before they're cut off. Applied on
+	// the next query, so changing it takes a Query click like the locus does.
+	const DEFAULT_CONTEXT_BP = DEFAULT_CONTEXT;
+	let contextBp = $state(DEFAULT_CONTEXT_BP);
 	// Set to the resolved gene's symbol whenever the current results came from a
 	// gene-name search (manual or an example chip) — kept alongside the
 	// coordinates so a user can look back and remember what they searched for,
@@ -51,7 +56,14 @@
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
 	// per-node/edge coverage tags), so the browser never parses the full,
 	// walk-dominated GFA — that server-side reduction is the whole memory win.
-	let gfa = $state<Gfa | null>(null);
+	//
+	// `$state.raw`: the parsed GFA is large (segments, links, and walks with many
+	// steps) and only ever reassigned wholesale, never mutated. Plain `$state`
+	// would deep-proxy all of it, and then every read — including the deep clone
+	// the layout worker needs — pays Svelte's proxy-trap cost per access, which was
+	// blocking the main thread ~1s when re-laying-out the full graph. Raw keeps it
+	// as plain objects: fast to read and to structured-clone across the worker.
+	let gfa = $state.raw<Gfa | null>(null);
 	let rawGfa = $state<string>('');
 	// Set only if the reduced GFA somehow still exceeds MAX_GFA_BYTES.
 	let oversized = $state<{ bytes: number } | null>(null);
@@ -132,6 +144,11 @@
 		const p = new URLSearchParams(window.location.search);
 		const ref = p.get('ref');
 		if (ref === 'grch38' || ref === 'chm13') graphId = ref;
+		const ctxParam = p.get('context');
+		if (ctxParam != null) {
+			const ctx = Number(ctxParam);
+			if (Number.isFinite(ctx) && ctx >= 0) contextBp = ctx;
+		}
 		const locus = p.get('locus') ?? p.get('gene');
 		if (locus && locus.trim()) {
 			locusText = locus.trim();
@@ -144,6 +161,8 @@
 		const p = new URLSearchParams(window.location.search);
 		p.set('ref', graphId);
 		p.set('locus', queriedGene ?? locusText);
+		if (contextBp !== DEFAULT_CONTEXT_BP) p.set('context', String(contextBp));
+		else p.delete('context');
 		const qs = p.toString();
 		// replaceState (not a navigation) so this never reloads or adds history
 		// entries — it just keeps the address bar reproducible.
@@ -178,6 +197,7 @@
 			}
 			locus = parseLocus(locusText, graph.referenceSample);
 			locus.sample = graph.referenceSample;
+			locus.context = contextBp;
 			// The wasm query (crates/reduce) simplifies and walk-counts before it
 			// ever returns, so the browser receives a graph sized by topology, not by
 			// haplotype count. This is what keeps a large/repetitive locus from
@@ -271,7 +291,9 @@
 	// and gigabytes to hold. Between the two, the layout drops to rough mode on
 	// its own (see GraphLayoutView).
 	const MAX_UNSIMPLIFIED_NODES = 25000;
-	let unsimplified = $state<Gfa | null>(null);
+	// Raw for the same reason as `gfa` above: large, reassigned wholesale, and deep
+	// cloned to the layout worker — proxying it would tax every read.
+	let unsimplified = $state.raw<Gfa | null>(null);
 	let loadingUnsimplified = $state(false);
 	let showUnsimplified = $state(false);
 	/** Nodes the unsimplified graph would have, known from the reduced X line. */
@@ -282,62 +304,119 @@
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
 
-	async function toggleUnsimplified() {
-		if (showUnsimplified) {
-			showUnsimplified = false;
-			return;
-		}
-		if (unsimplified) {
-			showUnsimplified = true;
-			return;
-		}
-		if (!client || loadingUnsimplified) return;
+	// One in-browser cache of the full (unsimplified) subgraph for the current
+	// locus, shared by everything that needs it — the "show all nodes" toggle,
+	// disco-walks, and the raw download — so the range round-trips (and the
+	// tens-of-MB response they pull) happen at most once, whichever feature asks
+	// first. Two layers, because the consumers want different forms of it:
+	//   • `unsimplifiedGfaText` — the raw GFA text, what the download writes to a file.
+	//   • `unsimplified`        — that text parsed into a `Gfa`, what the layout draws.
+	// Both are cleared together when a new query invalidates the locus (below).
+	let unsimplifiedGfaText = $state<string | null>(null);
+	// Dedupes concurrent fetches (e.g. clicking disco-walks while a download is
+	// already in flight) onto a single request instead of firing the range
+	// fetches twice. Not reactive — purely a concurrency guard.
+	let unsimplifiedFetch: Promise<string | null> | null = null;
+
+	// Fetch the unsimplified subgraph's GFA text once and cache it. Returns the
+	// cached text on any later call for the same locus.
+	async function fetchUnsimplifiedGfa(): Promise<string | null> {
+		if (unsimplifiedGfaText !== null) return unsimplifiedGfaText;
+		if (unsimplifiedFetch) return unsimplifiedFetch;
+		if (!client) return null;
+		unsimplifiedFetch = (async () => {
+			try {
+				const locus = parseLocus(locusText, graph.referenceSample);
+				locus.sample = graph.referenceSample;
+				locus.context = contextBp;
+				locus.raw = true;
+				const result = await client!.query({ kind: 'url', url: graph.dbUrl }, locus);
+				if (!result.ok) {
+					error = `${result.error}\n${result.stderr ?? ''}`.trim();
+					return null;
+				}
+				unsimplifiedGfaText = result.gfa ?? '';
+				return unsimplifiedGfaText;
+			} catch (e) {
+				error = e instanceof Error ? e.message : String(e);
+				return null;
+			} finally {
+				unsimplifiedFetch = null;
+			}
+		})();
+		return unsimplifiedFetch;
+	}
+
+	// Load + parse the unsimplified subgraph (every haplotype walk) and switch the
+	// layout to it. Shared by the "show all nodes" toggle and disco-walks, which
+	// both need the full graph; the fetch itself goes through the shared cache
+	// above, so a prior download (or vice-versa) means no second round-trip.
+	// `showUnsimplified` is flipped together with the parsed graph (not by the
+	// caller after the await) so there's never a frame where loading has finished
+	// but the layout is still the reduced graph — disco's pending-start effect keys
+	// off exactly that transition and would otherwise be dropped in the gap.
+	// Returns whether the full graph is now showing.
+	// Fetch + parse the full graph into `unsimplified` without switching the view to
+	// it. Used both by the "show all nodes" toggle (which then shows it) and by
+	// disco-walks (which hands it off for background layout, showing it only once
+	// laid out).
+	async function ensureUnsimplifiedParsed(): Promise<Gfa | null> {
+		if (unsimplified) return unsimplified;
+		if (loadingUnsimplified) return null;
 		loadingUnsimplified = true;
 		try {
-			const locus = parseLocus(locusText, graph.referenceSample);
-			locus.sample = graph.referenceSample;
-			locus.raw = true;
-			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
-			if (!result.ok) {
-				error = `${result.error}\n${result.stderr ?? ''}`.trim();
-				return;
-			}
-			trackEvent('widget_interact', { widget: 'graph_layout', action: 'view_unsimplified' });
-			unsimplified = parseGfa(result.gfa ?? '');
-			showUnsimplified = true;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+			const text = await fetchUnsimplifiedGfa();
+			if (text === null) return null;
+			unsimplified = parseGfa(text);
+			return unsimplified;
 		} finally {
 			loadingUnsimplified = false;
 		}
 	}
 
-	// A new query invalidates the cached unsimplified graph.
+	async function toggleUnsimplified() {
+		if (showUnsimplified) {
+			showUnsimplified = false;
+			return;
+		}
+		if (!unsimplified) {
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'view_unsimplified' });
+		}
+		if (await ensureUnsimplifiedParsed()) showUnsimplified = true;
+	}
+
+	// disco-walks asked for the full-walk graph. Load it, then hand it to the layout
+	// view as `discoPrewarmGfa` to lay out *in the background* — the reduced graph
+	// stays on screen and interactive meanwhile — disco animates over the displayed
+	// (simplified) graph, mapping the loaded walks onto it, so no swap is needed.
+	async function requestDiscoGraph() {
+		await ensureUnsimplifiedParsed(); // populates `unsimplified` (passed as discoWalksGfa)
+	}
+
+	// A new query invalidates every cached form of the previous locus's full graph.
 	$effect(() => {
 		gfa;
+		unsimplifiedGfaText = null;
 		unsimplified = null;
 		showUnsimplified = false;
 	});
 
-	// Fetches the unsimplified subgraph — every haplotype walk — purely to hand
-	// the user a file. It is streamed straight to a download and never parsed:
-	// on a repetitive locus this is the tens-of-megabytes response that the
-	// reduced pipeline exists to avoid putting in the browser's heap.
+	// Hands the user the unsimplified subgraph — every haplotype walk — as a file.
+	// Fetches through the shared cache, so if the full graph was already pulled for
+	// the layout (show-all-nodes / disco-walks) this reuses it with no round-trip;
+	// and if the download comes first, it seeds the cache for those in turn. On a
+	// repetitive locus this is the tens-of-megabytes response the reduced pipeline
+	// avoids parsing — held once here, and dropped as soon as the locus changes.
 	let downloadingRaw = $state(false);
 	async function downloadRaw() {
-		if (!client || downloadingRaw) return;
+		if (downloadingRaw) return;
 		downloadingRaw = true;
 		try {
-			const locus = parseLocus(locusText, graph.referenceSample);
-			locus.sample = graph.referenceSample;
-			locus.raw = true;
-			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
-			if (!result.ok) {
-				error = `${result.error}\n${result.stderr ?? ''}`.trim();
-				return;
-			}
+			const text = await fetchUnsimplifiedGfa();
+			if (text === null) return;
 			trackEvent('widget_interact', { widget: 'raw_data', action: 'download_unsimplified_gfa' });
-			const blob = new Blob([result.gfa ?? ''], { type: 'text/plain' });
+			const locus = parseLocus(locusText, graph.referenceSample);
+			const blob = new Blob([text], { type: 'text/plain' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
@@ -416,6 +495,20 @@
 				{/if}
 			</div>
 		</label>
+		<label
+			class="context-field"
+			title="How far past the locus (bp) the query follows haplotypes into the graph before cutting them off. Larger reveals more of where they go (fewer dangling dead-ends), at the cost of a bigger, denser subgraph. Applied on the next Query."
+		>
+			<span class="lbl">Context (bp)</span>
+			<input
+				class="ctx-input"
+				type="number"
+				min="0"
+				step="50"
+				bind:value={contextBp}
+				onkeydown={(e) => e.key === 'Enter' && run()}
+			/>
+		</label>
 		<button class="go" onclick={() => run()} disabled={running}>
 			{running ? 'Querying…' : 'Query'}
 		</button>
@@ -450,33 +543,20 @@
 					{#if queriedGene}<span class="muted small">· {queriedGene} · <code>{locusText}</code></span
 						>{/if}
 				</h2>
-				{#if canShowUnsimplified}
-					<button
-						class="mini-toggle"
-						class:on={showUnsimplified}
-						onclick={toggleUnsimplified}
-						disabled={loadingUnsimplified}
-						title="Load every node, before small-variant collapsing — {unsimplifiedNodes.toLocaleString()} nodes"
-					>
-						{#if loadingUnsimplified}
-							loading…
-						{:else if showUnsimplified}
-							showing all {unsimplifiedNodes.toLocaleString()} nodes — simplify
-						{:else}
-							show all {unsimplifiedNodes.toLocaleString()} nodes
-						{/if}
-					</button>
-				{:else if unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
-					<span class="muted small" title="Download it from the data panel below to inspect elsewhere">
-						{unsimplifiedNodes.toLocaleString()} nodes unsimplified — too many to render
-					</span>
-				{/if}
 			</div>
 			{#if displayGfa}
 				<GraphLayoutView
 					gfa={displayGfa}
 					referenceSample={graph.referenceSample}
 					refKey={graph.refKey}
+					discoAvailable={canShowUnsimplified}
+					discoLoading={loadingUnsimplified}
+					onRequestDiscoGraph={requestDiscoGraph}
+					discoWalksGfa={unsimplified}
+					showingAllNodes={showUnsimplified}
+					allNodesCount={unsimplifiedNodes}
+					allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+					onToggleSimplify={toggleUnsimplified}
 				/>
 			{/if}
 		</section>
@@ -731,28 +811,6 @@
 	.toolbar .go {
 		padding: 0.4rem 1rem;
 	}
-	.mini-toggle {
-		font: inherit;
-		font-size: 0.75rem;
-		padding: 0.2rem 0.6rem;
-		border: 1px solid #d0d0d0;
-		background: #fff;
-		border-radius: 6px;
-		color: #444;
-		cursor: pointer;
-	}
-	.mini-toggle:hover:not(:disabled) {
-		border-color: #999;
-	}
-	.mini-toggle.on {
-		background: #2563eb;
-		border-color: #2563eb;
-		color: #fff;
-	}
-	.mini-toggle:disabled {
-		opacity: 0.6;
-		cursor: default;
-	}
 	.graph-panel {
 		margin-bottom: 0.75rem;
 	}
@@ -883,6 +941,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
+	}
+	.context-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.ctx-input {
+		width: 5.5rem;
+		padding: 0.4rem 0.5rem;
+		font: inherit;
+		border: 1px solid #ccc;
+		border-radius: 6px;
 	}
 	.locus-input {
 		position: relative;
