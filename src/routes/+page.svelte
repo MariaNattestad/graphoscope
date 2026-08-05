@@ -446,12 +446,13 @@
 
 <div class="app">
 	<header class="topbar">
-		<div class="brand">
-			<h1>Graphoscope</h1>
-			<span class="tagline">HPRC pangenome graphs, queried by locus</span>
-		</div>
+		<div class="tb-left">
+			<div class="brand">
+				<h1>Graphoscope</h1>
+				<span class="tagline">HPRC pangenome graphs, queried by locus</span>
+			</div>
 
-		<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
+			<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
 			{#each GRAPHS as g (g.id)}
 				<button
 					class="gbtn"
@@ -463,8 +464,10 @@
 					{g.label}
 				</button>
 			{/each}
+			</div>
 		</div>
 
+		<div class="searchgroup">
 		<div class="query">
 			<label class="locus-field">
 				<span class="lbl">Locus or gene</span>
@@ -529,10 +532,12 @@
 				</button>
 			{/each}
 		</div>
+		</div>
 
-		<span class="spacer"></span>
-		<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
-		<a class="pg-link" href="{base}/playground">Playground →</a>
+		<div class="tb-right">
+			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
+			<a class="pg-link" href="{base}/playground">Playground →</a>
+		</div>
 	</header>
 
 	{#if error}
@@ -850,6 +855,11 @@
 		cursor: default;
 	}
 
+	.searchgroup {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
 	.query {
 		display: flex;
 		align-items: flex-end;
@@ -941,6 +951,18 @@
 
 	.spacer {
 		flex: 1;
+	}
+	.tb-left {
+		display: flex;
+		align-items: center;
+		gap: 0.9rem;
+	}
+	.tb-right {
+		display: flex;
+		align-items: center;
+		gap: 0.9rem;
+		white-space: nowrap;
+		margin-left: auto;
 	}
 	.link-btn {
 		background: none;
