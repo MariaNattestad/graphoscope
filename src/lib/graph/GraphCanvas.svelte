@@ -28,13 +28,17 @@
 		discoColor = '#ff3ce0',
 		discoActive = false,
 		lightMode = false,
-		onReady
+		onReady,
+		nodeTooltip
 	}: {
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
+		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
+		 * Falls back to a default line when not supplied. */
+		nodeTooltip?: (segId: string) => string;
 		/** Steps of the walk currently being spotlit by disco-walks, or null. */
 		discoPath?: DiscoStep[] | null;
 		/** Cycling glow color for the current disco walk. */
@@ -130,6 +134,10 @@
 		hoveredSegment = segId;
 		if (!segId) {
 			hoverLabel = null;
+			return;
+		}
+		if (nodeTooltip) {
+			hoverLabel = nodeTooltip(segId);
 			return;
 		}
 		const length = layout.segmentLengths.get(segId);

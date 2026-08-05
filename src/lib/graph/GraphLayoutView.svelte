@@ -69,6 +69,14 @@
 	let lightMode = $state(false);
 	let canvasApi = $state<{ exportImage: (filename: string) => void } | null>(null);
 
+	// Which fields to surface about a node — in the hover tooltip and in the panel
+	// under the graph when one is clicked (where the sequence gets room to be read
+	// and copied). Sequence is off by default since it can be long.
+	let showNodeId = $state(true);
+	let showLength = $state(true);
+	let showCoords = $state(true);
+	let showSequence = $state(false);
+
 	let selected = $state<string | null>(null);
 
 	$effect(() => {
@@ -440,6 +448,28 @@
 		const base = win ? `${win.contig}_${win.start}-${win.end}` : 'graphoscope-graph';
 		canvasApi?.exportImage(`${base}.png`);
 	}
+
+	// Tooltip text for a hovered node, built from the fields the user has enabled.
+	// Sequence is truncated here (the full one lives in the panel under the graph).
+	function nodeTooltip(segId: string): string {
+		const seg = gfa.segments.get(segId);
+		const parts: string[] = [];
+		if (showNodeId) parts.push(segId);
+		if (showLength) parts.push(`${(seg?.length ?? 0).toLocaleString()} bp`);
+		if (showCoords) {
+			const c = refCoords.get(segId);
+			if (c) parts.push(fmtCoord(c));
+		}
+		if (showSequence && seg?.seq) {
+			parts.push(seg.seq.length > 40 ? `${seg.seq.slice(0, 40)}…` : seg.seq);
+		}
+		return parts.join(' · ') || segId;
+	}
+
+	const selectedSeq = $derived(selected ? (gfa.segments.get(selected)?.seq ?? '') : '');
+	async function copySelectedSeq() {
+		if (selectedSeq) await navigator.clipboard.writeText(selectedSeq);
+	}
 </script>
 
 <div class="wrap">
@@ -497,6 +527,15 @@
 				<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
 					⬇ Export PNG
 				</button>
+			</section>
+
+			<section class="group">
+				<h4 class="group-title">Node info</h4>
+				<span class="group-hint">shown on hover, and under the graph when clicked</span>
+				<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
+				<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
+				<label class="check"><input type="checkbox" bind:checked={showCoords} /> Coordinates</label>
+				<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
 			</section>
 
 			{#if discoAvailable || showingAllNodes || allNodesTooMany}
@@ -578,6 +617,7 @@
 					{discoPath}
 					{discoColor}
 					{lightMode}
+					{nodeTooltip}
 					discoActive={disco}
 					onReady={(api) => (canvasApi = api)}
 					onSelectSegment={(id) => {
@@ -610,15 +650,50 @@
 	</div>
 
 	<div class="foot">
-		{#if selected}
-			<span>selected <code>{selected}</code>{#if selectedLen != null} · {selectedLen.toLocaleString()} bp{/if}{#if selectedCoord} · <span class="coord">{fmtCoord(selectedCoord)}</span>{/if}</span>
-		{:else}
-			<span class="muted">click a strand to select · plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
-		{/if}
+		<span class="muted">click a strand to select · plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 		<span class="spacer"></span>
 		<span class="legend"><span class="sw backbone"></span> reference backbone (coords shown)</span>
 		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 	</div>
+
+	{#if selected && (showNodeId || showLength || showCoords || showSequence)}
+		<div class="node-info">
+			<div class="ni-fields">
+				{#if showNodeId}
+					<span class="ni-field"><span class="ni-key">node</span> <code>{selected}</code></span>
+				{/if}
+				{#if showLength}
+					<span class="ni-field"
+						><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
+					>
+				{/if}
+				{#if showCoords}
+					<span class="ni-field"
+						><span class="ni-key">coords</span>
+						{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span class="muted">—</span>{/if}</span
+					>
+				{/if}
+			</div>
+			{#if showSequence}
+				<div class="ni-seq">
+					<div class="ni-seq-head">
+						<span class="ni-key">sequence</span>
+						{#if selectedSeq}
+							<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
+							<button class="copy" onclick={copySelectedSeq}>copy</button>
+						{/if}
+					</div>
+					{#if selectedSeq}
+						<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
+							>{selectedSeq}</textarea
+						>
+					{:else}
+						<span class="muted">no sequence stored for this node</span>
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
 
 	{#if endpointCounts}
 		<div class="endpoints">
@@ -716,6 +791,26 @@
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
 		color: #9aa0aa;
+	}
+	.group-hint {
+		font-size: 0.7rem;
+		color: #9aa0aa;
+		margin-top: -0.2rem;
+	}
+
+	/* Compact checkbox rows (node-info field picker). */
+	.check {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: #333;
+		cursor: pointer;
+	}
+	.check input {
+		width: 15px;
+		height: 15px;
+		accent-color: #2563eb;
+		cursor: pointer;
 	}
 
 	/* Toggle switch. */
@@ -933,6 +1028,68 @@
 		background: #f0f0f0;
 		padding: 0 4px;
 		border-radius: 4px;
+	}
+	.node-info {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		font-size: 0.82rem;
+		background: #f8fafc;
+		border: 1px solid #e5e7eb;
+		border-radius: 6px;
+		padding: 0.55rem 0.7rem;
+	}
+	.ni-fields {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem 1.1rem;
+		align-items: baseline;
+	}
+	.ni-key {
+		color: #9aa0aa;
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		margin-right: 0.15rem;
+	}
+	.ni-seq {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.ni-seq-head {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+	.copy {
+		font: inherit;
+		font-size: 0.72rem;
+		cursor: pointer;
+		border: 1px solid #d3d6dd;
+		background: #fff;
+		color: #333;
+		padding: 0.05rem 0.4rem;
+		border-radius: 4px;
+	}
+	.copy:hover {
+		border-color: #9aa0aa;
+		background: #f6f7f9;
+	}
+	.seq-box {
+		width: 100%;
+		box-sizing: border-box;
+		resize: vertical;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.74rem;
+		line-height: 1.5;
+		color: #1f2937;
+		background: #fff;
+		border: 1px solid #e5e7eb;
+		border-radius: 4px;
+		padding: 0.35rem 0.45rem;
+		white-space: pre-wrap;
+		word-break: break-all;
 	}
 	.endpoints {
 		display: flex;
