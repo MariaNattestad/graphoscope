@@ -13,19 +13,36 @@
 		end: number;
 	}
 
+	interface DiscoStep {
+		id: string;
+		orient: '+' | '-';
+	}
+
 	let {
 		layout,
 		refCoords,
 		genes = [],
 		strokeWidth = 3,
-		onSelectSegment
+		onSelectSegment,
+		discoPath = null,
+		discoColor = '#ff3ce0',
+		discoActive = false
 	}: {
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
+		/** Steps of the walk currently being spotlit by disco-walks, or null. */
+		discoPath?: DiscoStep[] | null;
+		/** Cycling glow color for the current disco walk. */
+		discoColor?: string;
+		/** When true, dim the base graph so the spotlit walk pops. */
+		discoActive?: boolean;
 	} = $props();
+
+	// segId -> its chain, for tracing a walk's polyline through the layout.
+	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
 
 	// Reserved bottom bands, in screen (CSS) px. The coordinate axis sits directly
 	// under the backbone; the gene track (only when there are genes to show) sits
@@ -179,6 +196,10 @@
 		// stroke widths honest screen pixels and drops the old `/transform.k`
 		// compensation everywhere.
 
+		// While disco-walks is running, dim the whole base graph so the spotlit
+		// walk drawn on top reads clearly against it.
+		if (discoActive) ctx.globalAlpha = 0.22;
+
 		// structural links first, underneath strands. Drawn as a curve through the
 		// (invisible) bend node so a link between two backbone-pinned points —
 		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
@@ -216,6 +237,11 @@
 			ctx.lineWidth = chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth;
 			ctx.stroke();
 		}
+
+		// Spotlight overlay: the current disco walk, traced through its segments'
+		// chains and stroked as a glowing line over the dimmed base graph.
+		ctx.globalAlpha = 1;
+		drawDiscoWalk(ctx);
 
 		ctx.restore();
 
@@ -518,6 +544,48 @@
 		ctx.restore();
 	}
 
+	// Trace the current disco walk as a single polyline through the layout: for each
+	// step, append its chain's nodes (reversed when the walk traverses the segment
+	// backwards), then stroke it with a colored glow and a bright white core so it
+	// stands out over the dimmed base graph.
+	function drawDiscoWalk(ctx: CanvasRenderingContext2D) {
+		if (!discoActive || !discoPath || discoPath.length === 0) return;
+		const pts: { x: number; y: number }[] = [];
+		for (const step of discoPath) {
+			const chain = chainBySeg.get(step.id);
+			if (!chain) continue;
+			const ids = step.orient === '-' ? [...chain.nodeIds].reverse() : chain.nodeIds;
+			for (const id of ids) {
+				const n = layout.nodesById.get(id);
+				if (n) pts.push({ x: toScreenX(n.x), y: toScreenY(n.y) });
+			}
+		}
+		if (pts.length < 2) return;
+
+		ctx.save();
+		ctx.lineJoin = 'round';
+		ctx.lineCap = 'round';
+		const trace = () => {
+			ctx.beginPath();
+			ctx.moveTo(pts[0].x, pts[0].y);
+			for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+			ctx.stroke();
+		};
+		// colored glow
+		ctx.shadowColor = discoColor;
+		ctx.shadowBlur = 18;
+		ctx.strokeStyle = discoColor;
+		ctx.lineWidth = strokeWidth * 2.4;
+		ctx.globalAlpha = 0.9;
+		trace();
+		// bright core, no shadow
+		ctx.shadowBlur = 0;
+		ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+		ctx.lineWidth = Math.max(1, strokeWidth * 0.7);
+		trace();
+		ctx.restore();
+	}
+
 	function findSegmentAt(px: number, py: number): string | null {
 		if (!canvasEl) return null;
 		// Hit-testing happens in screen space: with x and y on different scales
@@ -576,6 +644,16 @@
 			fitToView();
 			draw();
 		});
+	});
+
+	$effect(() => {
+		// Redraw whenever the disco-walks spotlight changes (a new walk in the cycle,
+		// a new glow color, or disco turning on/off). Untracked so draw()'s internal
+		// reads don't make this effect depend on hover/transform state.
+		discoPath;
+		discoColor;
+		discoActive;
+		untrack(() => draw());
 	});
 
 	$effect(() => {

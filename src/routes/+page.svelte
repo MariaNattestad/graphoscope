@@ -282,62 +282,116 @@
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
 
-	async function toggleUnsimplified() {
-		if (showUnsimplified) {
-			showUnsimplified = false;
-			return;
-		}
+	// One in-browser cache of the full (unsimplified) subgraph for the current
+	// locus, shared by everything that needs it — the "show all nodes" toggle,
+	// disco-walks, and the raw download — so the range round-trips (and the
+	// tens-of-MB response they pull) happen at most once, whichever feature asks
+	// first. Two layers, because the consumers want different forms of it:
+	//   • `unsimplifiedGfaText` — the raw GFA text, what the download writes to a file.
+	//   • `unsimplified`        — that text parsed into a `Gfa`, what the layout draws.
+	// Both are cleared together when a new query invalidates the locus (below).
+	let unsimplifiedGfaText = $state<string | null>(null);
+	// Dedupes concurrent fetches (e.g. clicking disco-walks while a download is
+	// already in flight) onto a single request instead of firing the range
+	// fetches twice. Not reactive — purely a concurrency guard.
+	let unsimplifiedFetch: Promise<string | null> | null = null;
+
+	// Fetch the unsimplified subgraph's GFA text once and cache it. Returns the
+	// cached text on any later call for the same locus.
+	async function fetchUnsimplifiedGfa(): Promise<string | null> {
+		if (unsimplifiedGfaText !== null) return unsimplifiedGfaText;
+		if (unsimplifiedFetch) return unsimplifiedFetch;
+		if (!client) return null;
+		unsimplifiedFetch = (async () => {
+			try {
+				const locus = parseLocus(locusText, graph.referenceSample);
+				locus.sample = graph.referenceSample;
+				locus.raw = true;
+				const result = await client!.query({ kind: 'url', url: graph.dbUrl }, locus);
+				if (!result.ok) {
+					error = `${result.error}\n${result.stderr ?? ''}`.trim();
+					return null;
+				}
+				unsimplifiedGfaText = result.gfa ?? '';
+				return unsimplifiedGfaText;
+			} catch (e) {
+				error = e instanceof Error ? e.message : String(e);
+				return null;
+			} finally {
+				unsimplifiedFetch = null;
+			}
+		})();
+		return unsimplifiedFetch;
+	}
+
+	// Load + parse the unsimplified subgraph (every haplotype walk) and switch the
+	// layout to it. Shared by the "show all nodes" toggle and disco-walks, which
+	// both need the full graph; the fetch itself goes through the shared cache
+	// above, so a prior download (or vice-versa) means no second round-trip.
+	// `showUnsimplified` is flipped together with the parsed graph (not by the
+	// caller after the await) so there's never a frame where loading has finished
+	// but the layout is still the reduced graph — disco's pending-start effect keys
+	// off exactly that transition and would otherwise be dropped in the gap.
+	// Returns whether the full graph is now showing.
+	async function loadUnsimplified(): Promise<boolean> {
 		if (unsimplified) {
 			showUnsimplified = true;
-			return;
+			return true;
 		}
-		if (!client || loadingUnsimplified) return;
+		if (loadingUnsimplified) return false;
 		loadingUnsimplified = true;
 		try {
-			const locus = parseLocus(locusText, graph.referenceSample);
-			locus.sample = graph.referenceSample;
-			locus.raw = true;
-			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
-			if (!result.ok) {
-				error = `${result.error}\n${result.stderr ?? ''}`.trim();
-				return;
-			}
-			trackEvent('widget_interact', { widget: 'graph_layout', action: 'view_unsimplified' });
-			unsimplified = parseGfa(result.gfa ?? '');
+			const text = await fetchUnsimplifiedGfa();
+			if (text === null) return false;
+			unsimplified = parseGfa(text);
 			showUnsimplified = true;
-		} catch (e) {
-			error = e instanceof Error ? e.message : String(e);
+			return true;
 		} finally {
 			loadingUnsimplified = false;
 		}
 	}
 
-	// A new query invalidates the cached unsimplified graph.
+	async function toggleUnsimplified() {
+		if (showUnsimplified) {
+			showUnsimplified = false;
+			return;
+		}
+		if (!unsimplified) {
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'view_unsimplified' });
+		}
+		await loadUnsimplified();
+	}
+
+	// disco-walks asked for the full-walk graph: load it (if needed) and show it, so
+	// GraphLayoutView sees the real walks and can start the animation itself.
+	async function requestDiscoGraph() {
+		await loadUnsimplified();
+	}
+
+	// A new query invalidates every cached form of the previous locus's full graph.
 	$effect(() => {
 		gfa;
+		unsimplifiedGfaText = null;
 		unsimplified = null;
 		showUnsimplified = false;
 	});
 
-	// Fetches the unsimplified subgraph — every haplotype walk — purely to hand
-	// the user a file. It is streamed straight to a download and never parsed:
-	// on a repetitive locus this is the tens-of-megabytes response that the
-	// reduced pipeline exists to avoid putting in the browser's heap.
+	// Hands the user the unsimplified subgraph — every haplotype walk — as a file.
+	// Fetches through the shared cache, so if the full graph was already pulled for
+	// the layout (show-all-nodes / disco-walks) this reuses it with no round-trip;
+	// and if the download comes first, it seeds the cache for those in turn. On a
+	// repetitive locus this is the tens-of-megabytes response the reduced pipeline
+	// avoids parsing — held once here, and dropped as soon as the locus changes.
 	let downloadingRaw = $state(false);
 	async function downloadRaw() {
-		if (!client || downloadingRaw) return;
+		if (downloadingRaw) return;
 		downloadingRaw = true;
 		try {
-			const locus = parseLocus(locusText, graph.referenceSample);
-			locus.sample = graph.referenceSample;
-			locus.raw = true;
-			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
-			if (!result.ok) {
-				error = `${result.error}\n${result.stderr ?? ''}`.trim();
-				return;
-			}
+			const text = await fetchUnsimplifiedGfa();
+			if (text === null) return;
 			trackEvent('widget_interact', { widget: 'raw_data', action: 'download_unsimplified_gfa' });
-			const blob = new Blob([result.gfa ?? ''], { type: 'text/plain' });
+			const locus = parseLocus(locusText, graph.referenceSample);
+			const blob = new Blob([text], { type: 'text/plain' });
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
@@ -477,6 +531,9 @@
 					gfa={displayGfa}
 					referenceSample={graph.referenceSample}
 					refKey={graph.refKey}
+					discoAvailable={canShowUnsimplified}
+					discoLoading={loadingUnsimplified}
+					onRequestDiscoGraph={requestDiscoGraph}
 				/>
 			{/if}
 		</section>

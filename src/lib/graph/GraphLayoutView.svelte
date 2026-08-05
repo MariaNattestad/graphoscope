@@ -18,8 +18,22 @@
 	let {
 		gfa,
 		referenceSample,
-		refKey
-	}: { gfa: Gfa; referenceSample: string; refKey?: RefKey } = $props();
+		refKey,
+		discoAvailable = false,
+		discoLoading = false,
+		onRequestDiscoGraph
+	}: {
+		gfa: Gfa;
+		referenceSample: string;
+		refKey?: RefKey;
+		/** Whether the parent can supply the full (unsimplified) graph — the one that
+		 * still carries every haplotype walk — so disco-walks has anything to trace. */
+		discoAvailable?: boolean;
+		/** Parent is currently fetching that full graph. */
+		discoLoading?: boolean;
+		/** Ask the parent to load + show the full-walk graph (for disco-walks). */
+		onRequestDiscoGraph?: () => void;
+	} = $props();
 
 	// Keep all non-reference bubbles on one side (above the reference line). This
 	// halves the vertical spread and, more importantly, leaves the space below the
@@ -75,6 +89,104 @@
 	});
 
 	const adapted = $derived(gfaToGraph(gfa, { referenceSample }));
+
+	// --- disco-walks 🪩 -----------------------------------------------------------
+	// Load every walk on top of the layout and cycle a spotlight through them, one
+	// per tick — a moving highlight that traces each walk's path through the graph.
+	// The main graph is served reduced (walks aggregated into coverage tags), so we
+	// can only do this on the unsimplified graph, which still carries the individual
+	// W-lines. When the user starts disco while the reduced graph is showing, we ask
+	// the parent to swap in the full-walk graph and start as soon as it arrives.
+	const DISCO_INTERVAL_MS = 100;
+
+	interface DiscoWalk {
+		steps: { id: string; orient: '+' | '-' }[];
+	}
+	const discoWalks = $derived.by((): DiscoWalk[] => {
+		const out: DiscoWalk[] = [];
+		// Collapse walks that trace the same segments. At a repetitive/hypervariable
+		// locus (e.g. HLA-A) gbz-base fragments haplotypes into many identical short
+		// walk records; left in, the cycle spends seconds re-highlighting the same
+		// handful of nodes, which reads as one node "blinking" forever. Direction
+		// doesn't change the drawn line, so normalise a walk and its reverse to one
+		// key and keep only the first walk with each distinct trace.
+		const seen = new Set<string>();
+		for (const w of gfa.walks) {
+			if (w.steps.length < 2) continue; // a single node isn't a path to trace
+			const ids = w.steps.map((s) => s.id);
+			const fwd = ids.join('>');
+			let rev = '';
+			for (let i = ids.length - 1; i >= 0; i--) rev += (rev ? '>' : '') + ids[i];
+			const key = fwd < rev ? fwd : rev;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push({ steps: w.steps });
+		}
+		return out;
+	});
+	// The full graph carries real walks; the reduced one doesn't, so disco can only
+	// run once we're looking at the unsimplified graph.
+	const canDiscoNow = $derived(!gfa.reduced && discoWalks.length > 0);
+
+	let disco = $state(false);
+	let pendingDisco = $state(false);
+	let discoIndex = $state(0);
+
+	function toggleDisco() {
+		if (disco) {
+			disco = false;
+			return;
+		}
+		if (canDiscoNow) {
+			discoIndex = 0;
+			disco = true;
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'disco_walks_start' });
+			return;
+		}
+		if (discoLoading || pendingDisco) return;
+		// Need the full-walk graph first; the parent will swap it in.
+		pendingDisco = true;
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'disco_walks_start' });
+		onRequestDiscoGraph?.();
+	}
+
+	// Start disco the moment the full-walk graph arrives after a pending request.
+	$effect(() => {
+		if (pendingDisco && canDiscoNow) {
+			pendingDisco = false;
+			discoIndex = 0;
+			disco = true;
+		}
+	});
+
+	// The full-graph load finished (or failed) without producing walks — give up
+	// on the pending start rather than showing "loading" forever.
+	$effect(() => {
+		if (pendingDisco && !discoLoading && !canDiscoNow) pendingDisco = false;
+	});
+
+	// If the walks disappear (e.g. a new query reverted to the reduced graph), stop.
+	$effect(() => {
+		if (disco && !canDiscoNow) disco = false;
+	});
+
+	// The cycling timer: advance one walk per tick while disco is on.
+	$effect(() => {
+		if (!disco || discoWalks.length === 0) return;
+		const timer = setInterval(() => {
+			discoIndex = (discoIndex + 1) % discoWalks.length;
+		}, DISCO_INTERVAL_MS);
+		return () => clearInterval(timer);
+	});
+
+	const currentDiscoWalk = $derived(
+		disco && discoWalks.length > 0 ? discoWalks[discoIndex % discoWalks.length] : null
+	);
+	const discoPath = $derived(currentDiscoWalk?.steps ?? null);
+	// Spin the hue with the cycle so each walk gets its own disco color.
+	const discoColor = $derived(`hsl(${(discoIndex * 47) % 360}, 95%, 62%)`);
+	// Show the button whenever disco is either already possible or loadable.
+	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
 
 	// Reference genomic coordinates for each reference segment. Walk the reference
 	// sample's path (fall back to the first walk, matching gfaToGraph) and
@@ -142,17 +254,21 @@
 		};
 	});
 
-	// Past this node count, layout time stops scaling gently — e.g. a
-	// reference-only reduced-mode graph on a large/repetitive locus (tens of
-	// thousands of nodes) has been observed taking several minutes, not
-	// seconds. Below this, graphs typically lay out in well under 20s.
-	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
-
-	// Past that threshold the full-quality layout takes minutes, so switch to a
+	// Past this node count the full-quality layout takes minutes, so switch to a
 	// rough one automatically rather than making people wait or choose. Below it,
 	// quality is cheap and rough mode looked wrong on small graphs — which is why
 	// it isn't offered as a manual toggle.
+	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
 	const roughLayout = $derived(adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD);
+
+	// Only warn "this can take a while" for genuinely heavy layouts. This is a much
+	// higher bar than the rough-layout switch above: rough mode makes even a
+	// ~10k-node graph lay out in a handful of seconds (measured ~6s on a 9,892-node
+	// fixture), so the warning must not fire the moment rough mode kicks in at
+	// 2,000 — it should only appear near the top of the renderable range
+	// (MAX_UNSIMPLIFIED_NODES is 25,000), where even the rough layout can run long.
+	const LARGE_LAYOUT_WARNING_THRESHOLD = 15000;
+	const showSlowLayoutWarning = $derived(adapted.keptSegments > LARGE_LAYOUT_WARNING_THRESHOLD);
 
 	// --- layout worker ---
 	let worker: Worker | null = null;
@@ -230,6 +346,24 @@
 				rough layout
 			</span>
 		{/if}
+		<span class="spacer"></span>
+		{#if showDiscoButton}
+			<button
+				class="disco"
+				class:on={disco}
+				onclick={toggleDisco}
+				disabled={discoLoading || pendingDisco}
+				title="Spotlight every haplotype walk in turn, tracing each one through the graph (uses the full unsimplified graph)"
+			>
+				{#if discoLoading || pendingDisco}
+					🪩 loading walks…
+				{:else if disco}
+					🪩 stop · walk {(discoIndex % discoWalks.length) + 1}/{discoWalks.length}
+				{:else}
+					🪩 disco-walks
+				{/if}
+			</button>
+		{/if}
 	</div>
 
 	<div class="stage">
@@ -238,6 +372,9 @@
 				{layout}
 				{refCoords}
 				{genes}
+				{discoPath}
+				{discoColor}
+				discoActive={disco}
 				onSelectSegment={(id) => {
 					selected = id;
 					if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
@@ -248,7 +385,7 @@
 			<div class="overlay">
 				<span>
 					computing layout…
-					{#if adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD}
+					{#if showSlowLayoutWarning}
 						<br />
 						<span class="overlay-warning">
 							{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
@@ -335,11 +472,36 @@
 		flex-wrap: wrap;
 		font-size: 0.82rem;
 	}
-	.foot .spacer {
+	.foot .spacer,
+	.head .spacer {
 		flex: 1;
 	}
 	.computing {
 		color: #2563eb;
+	}
+	.disco {
+		font: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+		border: 1px solid #d1c4f0;
+		background: #f6f2ff;
+		color: #5b21b6;
+		padding: 0.1rem 0.5rem;
+		border-radius: 999px;
+		white-space: nowrap;
+	}
+	.disco:hover:not(:disabled) {
+		background: #efe7ff;
+	}
+	.disco.on {
+		border-color: #7c3aed;
+		background: linear-gradient(90deg, #7c3aed, #db2777);
+		color: #fff;
+		box-shadow: 0 0 0 1px rgba(124, 58, 237, 0.3);
+	}
+	.disco:disabled {
+		opacity: 0.7;
+		cursor: default;
 	}
 	.stage {
 		position: relative;
