@@ -16,6 +16,14 @@ the UI:
   they're seekable).
 - **`query.wasm`** is GBZ-base's `query` tool compiled to `wasm32-wasip1`. It runs
   in a Web Worker and does the coordinate→subgraph extraction, emitting GFA.
+- **Context window.** The extracted subgraph is the requested locus plus a
+  **context** margin (GBZ-base's `--context`, default **100 bp**): how far past
+  the locus the graph is followed before haplotypes are cut off at the boundary.
+  A haplotype that continues beyond it has its walk chopped there — the "off-locus
+  exit" dangles you see in the graph view. It's adjustable in the UI (a *Context
+  (bp)* field next to the locus box) and via a `context=` URL param; larger
+  reveals more of where those haplotypes go, at the cost of a bigger, denser
+  subgraph.
 - **`src/lib/vfs.ts`** backs the WASI filesystem with range requests
   (`HttpRangeReader`) or a local `File` (`BlobRangeReader`), with a 64 KiB block
   cache plus **adaptive readahead**: because SQLite's page access is clustered,
@@ -66,11 +74,13 @@ node scripts/build-genes.mjs chm13  chm13v2.0_RefSeq_Liftoff_v5.2.gff3.gz
 
 ## Query by URL (and for AI agents)
 
-A query is a shareable link. Two params drive the app:
+A query is a shareable link. These params drive the app:
 
 - `ref` — which graph: `grch38` or `chm13`
 - `locus` — a gene symbol (`SMN1`) **or** coordinates in the graph's reference
   system (`contig:start-end`, e.g. `chr5:70925029-70953942`)
+- `context` — optional subgraph context margin in bp (see [How it works](#how-it-works));
+  default `100`, omitted from the URL when it's the default
 
 ```
 # GRCh38-based graph, by gene symbol
@@ -78,10 +88,14 @@ https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1
 
 # CHM13-based (T2T) graph, by coordinates
 https://marianattestad.github.io/graphoscope/?ref=chm13&locus=chr6:161783171-162011762
+
+# wider context to follow haplotypes further past the locus
+https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&context=2000
 ```
 
-Opening the app writes the current `ref`/`locus` back into the address bar, so
-whatever you're looking at is always a link you can copy.
+Opening the app writes the current `ref`/`locus` (and `context`, when non-default)
+back into the address bar, so whatever you're looking at is always a link you can
+copy.
 
 ### Machine-readable endpoint: `/api`
 
