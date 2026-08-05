@@ -38,6 +38,11 @@
 
 	// ---- Query state -----------------------------------------------------------
 	let locusText = $state(DEFAULT_GENE);
+	// Subgraph context radius in bp (GBZ-base's `--context`, wasm default 100): how
+	// far past the locus haplotypes are followed before they're cut off. Applied on
+	// the next query, so changing it takes a Query click like the locus does.
+	const DEFAULT_CONTEXT_BP = 100;
+	let contextBp = $state(DEFAULT_CONTEXT_BP);
 	// Set to the resolved gene's symbol whenever the current results came from a
 	// gene-name search (manual or an example chip) — kept alongside the
 	// coordinates so a user can look back and remember what they searched for,
@@ -139,6 +144,11 @@
 		const p = new URLSearchParams(window.location.search);
 		const ref = p.get('ref');
 		if (ref === 'grch38' || ref === 'chm13') graphId = ref;
+		const ctxParam = p.get('context');
+		if (ctxParam != null) {
+			const ctx = Number(ctxParam);
+			if (Number.isFinite(ctx) && ctx >= 0) contextBp = ctx;
+		}
 		const locus = p.get('locus') ?? p.get('gene');
 		if (locus && locus.trim()) {
 			locusText = locus.trim();
@@ -151,6 +161,8 @@
 		const p = new URLSearchParams(window.location.search);
 		p.set('ref', graphId);
 		p.set('locus', queriedGene ?? locusText);
+		if (contextBp !== DEFAULT_CONTEXT_BP) p.set('context', String(contextBp));
+		else p.delete('context');
 		const qs = p.toString();
 		// replaceState (not a navigation) so this never reloads or adds history
 		// entries — it just keeps the address bar reproducible.
@@ -185,6 +197,7 @@
 			}
 			locus = parseLocus(locusText, graph.referenceSample);
 			locus.sample = graph.referenceSample;
+			locus.context = contextBp;
 			// The wasm query (crates/reduce) simplifies and walk-counts before it
 			// ever returns, so the browser receives a graph sized by topology, not by
 			// haplotype count. This is what keeps a large/repetitive locus from
@@ -315,6 +328,7 @@
 			try {
 				const locus = parseLocus(locusText, graph.referenceSample);
 				locus.sample = graph.referenceSample;
+				locus.context = contextBp;
 				locus.raw = true;
 				const result = await client!.query({ kind: 'url', url: graph.dbUrl }, locus);
 				if (!result.ok) {
@@ -480,6 +494,20 @@
 					</ul>
 				{/if}
 			</div>
+		</label>
+		<label
+			class="context-field"
+			title="How far past the locus (bp) the query follows haplotypes into the graph before cutting them off. Larger reveals more of where they go (fewer dangling dead-ends), at the cost of a bigger, denser subgraph. Applied on the next Query."
+		>
+			<span class="lbl">Context (bp)</span>
+			<input
+				class="ctx-input"
+				type="number"
+				min="0"
+				step="50"
+				bind:value={contextBp}
+				onkeydown={(e) => e.key === 'Enter' && run()}
+			/>
 		</label>
 		<button class="go" onclick={() => run()} disabled={running}>
 			{running ? 'Querying…' : 'Query'}
@@ -913,6 +941,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.25rem;
+	}
+	.context-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+	.ctx-input {
+		width: 5.5rem;
+		padding: 0.4rem 0.5rem;
+		font: inherit;
+		border: 1px solid #ccc;
+		border-radius: 6px;
 	}
 	.locus-input {
 		position: relative;

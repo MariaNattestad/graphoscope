@@ -19,6 +19,10 @@ export interface LocusQuery {
 	end: number; // half-open
 	/** Longest-path bp threshold for collapsing a small variant. */
 	maxVariant?: number;
+	/** Subgraph context radius in bp: how far past the locus GBZ-base follows the
+	 * graph before cutting haplotypes off (the wasm default is 100). Larger shows
+	 * more of where the haplotypes go, at the cost of a bigger subgraph. */
+	context?: number;
 	/** Ask for the unsimplified subgraph (every haplotype walk) instead of the
 	 * reduced GFA. Only for the download button — this is the response the app
 	 * deliberately never parses. */
@@ -64,6 +68,7 @@ export class GbzClient {
 			'--interval',
 			`${locus.start}..${locus.end}`
 		];
+		if (locus.context != null) args.push('--context', String(locus.context));
 		if (locus.raw) args.push('--raw');
 		else if (locus.maxVariant != null) args.push('--max-variant', String(locus.maxVariant));
 		return this.send(source, args);
