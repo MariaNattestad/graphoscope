@@ -64,6 +64,11 @@
 	// where the link forces open bubbles out into more organic sideways shapes.
 	let anchorToReference = $state(true);
 
+	// Render the graph on a light theme (for figures/publication) instead of the
+	// dark screen one. The export button below writes a PNG of the current view.
+	let lightMode = $state(false);
+	let canvasApi = $state<{ exportImage: (filename: string) => void } | null>(null);
+
 	let selected = $state<string | null>(null);
 
 	$effect(() => {
@@ -244,8 +249,9 @@
 		}
 		return out.length > 0 ? out : null;
 	});
-	// Spin the hue with the cycle so each walk gets its own disco color.
-	const discoColor = $derived(`hsl(${(discoIndex * 47) % 360}, 95%, 62%)`);
+	// Spin the hue with the cycle so each walk gets its own disco color; darker on
+	// the light theme so it reads against white.
+	const discoColor = $derived(`hsl(${(discoIndex * 47) % 360}, 95%, ${lightMode ? 45 : 62}%)`);
 	// Show the button whenever disco is either already possible or loadable.
 	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
 
@@ -428,6 +434,12 @@
 	function fmtCoord(c: RefCoord): string {
 		return `${c.contig}:${c.start.toLocaleString()}–${c.end.toLocaleString()}`;
 	}
+
+	function exportImage() {
+		const win = locusWindow;
+		const base = win ? `${win.contig}_${win.start}-${win.end}` : 'graphoscope-graph';
+		canvasApi?.exportImage(`${base}.png`);
+	}
 </script>
 
 <div class="wrap">
@@ -470,6 +482,21 @@
 						</span>
 					</span>
 				</label>
+			</section>
+
+			<section class="group">
+				<h4 class="group-title">View</h4>
+				<label class="switch" title="Render on a white background for figures and publication screenshots">
+					<input type="checkbox" bind:checked={lightMode} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Light mode</span>
+						<span class="switch-sub">white background for figures</span>
+					</span>
+				</label>
+				<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
+					⬇ Export PNG
+				</button>
 			</section>
 
 			{#if discoAvailable || showingAllNodes || allNodesTooMany}
@@ -550,7 +577,9 @@
 					{genes}
 					{discoPath}
 					{discoColor}
+					{lightMode}
 					discoActive={disco}
+					onReady={(api) => (canvasApi = api)}
 					onSelectSegment={(id) => {
 						selected = id;
 						if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
@@ -787,6 +816,21 @@
 	.disco:disabled {
 		opacity: 0.7;
 		cursor: default;
+	}
+	.action {
+		font: inherit;
+		font-size: 0.8rem;
+		cursor: pointer;
+		border: 1px solid #d3d6dd;
+		background: #fff;
+		color: #333;
+		padding: 0.3rem 0.5rem;
+		border-radius: 8px;
+		text-align: center;
+	}
+	.action:hover {
+		border-color: #9aa0aa;
+		background: #f6f7f9;
 	}
 	.stage {
 		flex: 1 1 auto;

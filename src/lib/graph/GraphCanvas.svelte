@@ -3,7 +3,7 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
-	import { BACKBONE_COLOR, heatmapColor } from './colors';
+	import { heatmapColor, darkTheme, lightTheme } from './colors';
 	import type { Transcript } from '../geneTrack';
 	import { trackEvent } from '../analytics';
 
@@ -26,7 +26,9 @@
 		onSelectSegment,
 		discoPath = null,
 		discoColor = '#ff3ce0',
-		discoActive = false
+		discoActive = false,
+		lightMode = false,
+		onReady
 	}: {
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
@@ -39,7 +41,13 @@
 		discoColor?: string;
 		/** When true, dim the base graph so the spotlit walk pops. */
 		discoActive?: boolean;
+		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
+		lightMode?: boolean;
+		/** Hands the parent a small API (currently just PNG export) once mounted. */
+		onReady?: (api: { exportImage: (filename: string) => void }) => void;
 	} = $props();
+
+	const theme = $derived(lightMode ? lightTheme : darkTheme);
 
 	// segId -> its chain, for tracing a walk's polyline through the layout.
 	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
@@ -58,6 +66,25 @@
 	let containerEl: HTMLDivElement | undefined = $state();
 	let transform: ZoomTransform = zoomIdentity;
 	let zoomBehavior = zoom<HTMLCanvasElement, unknown>().scaleExtent([0.02, 40]);
+	// Non-null only during a PNG export, when draw() renders at this pixel ratio.
+	let exportScale: number | null = null;
+
+	// Render the current view to a PNG at a higher pixel ratio (for figures), then
+	// restore the on-screen render. Both draws are synchronous, so the user never
+	// sees the high-res frame — the browser only paints the restored one.
+	function exportImage(filename: string) {
+		if (!canvasEl) return;
+		exportScale = 4;
+		draw();
+		const url = canvasEl.toDataURL('image/png');
+		exportScale = null;
+		draw();
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		a.click();
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'export_png' });
+	}
 
 	// EXPERIMENT: zoom is horizontal-only. A pangenome bubble is wide and thin —
 	// the interesting structure is variation *along* the reference, while the
@@ -114,10 +141,10 @@
 	}
 
 	function colorForChain(segId: string): string {
-		if (layout.backboneSegIds.has(segId)) return BACKBONE_COLOR;
+		if (layout.backboneSegIds.has(segId)) return theme.backbone;
 		const coverage = layout.pathCoverage.get(segId) ?? 0;
 		const ratio = layout.maxPathCoverage > 0 ? coverage / layout.maxPathCoverage : 0;
-		return heatmapColor(ratio);
+		return heatmapColor(ratio, theme.heatmapLow, theme.heatmapHigh);
 	}
 
 	function fitToView(retriesLeft = 5) {
@@ -175,7 +202,10 @@
 		const ctx = canvasEl.getContext('2d');
 		if (!ctx) return;
 
-		const dpr = window.devicePixelRatio || 1;
+		// During a PNG export we temporarily render the canvas backing store at a
+		// higher pixel ratio, so the exported image is crisp at figure resolution
+		// while the on-screen size (fixed by CSS) is unchanged.
+		const dpr = exportScale ?? (window.devicePixelRatio || 1);
 		const width = canvasEl.clientWidth;
 		const height = canvasEl.clientHeight;
 		if (canvasEl.width !== width * dpr || canvasEl.height !== height * dpr) {
@@ -186,7 +216,7 @@
 		ctx.save();
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		ctx.clearRect(0, 0, width, height);
-		ctx.fillStyle = '#0b0d12';
+		ctx.fillStyle = theme.background;
 		ctx.fillRect(0, 0, width, height);
 
 		// Points are projected to screen coordinates individually rather than by
@@ -200,7 +230,7 @@
 		// (invisible) bend node so a link between two backbone-pinned points —
 		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
 		// and disappear against it.
-		ctx.strokeStyle = 'rgba(200, 210, 230, 0.35)';
+		ctx.strokeStyle = theme.structuralLink;
 		ctx.lineWidth = 1;
 		for (const link of layout.structuralLinkPaths) {
 			const a = layout.nodesById.get(link.fromNode);
@@ -372,20 +402,19 @@
 
 		let lastLabelRight = -Infinity;
 		const drawTick = (sx: number, sy: number, text: string, align: CanvasTextAlign) => {
-			ctx.strokeStyle = 'rgba(150, 165, 190, 0.6)';
+			ctx.strokeStyle = theme.tick;
 			ctx.lineWidth = 1;
 			ctx.beginPath();
 			ctx.moveTo(sx, sy);
 			ctx.lineTo(sx, sy + 6);
 			ctx.stroke();
 			ctx.textAlign = align;
-			ctx.fillStyle = 'rgba(230, 235, 245, 0.55)';
 			// text background pill for legibility over strands
 			const w = ctx.measureText(text).width;
 			const tx = align === 'center' ? sx - w / 2 : align === 'right' ? sx - w : sx;
-			ctx.fillStyle = 'rgba(11, 13, 18, 0.72)';
+			ctx.fillStyle = theme.coordPill;
 			ctx.fillRect(tx - 2, sy + 7, w + 4, 13);
-			ctx.fillStyle = '#a9c7ff';
+			ctx.fillStyle = theme.coordText;
 			ctx.fillText(text, sx, sy + 8);
 		};
 
@@ -408,7 +437,7 @@
 		}
 		// Contig label, once, at the far left.
 		ctx.textAlign = 'left';
-		ctx.fillStyle = 'rgba(169, 199, 255, 0.85)';
+		ctx.fillStyle = theme.contigLabel;
 		ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
 		ctx.fillText(anchors[0].coord.contig, 8, Math.max(4, toScreenY(anchors[0].y) - 18));
 		ctx.restore();
@@ -433,7 +462,7 @@
 		ctx.beginPath();
 		ctx.rect(0, bandTop, width, GENE_BAND);
 		ctx.clip();
-		ctx.strokeStyle = 'rgba(150, 165, 190, 0.16)';
+		ctx.strokeStyle = theme.geneBandLine;
 		ctx.lineWidth = 1;
 		ctx.beginPath();
 		ctx.moveTo(0, bandTop + 0.5);
@@ -469,7 +498,7 @@
 				const hi = Math.min(width + 2, Math.max(gx(g.start), gx(g.end)));
 
 				// intron line
-				ctx.strokeStyle = 'rgba(140, 162, 196, 0.6)';
+				ctx.strokeStyle = theme.geneIntron;
 				ctx.lineWidth = 1;
 				ctx.beginPath();
 				ctx.moveTo(lo, y);
@@ -478,7 +507,7 @@
 
 				// strand direction chevrons
 				const dir = g.strand === '-' ? -1 : 1;
-				ctx.strokeStyle = 'rgba(140, 162, 196, 0.8)';
+				ctx.strokeStyle = theme.geneChevron;
 				for (let ax = lo + 10; ax < hi - 3; ax += 24) {
 					ctx.beginPath();
 					ctx.moveTo(ax - dir * 3, y - 3);
@@ -508,7 +537,7 @@
 						const bw = Math.min(width, Math.max(gx(a), gx(b))) - bx;
 						if (bw <= 0) continue;
 						const h = coding ? 7 : 4;
-						ctx.fillStyle = coding ? '#6f9dff' : 'rgba(111, 157, 255, 0.5)';
+						ctx.fillStyle = coding ? theme.geneExonCoding : theme.geneExonUtr;
 						ctx.fillRect(bx, y - h / 2, Math.max(0.8, bw), h);
 					}
 					// one hover region per exon, spanning its whole extent
@@ -531,7 +560,7 @@
 				// label just past the gene, clamped into view
 				const tw = ctx.measureText(g.symbol).width;
 				const labelX = Math.min(hi + 5, width - tw - 2);
-				ctx.fillStyle = 'rgba(214, 224, 245, 0.92)';
+				ctx.fillStyle = theme.geneLabel;
 				ctx.textAlign = 'left';
 				ctx.fillText(g.symbol, Math.max(2, labelX), y);
 			}
@@ -604,9 +633,9 @@
 		ctx.lineWidth = strokeWidth;
 		ctx.stroke(strandPath);
 
-		// bright white core down the node strands only, no glow
+		// bright core down the node strands only, no glow
 		ctx.shadowBlur = 0;
-		ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+		ctx.strokeStyle = theme.discoCore;
 		ctx.lineWidth = Math.max(1, strokeWidth * 0.5);
 		ctx.globalAlpha = 0.95;
 		ctx.stroke(strandPath);
@@ -675,12 +704,18 @@
 
 	$effect(() => {
 		// Redraw whenever the disco-walks spotlight changes (a new walk in the cycle,
-		// a new glow color, or disco turning on/off). Untracked so draw()'s internal
-		// reads don't make this effect depend on hover/transform state.
+		// a new glow color, or disco turning on/off) or the theme flips. Untracked so
+		// draw()'s internal reads don't make this effect depend on hover/transform state.
 		discoPath;
 		discoColor;
 		discoActive;
+		theme;
 		untrack(() => draw());
+	});
+
+	$effect(() => {
+		// Hand the parent the export API once the canvas exists.
+		if (canvasEl) onReady?.({ exportImage });
 	});
 
 	$effect(() => {
