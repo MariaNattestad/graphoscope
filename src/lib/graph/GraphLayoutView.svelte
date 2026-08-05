@@ -698,8 +698,8 @@
 	{#if endpointCounts}
 		<div class="endpoints">
 			<span class="hint muted">
-				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) is often an
-				artifact worth checking
+				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) usually
+				indicates a haplotype connects to another locus and got chopped off this subgraph
 			</span>
 			{#if endpointCounts.starts > 0}
 				<div class="erow">
@@ -720,8 +720,8 @@
 	{:else if selected && endpoints.length > 0}
 		<div class="endpoints">
 			<span class="hint muted">
-				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) is often an
-				artifact worth checking
+				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) usually
+				indicates a haplotype connects to another locus and got chopped off this subgraph
 			</span>
 			{#if starts.length > 0}
 				<div class="erow">
