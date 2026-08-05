@@ -767,6 +767,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		min-height: 0;
+		height: 100%;
+		padding: 0.6rem;
 	}
 	.foot {
 		display: flex;
@@ -779,24 +782,29 @@
 		flex: 1;
 	}
 
-	/* Body: a controls sidebar beside the canvas. */
+	/* Body: a controls sidebar beside the canvas. Grows to fill the wrap so the
+	   canvas gets the whole available height. */
 	.body {
 		display: flex;
 		gap: 0.75rem;
 		align-items: stretch;
+		flex: 1;
+		min-height: 0;
 	}
 	.sidebar {
 		flex: 0 0 186px;
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		gap: 0.5rem;
 		font-size: 0.8rem;
+		overflow-y: auto;
+		padding-right: 0.15rem;
 	}
 	.group {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-		padding: 0.6rem 0.7rem;
+		gap: 0.45rem;
+		padding: 0.5rem 0.6rem;
 		background: #fafafa;
 		border: 1px solid #eee;
 		border-radius: 8px;
@@ -947,8 +955,8 @@
 	.stage {
 		flex: 1 1 auto;
 		min-width: 0;
+		min-height: 300px;
 		position: relative;
-		height: 460px;
 		border: 1px solid #eee;
 		border-radius: 8px;
 		overflow: hidden;

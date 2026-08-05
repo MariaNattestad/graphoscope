@@ -52,6 +52,10 @@
 	// State
 	let running = $state(false);
 	let error = $state<string | null>(null);
+	// Which visualization fills the main workspace, and whether the About/docs
+	// overlay is open. UI-only, so plain local state.
+	let view = $state<'graph' | 'arcs' | 'data'>('graph');
+	let aboutOpen = $state(false);
 	// The graph the widgets see. It arrives already simplified + walk-counted from
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
 	// per-node/edge coverage tags), so the browser never parses the full,
@@ -438,11 +442,15 @@
 	}
 </script>
 
-<main>
+<svelte:window onkeydown={(e) => aboutOpen && e.key === 'Escape' && (aboutOpen = false)} />
+
+<div class="app">
 	<header class="topbar">
-		<h1>Graphoscope</h1>
-		<span class="tagline">HPRC human pangenome graphs, queried by locus</span>
-		<span class="spacer"></span>
+		<div class="brand">
+			<h1>Graphoscope</h1>
+			<span class="tagline">HPRC pangenome graphs, queried by locus</span>
+		</div>
+
 		<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
 			{#each GRAPHS as g (g.id)}
 				<button
@@ -456,204 +464,229 @@
 				</button>
 			{/each}
 		</div>
-		<a class="pg-link" href="{base}/playground">Playground →</a>
-	</header>
 
-	<section class="toolbar">
-		<label class="locus-field">
-			<span class="lbl">Locus or gene</span>
-			<div class="locus-input">
+		<div class="query">
+			<label class="locus-field">
+				<span class="lbl">Locus or gene</span>
+				<div class="locus-input">
+					<input
+						type="text"
+						bind:value={locusText}
+						oninput={onLocusInput}
+						onkeydown={onLocusKey}
+						onblur={() => setTimeout(() => (showSuggest = false), 120)}
+						onfocus={onLocusInput}
+						placeholder="chr6:31972046-32055647 or HLA-A"
+						autocomplete="off"
+					/>
+					{#if showSuggest && suggestions.length > 0}
+						<ul class="suggest" role="listbox">
+							{#each suggestions as s, i (s.name)}
+								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+								<li
+									role="option"
+									aria-selected={i === activeSuggest}
+									class:active={i === activeSuggest}
+									onmousedown={(e) => {
+										e.preventDefault();
+										pickGene(s);
+									}}
+								>
+									<b>{s.name}</b>
+									<span class="scoord"
+										>{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span
+									>
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			</label>
+			<label
+				class="context-field"
+				title="How far past the locus (bp) the query follows haplotypes into the graph before cutting them off. Larger reveals more of where they go (fewer dangling dead-ends), at the cost of a bigger, denser subgraph. Applied on the next Query."
+			>
+				<span class="lbl">Context (bp)</span>
 				<input
-					type="text"
-					bind:value={locusText}
-					oninput={onLocusInput}
-					onkeydown={onLocusKey}
-					onblur={() => setTimeout(() => (showSuggest = false), 120)}
-					onfocus={onLocusInput}
-					placeholder="chr6:31972046-32055647 or HLA-A"
-					autocomplete="off"
-					size="26"
+					class="ctx-input"
+					type="number"
+					min="0"
+					step="50"
+					bind:value={contextBp}
+					onkeydown={(e) => e.key === 'Enter' && run()}
 				/>
-				{#if showSuggest && suggestions.length > 0}
-					<ul class="suggest" role="listbox">
-						{#each suggestions as s, i (s.name)}
-							<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-							<li
-								role="option"
-								aria-selected={i === activeSuggest}
-								class:active={i === activeSuggest}
-								onmousedown={(e) => {
-									e.preventDefault();
-									pickGene(s);
-								}}
-							>
-								<b>{s.name}</b>
-								<span class="scoord">{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-		</label>
-		<label
-			class="context-field"
-			title="How far past the locus (bp) the query follows haplotypes into the graph before cutting them off. Larger reveals more of where they go (fewer dangling dead-ends), at the cost of a bigger, denser subgraph. Applied on the next Query."
-		>
-			<span class="lbl">Context (bp)</span>
-			<input
-				class="ctx-input"
-				type="number"
-				min="0"
-				step="50"
-				bind:value={contextBp}
-				onkeydown={(e) => e.key === 'Enter' && run()}
-			/>
-		</label>
-		<button class="go" onclick={() => run()} disabled={running}>
-			{running ? 'Querying…' : 'Query'}
-		</button>
-		<span class="examples">
+			</label>
+			<button class="go" onclick={() => run()} disabled={running}>
+				{running ? 'Querying…' : 'Query'}
+			</button>
+		</div>
+
+		<div class="examples">
+			<span class="ex-lbl">e.g.</span>
 			{#each EXAMPLE_GENES as gene (gene)}
 				<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
 					{gene}
 				</button>
 			{/each}
-		</span>
-	</section>
+		</div>
+
+		<span class="spacer"></span>
+		<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
+		<a class="pg-link" href="{base}/playground">Playground →</a>
+	</header>
 
 	{#if error}
-		<pre class="error">{error}</pre>
+		<div class="error-banner"><pre>{error}</pre></div>
 	{/if}
 
-	{#if oversized}
-		<section class="panel">
-			<p class="oversized">
-				<b>This region's graph is too tangled to render.</b> Even after simplification it came back at
-				~{fmtBytes(oversized.bytes)}, which is far past anything we've seen from a normal locus — try
-				a smaller window or a specific gene.
-			</p>
-		</section>
-	{/if}
+	<div class="workspace">
+		{#if stats && gfa}
+			<section class="mainview">
+				<nav class="tabs">
+					<button class="tab" class:active={view === 'graph'} onclick={() => (view = 'graph')}
+						>Graph layout</button
+					>
+					<button class="tab" class:active={view === 'arcs'} onclick={() => (view = 'arcs')}
+						>Variant arcs</button
+					>
+					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
+						>Raw data</button
+					>
+					<span class="spacer"></span>
+					<span class="locus-badge">
+						{#if queriedGene}<b>{queriedGene}</b> · {/if}<code>{locusText}</code>
+					</span>
+				</nav>
 
-	{#if stats && gfa}
-		<section class="panel graph-panel">
-			<div class="title-row">
-				<h2 class="panel-title">
-					Reference-anchored graph layout
-					{#if queriedGene}<span class="muted small">· {queriedGene} · <code>{locusText}</code></span
-						>{/if}
-				</h2>
+				<div class="tabbody" class:pad={view !== 'graph'}>
+					{#if view === 'graph' && displayGfa}
+						<GraphLayoutView
+							gfa={displayGfa}
+							referenceSample={graph.referenceSample}
+							refKey={graph.refKey}
+							discoAvailable={canShowUnsimplified}
+							discoLoading={loadingUnsimplified}
+							onRequestDiscoGraph={requestDiscoGraph}
+							discoWalksGfa={unsimplified}
+							showingAllNodes={showUnsimplified}
+							allNodesCount={unsimplifiedNodes}
+							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+							onToggleSimplify={toggleUnsimplified}
+						/>
+					{:else if view === 'arcs'}
+						<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
+					{:else if view === 'data'}
+						<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
+					{/if}
+				</div>
+			</section>
+
+			<aside class="rail">
+				<div class="card">
+					<div class="card-head">
+						<h3 class="card-title">This locus</h3>
+						<span class="card-sub">after simplification · <em>of as-stored</em></span>
+					</div>
+					<div class="statgrid">
+						<div class="srow">
+							<span class="k">nodes</span>
+							<span class="v"
+								><b>{stats.segments.toLocaleString()}</b>
+								<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
+							>
+						</div>
+						<div class="srow">
+							<span class="k">links</span>
+							<span class="v"
+								><b>{stats.links.toLocaleString()}</b>
+								<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
+							>
+						</div>
+						<div class="srow">
+							<span class="k">haplotype walks</span>
+							<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
+						</div>
+						{#if gfa.reduced}
+							<div class="srow">
+								<span class="k">sites collapsed</span>
+								<span class="v"
+									><b>{gfa.reduced.sites.toLocaleString()}</b>
+									<em
+										>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
+										bp</em
+									></span
+								>
+							</div>
+							<div class="srow">
+								<span class="k">chains merged</span>
+								<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
+							</div>
+						{/if}
+						{#if stats.referencePathBp != null}
+							<div class="srow">
+								<span class="k">reference span</span>
+								<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
+							</div>
+						{/if}
+						<div class="srow">
+							<span class="k">sequence shown</span>
+							<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
+						</div>
+						{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
+							<div class="srow">
+								<span class="k">traversal fragments</span>
+								<span class="v"
+									><b>{stats.walkRecords.toLocaleString()}</b>
+									<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
+								>
+							</div>
+						{/if}
+					</div>
+					{#if fetchInfo}
+						<p class="fetchline muted small">
+							Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
+							from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
+						</p>
+					{/if}
+				</div>
+			</aside>
+		{:else}
+			<div class="placeholder">
+				{#if running}
+					<div class="ph-inner"><span class="ph-spinner"></span> Querying <code>{locusText}</code>…</div>
+				{:else if oversized}
+					<div class="ph-inner warn">
+						<b>This region's graph is too tangled to render.</b> Even after simplification it came back
+						at ~{fmtBytes(oversized.bytes)}, far past anything we've seen from a normal locus — try a
+						smaller window or a specific gene.
+					</div>
+				{:else}
+					<div class="ph-inner">Enter a locus or pick an example above to begin.</div>
+				{/if}
 			</div>
-			{#if displayGfa}
-				<GraphLayoutView
-					gfa={displayGfa}
-					referenceSample={graph.referenceSample}
-					refKey={graph.refKey}
-					discoAvailable={canShowUnsimplified}
-					discoLoading={loadingUnsimplified}
-					onRequestDiscoGraph={requestDiscoGraph}
-					discoWalksGfa={unsimplified}
-					showingAllNodes={showUnsimplified}
-					allNodesCount={unsimplifiedNodes}
-					allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
-					onToggleSimplify={toggleUnsimplified}
-				/>
-			{/if}
-		</section>
+		{/if}
+	</div>
+</div>
 
-		<section class="panel">
-			<h2 class="panel-title">This locus</h2>
-			<table class="statstable">
-				<thead>
-					<tr>
-						<th></th>
-						<th>as stored</th>
-						<th>after simplification</th>
-					</tr>
-				</thead>
-				<tbody>
-					<tr>
-						<th>nodes</th>
-						<td>{(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</td>
-						<td><b>{stats.segments.toLocaleString()}</b></td>
-					</tr>
-					<tr>
-						<th>links</th>
-						<td>{(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</td>
-						<td><b>{stats.links.toLocaleString()}</b></td>
-					</tr>
-					<tr>
-						<th>haplotype walks</th>
-						<td>{stats.walks.toLocaleString()}</td>
-						<td class="muted">counted per node, not stored</td>
-					</tr>
-					{#if gfa.reduced}
-						<tr>
-							<th>sites collapsed</th>
-							<td class="muted">—</td>
-							<td
-								>{gfa.reduced.sites.toLocaleString()}
-								<span class="muted"
-									>({gfa.reduced.snpCount.toLocaleString()} SNPs, {gfa.reduced.basesRemoved.toLocaleString()}
-									alt bp)</span
-								></td
-							>
-						</tr>
-						<tr>
-							<th>chains merged</th>
-							<td class="muted">—</td>
-							<td>{gfa.reduced.unchopMerges.toLocaleString()}</td>
-						</tr>
-					{/if}
-					{#if stats.referencePathBp != null}
-						<tr>
-							<th>reference span</th>
-							<td colspan="2">{stats.referencePathBp.toLocaleString()} bp</td>
-						</tr>
-					{/if}
-					<tr>
-						<th>sequence shown</th>
-						<td colspan="2">{stats.totalSequenceBp.toLocaleString()} bp</td>
-					</tr>
-					{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
-						<!-- Only worth showing where it differs: at a repetitive locus one
-						     haplotype is broken into many traversal fragments, and that gap
-						     is itself the interesting fact about the locus. -->
-						<tr>
-							<th>traversal fragments</th>
-							<td colspan="2"
-								>{stats.walkRecords.toLocaleString()}
-								<span class="muted"
-									>({(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× per haplotype —
-									repetitive locus)</span
-								></td
-							>
-						</tr>
-					{/if}
-				</tbody>
-			</table>
-			{#if fetchInfo}
-				<p class="muted small">
-					Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads from
-					a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
-				</p>
-			{/if}
-		</section>
-
-		<section class="panel">
-			<h2 class="panel-title">Large non-reference nodes</h2>
-			<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
-		</section>
-
-		<section class="panel">
-			<h2 class="panel-title">Simplified graph data</h2>
-			<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
-		</section>
-	{/if}
-
-	<section class="panel">
-		<h2 class="panel-title">How the on-demand querying works</h2>
-		<div class="how-body">
+{#if aboutOpen}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div class="modal-backdrop" role="presentation" onclick={() => (aboutOpen = false)}>
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<div
+			class="modal"
+			role="dialog"
+			tabindex="-1"
+			aria-modal="true"
+			aria-label="About Graphoscope"
+			onclick={(e) => e.stopPropagation()}
+		>
+			<div class="modal-head">
+				<h2>About Graphoscope</h2>
+				<button class="modal-close" onclick={() => (aboutOpen = false)} aria-label="Close">×</button>
+			</div>
+			<div class="modal-body">
+				<h3>How the on-demand querying works</h3>
+				<div class="how-body">
 			<p>
 				The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
 				the Human Pangenome Reference Consortium. Each is distributed as a
@@ -697,14 +730,9 @@
 				for coordinate range queries.
 			</p>
 		</div>
-	</section>
 
-	<section class="panel ack">
-		<h2 class="panel-title">Acknowledgements</h2>
-		<p class="muted small">
-			Big thanks to:
-		</p>
-		<ul class="ack-list">
+			<h3>Acknowledgements</h3>
+			<ul class="ack-list">
 			<li>
 				<b>The Human Pangenome Reference Consortium (HPRC)</b> and the
 				<b>Minigraph-Cactus</b> team for building and openly releasing the pangenome graphs shown
@@ -730,236 +758,218 @@
 				<b>42basepairs</b> for the range-request idea that this is modelled on.
 			</li>
 			<li>Gene coordinates from <b>GENCODE</b> (GRCh38) and the <b>T2T-CHM13v2.0</b> annotation.</li>
-		</ul>
-	</section>
-
-	<footer class="muted small">
-		GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
-	</footer>
-</main>
+			</ul>
+			</div>
+			<footer class="modal-foot muted small">
+				GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
+			</footer>
+		</div>
+	</div>
+{/if}
 
 <style>
+	:global(html),
 	:global(body) {
+		height: 100%;
 		margin: 0;
 		font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-		color: #1a1a1a;
-		background: #fff;
+		color: #1f2430;
+		background: #eef1f5;
 	}
-	main {
-		max-width: 1100px;
-		margin: 0 auto;
-		padding: 2rem 1.5rem 4rem;
-	}
-	h1 {
-		margin: 0 0 0.2rem;
-		font-size: 1.5rem;
-	}
-	.how-body {
-		margin-top: 0.5rem;
-		font-size: 0.85rem;
-		padding: 0.6rem 0.9rem;
-		border-left: 3px solid #dbeafe;
-		background: #f8faff;
-		border-radius: 0 8px 8px 0;
-		color: #444;
-	}
-	.how-body p {
-		margin: 0 0 0.6rem;
-	}
-	.how-body p:last-child {
-		margin-bottom: 0;
-	}
-	.topbar {
-		display: flex;
-		align-items: baseline;
-		gap: 0.75rem;
-		flex-wrap: wrap;
-		padding: 0 0 0.75rem;
-		border-bottom: 1px solid #ececec;
-		margin-bottom: 0.75rem;
-	}
-	.topbar h1 {
-		margin: 0;
-		font-size: 1.15rem;
-	}
-	.topbar .tagline {
-		color: #777;
-		font-size: 0.82rem;
-	}
-	.topbar .spacer {
-		flex: 1;
-	}
-	.toolbar {
-		display: flex;
-		align-items: flex-end;
-		gap: 0.6rem;
-		flex-wrap: wrap;
-		margin-bottom: 0.75rem;
-	}
-	.toolbar .lbl {
-		display: block;
-		font-size: 0.72rem;
-		color: #777;
-		margin-bottom: 0.15rem;
-	}
-	.toolbar .examples {
-		display: flex;
-		gap: 0.3rem;
-		flex-wrap: wrap;
-		align-items: center;
-	}
-	.toolbar .go {
-		padding: 0.4rem 1rem;
-	}
-	.graph-panel {
-		margin-bottom: 0.75rem;
-	}
-	.statstable {
-		border-collapse: collapse;
-		font-size: 0.85rem;
-		min-width: min(520px, 100%);
-	}
-	.statstable th,
-	.statstable td {
-		text-align: left;
-		padding: 0.3rem 1rem 0.3rem 0;
-		border-bottom: 1px solid #f0f0f0;
-		white-space: nowrap;
-	}
-	.statstable thead th {
-		font-size: 0.72rem;
-		font-weight: 500;
-		color: #888;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.statstable tbody th {
-		font-weight: 400;
-		color: #555;
-	}
-	.statstable td {
-		font-variant-numeric: tabular-nums;
+	:global(*),
+	:global(*::before),
+	:global(*::after) {
+		box-sizing: border-box;
 	}
 
-	.panel {
-		border: 1px solid #e6e6e6;
-		border-radius: 10px;
-		padding: 1rem;
-		margin-bottom: 1rem;
-		background: #fff;
-	}
-	.panel-title {
-		margin: 0 0 0.8rem;
-		font-size: 0.95rem;
-		font-weight: 600;
-		color: #444;
-	}
-	.title-row {
+	.app {
+		height: 100vh;
 		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.8rem;
+		flex-direction: column;
+		overflow: hidden;
+		background: #eef1f5;
+	}
+
+	/* ---- top bar ---- */
+	.topbar {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem 1.1rem;
 		flex-wrap: wrap;
+		padding: 0.55rem 1rem;
+		background: #fff;
+		border-bottom: 1px solid #e3e7ee;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+		flex: 0 0 auto;
 	}
-	.title-row .panel-title {
-		margin: 0 0 0.8rem;
+	.brand {
+		display: flex;
+		flex-direction: column;
+		line-height: 1.15;
 	}
-	label {
-		font-size: 0.9rem;
+	.brand h1 {
+		margin: 0;
+		font-size: 1.15rem;
+		font-weight: 700;
+		letter-spacing: -0.01em;
 	}
-	input[type='text'] {
-		font: inherit;
-		padding: 0.35rem 0.5rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
+	.tagline {
+		color: #7a828f;
+		font-size: 0.72rem;
 	}
-	button {
-		font: inherit;
-		font-weight: 600;
-		padding: 0.4rem 1.1rem;
+
+	.graph-switch {
+		display: inline-flex;
+		gap: 2px;
+		background: #f0f2f6;
+		border: 1px solid #e3e7ee;
+		border-radius: 8px;
+		padding: 2px;
+	}
+	.gbtn {
+		background: transparent;
+		color: #3a424e;
 		border: none;
 		border-radius: 6px;
+		padding: 0.35rem 0.7rem;
+		font-size: 0.82rem;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+	}
+	.gbtn:hover:not(:disabled) {
+		background: #e6e9ef;
+	}
+	.gbtn.active {
+		background: #2563eb;
+		color: #fff;
+		box-shadow: 0 1px 2px rgba(37, 99, 235, 0.3);
+	}
+	.gbtn:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+
+	.query {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.5rem;
+	}
+	.locus-field,
+	.context-field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+	.lbl {
+		font-size: 0.62rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: #98a0ac;
+	}
+	.locus-input {
+		position: relative;
+	}
+	.query input {
+		font: inherit;
+		font-size: 0.9rem;
+		padding: 0.4rem 0.55rem;
+		border: 1px solid #d3d9e2;
+		border-radius: 7px;
+		background: #fff;
+		color: #1f2430;
+	}
+	.query input:focus {
+		outline: 2px solid #2563eb;
+		outline-offset: -1px;
+		border-color: #2563eb;
+	}
+	.locus-input input {
+		width: 15rem;
+	}
+	.ctx-input {
+		width: 5rem;
+	}
+	.go {
+		font: inherit;
+		font-weight: 600;
+		font-size: 0.9rem;
+		padding: 0.42rem 1.1rem;
+		border: none;
+		border-radius: 7px;
 		background: #2563eb;
 		color: #fff;
 		cursor: pointer;
 	}
-	button:disabled {
+	.go:hover:not(:disabled) {
+		background: #1d4ed8;
+	}
+	.go:disabled {
 		background: #9db8ef;
 		cursor: default;
 	}
-	button.chip {
-		background: #eef2ff;
-		color: #3730a3;
-		font-weight: 500;
-		padding: 0.25rem 0.7rem;
-		font-size: 0.82rem;
-	}
-	button.chip:disabled {
-		background: #f3f4f6;
-		color: #9ca3af;
-	}
 
-	/* --- graph switch --- */
-	.graph-switch {
+	.examples {
 		display: flex;
 		align-items: center;
-		gap: 0.6rem;
+		gap: 0.3rem;
 		flex-wrap: wrap;
-		margin-bottom: 0.9rem;
+	}
+	.ex-lbl {
+		font-size: 0.72rem;
+		color: #98a0ac;
+	}
+	.chip {
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: #eef2ff;
+		color: #3730a3;
+		border: 1px solid #e0e7ff;
+		border-radius: 999px;
+		padding: 0.2rem 0.6rem;
+	}
+	.chip:hover:not(:disabled) {
+		background: #e0e7ff;
+	}
+	.chip:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	.spacer {
+		flex: 1;
+	}
+	.link-btn {
+		background: none;
+		border: none;
+		color: #2563eb;
+		font: inherit;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		padding: 0.2rem 0.3rem;
+	}
+	.link-btn:hover {
+		text-decoration: underline;
 	}
 	.pg-link {
 		color: #2563eb;
 		font-size: 0.85rem;
+		font-weight: 600;
 		text-decoration: none;
 		white-space: nowrap;
 	}
 	.pg-link:hover {
 		text-decoration: underline;
 	}
-	.gbtn {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 0.1rem;
-		background: #f3f4f6;
-		color: #1f2937;
-		border: 1px solid #d1d5db;
-		padding: 0.45rem 0.9rem;
-		line-height: 1.2;
-	}
-	.gbtn:hover:not(:disabled) {
-		background: #e5e7eb;
-	}
-	.gbtn.active {
-		background: #2563eb;
-		border-color: #2563eb;
-		color: #fff;
-	}
 
-	/* --- locus field + gene autocomplete --- */
-	.locus-field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.context-field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.ctx-input {
-		width: 5.5rem;
-		padding: 0.4rem 0.5rem;
-		font: inherit;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
-	.locus-input {
-		position: relative;
-	}
+	/* suggest dropdown */
 	.suggest {
 		position: absolute;
-		top: calc(100% + 2px);
+		top: calc(100% + 3px);
 		left: 0;
 		right: 0;
 		z-index: 30;
@@ -969,8 +979,8 @@
 		background: #fff;
 		border: 1px solid #e2e5ea;
 		border-radius: 8px;
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-		max-height: 260px;
+		box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
+		max-height: 300px;
 		overflow-y: auto;
 	}
 	.suggest li {
@@ -994,19 +1004,282 @@
 		white-space: nowrap;
 	}
 
-	.error {
+	/* ---- error banner ---- */
+	.error-banner {
+		flex: 0 0 auto;
+		margin: 0.6rem 1rem 0;
+	}
+	.error-banner pre {
+		margin: 0;
 		background: #fef2f2;
 		border: 1px solid #fca5a5;
 		color: #991b1b;
-		padding: 0.8rem;
+		padding: 0.7rem 0.9rem;
 		border-radius: 8px;
 		white-space: pre-wrap;
+		font-size: 0.82rem;
 	}
-	.oversized {
-		margin: 0 0 0.4rem;
-		color: #92400e;
-		font-size: 0.9rem;
+
+	/* ---- workspace ---- */
+	.workspace {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		gap: 0.75rem;
+		padding: 0.75rem 1rem 1rem;
+		overflow: hidden;
+	}
+
+	.mainview {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 10px;
+		overflow: hidden;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+	}
+	.tabs {
+		display: flex;
+		align-items: center;
+		gap: 0.15rem;
+		padding: 0.3rem 0.5rem 0;
+		border-bottom: 1px solid #e3e7ee;
+		background: #fafbfc;
+	}
+	.tab {
+		font: inherit;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: none;
+		border: none;
+		color: #6b7280;
+		padding: 0.5rem 0.8rem;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -1px;
+		border-radius: 6px 6px 0 0;
+	}
+	.tab:hover {
+		color: #1f2430;
+		background: #f0f2f6;
+	}
+	.tab.active {
+		color: #2563eb;
+		border-bottom-color: #2563eb;
+	}
+	.locus-badge {
+		font-size: 0.8rem;
+		color: #6b7280;
+		padding-right: 0.4rem;
+	}
+	.locus-badge b {
+		color: #1f2430;
+	}
+
+	.tabbody {
+		flex: 1;
+		min-height: 0;
+		overflow: auto;
+	}
+	.tabbody.pad {
+		padding: 0.9rem;
+	}
+	/* the graph view fills the whole tab body */
+	.tabbody :global(.wrap) {
+		height: 100%;
+	}
+
+	/* ---- right rail ---- */
+	.rail {
+		flex: 0 0 300px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		overflow-y: auto;
+	}
+	.card {
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 10px;
+		padding: 0.9rem 1rem;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+	}
+	.card-head {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		margin-bottom: 0.55rem;
+	}
+	.card-title {
+		margin: 0;
+		font-size: 0.7rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: #6b7280;
+		white-space: nowrap;
+	}
+	.card-sub {
+		font-size: 0.66rem;
+		color: #b0b6c0;
+	}
+	.card-sub em {
+		font-style: normal;
+	}
+
+	.statgrid {
+		display: flex;
+		flex-direction: column;
+	}
+	.srow {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.6rem;
+		padding: 0.34rem 0;
+		border-bottom: 1px solid #f0f2f5;
+		font-size: 0.82rem;
+	}
+	.srow:last-child {
+		border-bottom: none;
+	}
+	.srow .k {
+		color: #6b7280;
+		white-space: nowrap;
+	}
+	.srow .v {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		color: #1f2430;
+	}
+	.srow .v b {
+		font-weight: 600;
+	}
+	.srow .v em {
+		font-style: normal;
+		color: #a7adb8;
+		font-size: 0.92em;
+	}
+	.fetchline {
+		margin: 0.7rem 0 0;
 		line-height: 1.5;
+	}
+
+	/* ---- placeholder (empty / loading / oversized) ---- */
+	.placeholder {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 10px;
+	}
+	.ph-inner {
+		color: #7a828f;
+		font-size: 0.95rem;
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		max-width: 34rem;
+		padding: 1.5rem;
+		text-align: center;
+		line-height: 1.5;
+	}
+	.ph-inner.warn {
+		color: #92400e;
+	}
+	.ph-spinner {
+		flex: 0 0 auto;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		border: 2px solid #d3d9e2;
+		border-top-color: #2563eb;
+		animation: spin 0.7s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	/* ---- about modal ---- */
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(16, 24, 40, 0.45);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2rem;
+		z-index: 100;
+	}
+	.modal {
+		background: #fff;
+		border-radius: 12px;
+		width: min(760px, 100%);
+		max-height: 85vh;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 20px 60px rgba(16, 24, 40, 0.3);
+		overflow: hidden;
+	}
+	.modal-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1rem 1.3rem;
+		border-bottom: 1px solid #e3e7ee;
+	}
+	.modal-head h2 {
+		margin: 0;
+		font-size: 1.05rem;
+	}
+	.modal-close {
+		background: none;
+		border: none;
+		font-size: 1.5rem;
+		line-height: 1;
+		color: #98a0ac;
+		cursor: pointer;
+		padding: 0 0.3rem;
+	}
+	.modal-close:hover {
+		color: #1f2430;
+	}
+	.modal-body {
+		padding: 1.1rem 1.3rem;
+		overflow-y: auto;
+	}
+	.modal-body h3 {
+		margin: 1.3rem 0 0.5rem;
+		font-size: 0.9rem;
+	}
+	.modal-body h3:first-child {
+		margin-top: 0;
+	}
+	.modal-foot {
+		padding: 0.7rem 1.3rem;
+		border-top: 1px solid #e3e7ee;
+	}
+
+	.how-body {
+		font-size: 0.85rem;
+		padding: 0.6rem 0.9rem;
+		border-left: 3px solid #dbeafe;
+		background: #f8faff;
+		border-radius: 0 8px 8px 0;
+		color: #444;
+	}
+	.how-body p {
+		margin: 0 0 0.6rem;
+	}
+	.how-body p:last-child {
+		margin-bottom: 0;
 	}
 	.ack-list {
 		margin: 0.4rem 0 0;
@@ -1015,6 +1288,7 @@
 		color: #555;
 		line-height: 1.6;
 	}
+
 	.muted {
 		color: #888;
 	}
@@ -1022,11 +1296,18 @@
 		font-size: 0.8rem;
 	}
 	code {
-		background: #f0f0f0;
+		background: #eef1f5;
 		padding: 0 4px;
 		border-radius: 4px;
+		font-size: 0.9em;
 	}
-	footer {
-		margin-top: 2rem;
+
+	@media (max-width: 860px) {
+		.rail {
+			flex-basis: 240px;
+		}
+		.locus-input input {
+			width: 11rem;
+		}
 	}
 </style>
