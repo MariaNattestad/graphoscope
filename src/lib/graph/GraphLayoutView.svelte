@@ -273,7 +273,14 @@
 	// --- layout worker ---
 	let worker: Worker | null = null;
 	let reqId = 0;
-	let layout = $state<LayoutResult | null>(null);
+	// `$state.raw`, not `$state`: the layout is a large graph structure (a
+	// `nodesById` Map of thousands of nodes, the chains array, every SimNode) that
+	// GraphCanvas reads hundreds of thousands of times per draw. Plain `$state`
+	// deep-proxies all of it, so every one of those reads pays Svelte's proxy-trap
+	// cost — enough to drop disco-walks (which redraws ~10×/s) to a few FPS. We only
+	// ever reassign `layout` wholesale (never mutate its innards), so raw state is
+	// both correct and dramatically faster: the canvas iterates plain objects.
+	let layout = $state.raw<LayoutResult | null>(null);
 	let ms = $state(0);
 	let computing = $state(false);
 

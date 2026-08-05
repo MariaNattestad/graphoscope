@@ -570,12 +570,23 @@
 		}
 		if (strands.length === 0) return;
 
-		const strokePolyline = (pts: { x: number; y: number }[]) => {
-			ctx.beginPath();
-			ctx.moveTo(pts[0].x, pts[0].y);
-			for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-			ctx.stroke();
-		};
+		// Collect all the links into one path and all the strands into another (each
+		// polyline is its own subpath, so they still render separately), then stroke
+		// each path in a single call. This keeps the walk to a fixed 3 strokes no
+		// matter how many segments it spans — which matters because the glow uses
+		// shadowBlur, and shadowBlur is very expensive *per stroke*: a long walk (the
+		// reference path spans the whole backbone) stroked segment-by-segment was
+		// hundreds of shadowed strokes every frame, 10× a second.
+		const linkPath = new Path2D();
+		for (const [a, b] of links) {
+			linkPath.moveTo(a.x, a.y);
+			linkPath.lineTo(b.x, b.y);
+		}
+		const strandPath = new Path2D();
+		for (const pts of strands) {
+			strandPath.moveTo(pts[0].x, pts[0].y);
+			for (let i = 1; i < pts.length; i++) strandPath.lineTo(pts[i].x, pts[i].y);
+		}
 
 		ctx.save();
 		ctx.lineJoin = 'round';
@@ -587,26 +598,18 @@
 
 		// link connectors: thin, matching the base graph's 1px links, glow only
 		ctx.lineWidth = 1;
-		for (const [a, b] of links) {
-			ctx.beginPath();
-			ctx.moveTo(a.x, a.y);
-			ctx.lineTo(b.x, b.y);
-			ctx.stroke();
-		}
+		ctx.stroke(linkPath);
 
 		// node strands: full strand thickness, glow
 		ctx.lineWidth = strokeWidth;
-		for (const pts of strands) strokePolyline(pts);
+		ctx.stroke(strandPath);
 
 		// bright white core down the node strands only, no glow
 		ctx.shadowBlur = 0;
 		ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
 		ctx.lineWidth = Math.max(1, strokeWidth * 0.5);
 		ctx.globalAlpha = 0.95;
-		for (const pts of strands) {
-			if (pts.length < 2) continue;
-			strokePolyline(pts);
-		}
+		ctx.stroke(strandPath);
 		ctx.restore();
 	}
 
