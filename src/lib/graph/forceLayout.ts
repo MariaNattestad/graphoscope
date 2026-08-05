@@ -93,6 +93,12 @@ export interface LayoutOptions {
 	 * clear of the backbone instead of lying invisibly on top of it. Costs one
 	 * simulation node per link; turn off for a rough, faster layout. */
 	bendNodes?: boolean;
+	/** Pull each bubble node horizontally back toward the reference position it
+	 * attaches to, so a bubble stacks into a tidy vertical column over its
+	 * reference node instead of trailing sideways across the canvas. On by
+	 * default; turning it off gives the older, freer relaxation where the link
+	 * forces open bubbles out into more organic shapes. */
+	anchorToReference?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 }
@@ -103,7 +109,8 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
 	unitEdgeLength: 18,
 	iterations: 350,
 	bendNodes: true,
-	bubblesAbove: false
+	bubblesAbove: false,
+	anchorToReference: true
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -437,7 +444,12 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	function anchorForce(alpha: number) {
 		for (const node of nodeArray) {
 			if (node.fy != null) continue; // backbone nodes are pinned
-			if (node.anchorX != null) {
+			// The x-pull is what stacks a bubble into a vertical column over its
+			// reference node; without it (anchorToReference off) charge + links open
+			// bubbles out sideways into the older, freer shape. The y-pull always
+			// runs — it's what spreads bubbles by depth rather than piling them into
+			// one band, and turning it off would collapse the layout, not free it.
+			if (opts.anchorToReference && node.anchorX != null) {
 				node.vx = (node.vx ?? 0) + (node.anchorX - node.x) * ANCHOR_X_STRENGTH * alpha;
 			}
 			if (node.targetY != null) {

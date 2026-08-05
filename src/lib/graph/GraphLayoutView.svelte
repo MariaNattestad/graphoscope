@@ -49,6 +49,11 @@
 	// symmetric two-sided layout.
 	let bubblesAbove = $state(true);
 
+	// Pull bubbles horizontally onto their reference node's x, so each stacks into a
+	// tidy vertical column (on by default). Off gives the older, freer relaxation
+	// where the link forces open bubbles out into more organic sideways shapes.
+	let anchorToReference = $state(true);
+
 	let selected = $state<string | null>(null);
 
 	$effect(() => {
@@ -303,17 +308,27 @@
 	let ms = $state(0);
 	let computing = $state(false);
 
+	// The layout-shaping options the user controls — anything here changes the
+	// computed layout, so it's both the worker's options and the prewarm cache key.
+	interface LayoutKnobs {
+		bubblesAbove: boolean;
+		anchorToReference: boolean;
+	}
+	const layoutKnobs = $derived<LayoutKnobs>({ bubblesAbove, anchorToReference });
+	const sameKnobs = (a: LayoutKnobs, b: LayoutKnobs) =>
+		a.bubblesAbove === b.bubblesAbove && a.anchorToReference === b.anchorToReference;
+
 	// A layout computed ahead of time for a graph we're not showing yet (disco's
 	// unsimplified graph), so the switch to it is instant — no "computing" takeover
-	// of the current view. Keyed by the exact gfa + bubblesAbove it was built for.
-	let prewarmed = $state.raw<{ gfa: Gfa; bubblesAbove: boolean; layout: LayoutResult; ms: number } | null>(
+	// of the current view. Keyed by the exact gfa + knobs it was built for.
+	let prewarmed = $state.raw<{ gfa: Gfa; knobs: LayoutKnobs; layout: LayoutResult; ms: number } | null>(
 		null
 	);
-	let prewarmTarget: { gfa: Gfa; bubblesAbove: boolean } | null = null;
+	let prewarmTarget: { gfa: Gfa; knobs: LayoutKnobs } | null = null;
 
 	// Layout options for a graph of this size: past the threshold, a rough, much
 	// faster layout (see the 62.5s→6.0s note); below it, the full-quality one.
-	function layoutOptionsFor(keptSegments: number): LayoutRequest['options'] {
+	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
 		return keptSegments > LARGE_LAYOUT_NODE_THRESHOLD
 			? {
 					referenceSample,
@@ -321,9 +336,9 @@
 					targetTotalSubNodes: 400,
 					iterations: 60,
 					bendNodes: false,
-					bubblesAbove
+					...knobs
 				}
-			: { referenceSample, bubblesAbove };
+			: { referenceSample, ...knobs };
 	}
 
 	function ensureWorker(): Worker {
@@ -363,9 +378,9 @@
 	// it instantly with no worker roundtrip and no "computing" state.
 	$effect(() => {
 		const graph = adapted.graph;
-		const ba = bubblesAbove;
+		const knobs = layoutKnobs;
 		const pre = untrack(() => prewarmed);
-		if (pre && pre.gfa === gfa && pre.bubblesAbove === ba) {
+		if (pre && pre.gfa === gfa && sameKnobs(pre.knobs, knobs)) {
 			layout = pre.layout;
 			ms = pre.ms;
 			computing = false;
@@ -373,7 +388,7 @@
 			return;
 		}
 		computing = true;
-		mainReqId = postLayout(graph, layoutOptionsFor(adapted.keptSegments));
+		mainReqId = postLayout(graph, layoutOptionsFor(adapted.keptSegments, knobs));
 	});
 
 	// Prewarm the disco graph's layout in the background: build and lay it out
@@ -381,17 +396,17 @@
 	// and fully interactive while it runs. Notify the parent once it's ready.
 	$effect(() => {
 		const pg = discoPrewarmGfa;
-		const ba = bubblesAbove;
+		const knobs = layoutKnobs;
 		if (!pg) return;
 		const pre = untrack(() => prewarmed);
-		if (pre && pre.gfa === pg && pre.bubblesAbove === ba) {
+		if (pre && pre.gfa === pg && sameKnobs(pre.knobs, knobs)) {
 			onDiscoLayoutReady?.();
 			return;
 		}
-		if (prewarmTarget && prewarmTarget.gfa === pg && prewarmTarget.bubblesAbove === ba) return; // in flight
+		if (prewarmTarget && prewarmTarget.gfa === pg && sameKnobs(prewarmTarget.knobs, knobs)) return; // in flight
 		const pAdapted = gfaToGraph(pg, { referenceSample });
-		prewarmTarget = { gfa: pg, bubblesAbove: ba };
-		prewarmReqId = postLayout(pAdapted.graph, layoutOptionsFor(pAdapted.keptSegments));
+		prewarmTarget = { gfa: pg, knobs };
+		prewarmReqId = postLayout(pAdapted.graph, layoutOptionsFor(pAdapted.keptSegments, knobs));
 	});
 
 	onDestroy(() => worker?.terminate());
@@ -404,70 +419,99 @@
 </script>
 
 <div class="wrap">
-	<div class="head">
-		<span class="muted">{adapted.keptSegments.toLocaleString()} nodes</span>
-		<label class="opt" title="Keep variant bubbles on one side, freeing the space below the reference line">
-			<input type="checkbox" bind:checked={bubblesAbove} /> one-sided
-		</label>
-		{#if computing}
-			<span class="computing">computing…</span>
-		{:else if layout}
-			<span class="muted">· layout {ms} ms</span>
-		{/if}
-		{#if roughLayout}
-			<span class="rough" title="Too many nodes for the full-quality layout; positions are approximate">
-				rough layout
-			</span>
-		{/if}
-		<span class="spacer"></span>
-		{#if showDiscoButton}
-			<button
-				class="disco"
-				class:on={disco}
-				onclick={toggleDisco}
-				disabled={discoLoading || pendingDisco}
-				title="Spotlight every haplotype walk in turn, tracing each one through the graph (uses the full unsimplified graph)"
-			>
-				{#if discoLoading || pendingDisco}
-					🪩 loading walks…
-				{:else if disco}
-					🪩 stop · walk {(discoIndex % discoWalks.length) + 1}/{discoWalks.length}
-				{:else}
-					🪩 disco-walks
-				{/if}
-			</button>
-		{/if}
-	</div>
+	<div class="body">
+		<aside class="sidebar">
+			<section class="group">
+				<h4 class="group-title">Layout</h4>
+				<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
+					<input type="checkbox" bind:checked={bubblesAbove} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">One-sided</span>
+						<span class="switch-sub">bubbles above the line</span>
+					</span>
+				</label>
+				<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
+					<input type="checkbox" bind:checked={anchorToReference} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Anchor to reference</span>
+						<span class="switch-sub">stack bubbles over their node</span>
+					</span>
+				</label>
+			</section>
 
-	<div class="stage">
-		{#if layout}
-			<GraphCanvas
-				{layout}
-				{refCoords}
-				{genes}
-				{discoPath}
-				{discoColor}
-				discoActive={disco}
-				onSelectSegment={(id) => {
-					selected = id;
-					if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
-				}}
-			/>
-		{/if}
-		{#if computing}
-			<div class="overlay">
-				<span>
-					computing layout…
-					{#if showSlowLayoutWarning}
-						<br />
-						<span class="overlay-warning">
-							{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
-							a large or repetitive locus. Still working, not stuck.
-						</span>
+			{#if showDiscoButton}
+				<section class="group">
+					<h4 class="group-title">Walks</h4>
+					<button
+						class="disco"
+						class:on={disco}
+						onclick={toggleDisco}
+						disabled={discoLoading || pendingDisco}
+						title="Spotlight every walk in turn, tracing each one through the graph (uses the full unsimplified graph)"
+					>
+						{#if discoLoading || pendingDisco}
+							🪩 loading walks…
+						{:else if disco}
+							🪩 stop · walk {(discoIndex % discoWalks.length) + 1}/{discoWalks.length}
+						{:else}
+							🪩 disco-walks
+						{/if}
+					</button>
+					{#if disco}
+						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} walks</span>
+					{:else}
+						<span class="switch-sub">trace every walk through the graph</span>
 					{/if}
-				</span>
-			</div>
-		{/if}
+				</section>
+			{/if}
+
+			<section class="group status">
+				<div class="stat"><b>{adapted.keptSegments.toLocaleString()}</b> nodes</div>
+				{#if computing}
+					<div class="computing">computing…</div>
+				{:else if layout}
+					<div class="muted">laid out in {ms} ms</div>
+				{/if}
+				{#if roughLayout}
+					<div class="rough" title="Too many nodes for the full-quality layout; positions are approximate">
+						rough layout
+					</div>
+				{/if}
+			</section>
+		</aside>
+
+		<div class="stage">
+			{#if layout}
+				<GraphCanvas
+					{layout}
+					{refCoords}
+					{genes}
+					{discoPath}
+					{discoColor}
+					discoActive={disco}
+					onSelectSegment={(id) => {
+						selected = id;
+						if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
+					}}
+				/>
+			{/if}
+			{#if computing}
+				<div class="overlay">
+					<span>
+						computing layout…
+						{#if showSlowLayoutWarning}
+							<br />
+							<span class="overlay-warning">
+								{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
+								a large or repetitive locus. Still working, not stuck.
+							</span>
+						{/if}
+					</span>
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	<div class="foot">
@@ -537,7 +581,6 @@
 		flex-direction: column;
 		gap: 0.5rem;
 	}
-	.head,
 	.foot {
 		display: flex;
 		align-items: center;
@@ -545,23 +588,126 @@
 		flex-wrap: wrap;
 		font-size: 0.82rem;
 	}
-	.foot .spacer,
-	.head .spacer {
+	.foot .spacer {
 		flex: 1;
+	}
+
+	/* Body: a controls sidebar beside the canvas. */
+	.body {
+		display: flex;
+		gap: 0.75rem;
+		align-items: stretch;
+	}
+	.sidebar {
+		flex: 0 0 186px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		font-size: 0.8rem;
+	}
+	.group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		padding: 0.6rem 0.7rem;
+		background: #fafafa;
+		border: 1px solid #eee;
+		border-radius: 8px;
+	}
+	.group-title {
+		margin: 0;
+		font-size: 0.66rem;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: #9aa0aa;
+	}
+
+	/* Toggle switch. */
+	.switch {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.55rem;
+		cursor: pointer;
+	}
+	.switch input {
+		position: absolute;
+		opacity: 0;
+		width: 0;
+		height: 0;
+	}
+	.track {
+		flex: 0 0 auto;
+		position: relative;
+		width: 32px;
+		height: 18px;
+		margin-top: 1px;
+		border-radius: 999px;
+		background: #d3d6dd;
+		transition: background 0.15s ease;
+	}
+	.thumb {
+		position: absolute;
+		top: 2px;
+		left: 2px;
+		width: 14px;
+		height: 14px;
+		border-radius: 50%;
+		background: #fff;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+		transition: transform 0.15s ease;
+	}
+	.switch input:checked + .track {
+		background: #2563eb;
+	}
+	.switch input:checked + .track .thumb {
+		transform: translateX(14px);
+	}
+	.switch input:focus-visible + .track {
+		outline: 2px solid #2563eb;
+		outline-offset: 2px;
+	}
+	.switch-text {
+		display: flex;
+		flex-direction: column;
+		line-height: 1.25;
+	}
+	.switch-label {
+		color: #333;
+	}
+	.switch-sub {
+		color: #9aa0aa;
+		font-size: 0.7rem;
+	}
+
+	.status {
+		gap: 0.25rem;
+		margin-top: auto;
+	}
+	.stat {
+		color: #555;
+	}
+	.stat b {
+		color: #222;
 	}
 	.computing {
 		color: #2563eb;
 	}
+	.rough {
+		color: #b45309;
+	}
+
 	.disco {
 		font: inherit;
-		font-size: 0.8rem;
+		font-size: 0.82rem;
 		cursor: pointer;
 		border: 1px solid #d1c4f0;
 		background: #f6f2ff;
 		color: #5b21b6;
-		padding: 0.1rem 0.5rem;
-		border-radius: 999px;
+		padding: 0.32rem 0.5rem;
+		border-radius: 8px;
 		white-space: nowrap;
+		text-align: center;
 	}
 	.disco:hover:not(:disabled) {
 		background: #efe7ff;
@@ -577,12 +723,24 @@
 		cursor: default;
 	}
 	.stage {
+		flex: 1 1 auto;
+		min-width: 0;
 		position: relative;
 		height: 460px;
 		border: 1px solid #eee;
 		border-radius: 8px;
 		overflow: hidden;
 		background: #0b0d12;
+	}
+
+	/* Stack the sidebar above the canvas on narrow screens. */
+	@media (max-width: 640px) {
+		.body {
+			flex-direction: column;
+		}
+		.sidebar {
+			flex-basis: auto;
+		}
 	}
 	.overlay {
 		position: absolute;
