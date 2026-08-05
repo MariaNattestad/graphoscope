@@ -478,18 +478,18 @@
 				</label>
 				<label
 					class="switch"
-					title="A faster, approximate layout for very large graphs. Chosen automatically by node count; toggle to override it for this graph."
+					title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
 				>
 					<input
 						type="checkbox"
-						checked={effectiveRough}
+						checked={!effectiveRough}
 						onchange={() => (roughOverride = !effectiveRough)}
 					/>
 					<span class="track"><span class="thumb"></span></span>
 					<span class="switch-text">
-						<span class="switch-label">Rough layout</span>
+						<span class="switch-label">Bendy nodes</span>
 						<span class="switch-sub">
-							{effectiveRough ? 'faster, approximate' : 'full quality'}{roughOverride === null
+							{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
 								? ' · auto'
 								: ''}
 						</span>
