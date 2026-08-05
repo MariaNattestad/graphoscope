@@ -373,31 +373,10 @@
 
 	// disco-walks asked for the full-walk graph. Load it, then hand it to the layout
 	// view as `discoPrewarmGfa` to lay out *in the background* — the reduced graph
-	// stays on screen and interactive meanwhile. When its layout is ready the view
-	// calls onDiscoLayoutReady (below), and only then do we switch to it.
-	let discoPrewarmGfa = $state<Gfa | null>(null);
+	// stays on screen and interactive meanwhile — disco animates over the displayed
+	// (simplified) graph, mapping the loaded walks onto it, so no swap is needed.
 	async function requestDiscoGraph() {
-		if (unsimplified) {
-			discoPrewarmGfa = unsimplified;
-			return;
-		}
-		if (loadingUnsimplified) return;
-		loadingUnsimplified = true;
-		try {
-			const text = await fetchUnsimplifiedGfa();
-			if (text === null) return;
-			unsimplified = parseGfa(text);
-			// Set the prewarm target before the `finally` clears the loading flag, so
-			// there's no frame where loading is done but no background layout is queued
-			// (the view would read that as a failed load and abandon the pending disco).
-			discoPrewarmGfa = unsimplified;
-		} finally {
-			loadingUnsimplified = false;
-		}
-	}
-	function onDiscoLayoutReady() {
-		showUnsimplified = true;
-		discoPrewarmGfa = null;
+		await ensureUnsimplifiedParsed(); // populates `unsimplified` (passed as discoWalksGfa)
 	}
 
 	// A new query invalidates every cached form of the previous locus's full graph.
@@ -406,7 +385,6 @@
 		unsimplifiedGfaText = null;
 		unsimplified = null;
 		showUnsimplified = false;
-		discoPrewarmGfa = null;
 	});
 
 	// Hands the user the unsimplified subgraph — every haplotype walk — as a file.
@@ -546,8 +524,7 @@
 					discoAvailable={canShowUnsimplified}
 					discoLoading={loadingUnsimplified}
 					onRequestDiscoGraph={requestDiscoGraph}
-					{discoPrewarmGfa}
-					{onDiscoLayoutReady}
+					discoWalksGfa={unsimplified}
 					showingAllNodes={showUnsimplified}
 					allNodesCount={unsimplifiedNodes}
 					allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}

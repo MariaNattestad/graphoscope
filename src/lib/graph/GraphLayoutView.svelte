@@ -23,8 +23,7 @@
 		discoAvailable = false,
 		discoLoading = false,
 		onRequestDiscoGraph,
-		discoPrewarmGfa = null,
-		onDiscoLayoutReady,
+		discoWalksGfa = null,
 		showingAllNodes = false,
 		allNodesCount = 0,
 		allNodesTooMany = false,
@@ -40,11 +39,10 @@
 		discoLoading?: boolean;
 		/** Ask the parent to load the full-walk graph (for disco-walks). */
 		onRequestDiscoGraph?: () => void;
-		/** The full-walk graph to lay out in the background (without disturbing the
-		 * graph currently on screen), so disco can switch to it already laid out. */
-		discoPrewarmGfa?: Gfa | null;
-		/** Fired once that background layout is ready — the parent then swaps it in. */
-		onDiscoLayoutReady?: () => void;
+		/** The unsimplified graph, once loaded — the source of the walks disco traces.
+		 * disco animates over the *displayed* graph, mapping these walks onto it, so
+		 * this never has to be the graph on screen. */
+		discoWalksGfa?: Gfa | null;
 		/** Whether the full (unsimplified) graph is the one currently displayed. */
 		showingAllNodes?: boolean;
 		/** Node count the unsimplified graph would have (for the Simplify switch label). */
@@ -118,18 +116,26 @@
 	const adapted = $derived(gfaToGraph(gfa, { referenceSample }));
 
 	// --- disco-walks 🪩 -----------------------------------------------------------
-	// Load every walk on top of the layout and cycle a spotlight through them, one
-	// per tick — a moving highlight that traces each walk's path through the graph.
-	// The main graph is served reduced (walks aggregated into coverage tags), so we
-	// can only do this on the unsimplified graph, which still carries the individual
-	// W-lines. When the user starts disco while the reduced graph is showing, we ask
-	// the parent to swap in the full-walk graph and start as soon as it arrives.
+	// Cycle a spotlight through every walk, one per tick, tracing each through the
+	// graph that's on screen. Walks live only in the unsimplified graph (the reduced
+	// one aggregates them into coverage tags), so we take them from `discoWalksGfa`
+	// and map each walk's original node ids onto the displayed segment that stands
+	// for them — the unchop-merged u-chain (via the `members` tag), or nothing for a
+	// popped small variant (a gap in the trace). On the full graph that mapping is
+	// the identity and the trace is exact; on the simplified graph it's a partial
+	// but still recognisable path (missing whatever got collapsed away).
 	const DISCO_INTERVAL_MS = 100;
+
+	// Where the walks come from: the unsimplified graph if we've loaded it, else the
+	// displayed graph when it already carries walks (i.e. it isn't the reduced one).
+	const walksGfa = $derived(discoWalksGfa ?? (gfa.reduced ? null : gfa));
 
 	interface DiscoWalk {
 		steps: { id: string; orient: '+' | '-' }[];
 	}
 	const discoWalks = $derived.by((): DiscoWalk[] => {
+		const src = walksGfa;
+		if (!src) return [];
 		const out: DiscoWalk[] = [];
 		// Collapse walks that trace the same segments. At a repetitive/hypervariable
 		// locus (e.g. HLA-A) gbz-base fragments haplotypes into many identical short
@@ -138,7 +144,7 @@
 		// doesn't change the drawn line, so normalise a walk and its reverse to one
 		// key and keep only the first walk with each distinct trace.
 		const seen = new Set<string>();
-		for (const w of gfa.walks) {
+		for (const w of src.walks) {
 			if (w.steps.length < 2) continue; // a single node isn't a path to trace
 			const ids = w.steps.map((s) => s.id);
 			const fwd = ids.join('>');
@@ -151,9 +157,20 @@
 		}
 		return out;
 	});
-	// The full graph carries real walks; the reduced one doesn't, so disco can only
-	// run once we're looking at the unsimplified graph.
-	const canDiscoNow = $derived(!gfa.reduced && discoWalks.length > 0);
+
+	// Map every original node id to the displayed segment that represents it — the
+	// segment itself, or the unchop-merged u-chain that swallowed it (`members`).
+	// Popped small variants aren't in the map. On the full graph this is 1:1.
+	const origToDisplayed = $derived.by(() => {
+		const m = new Map<string, string>();
+		for (const seg of gfa.segments.values()) {
+			m.set(seg.id, seg.id);
+			if (seg.members) for (const orig of seg.members) m.set(orig, seg.id);
+		}
+		return m;
+	});
+
+	const canDiscoNow = $derived(discoWalks.length > 0);
 
 	let disco = $state(false);
 	let pendingDisco = $state(false);
@@ -171,31 +188,27 @@
 			return;
 		}
 		if (discoLoading || pendingDisco) return;
-		// Need the full-walk graph first; the parent will swap it in.
+		// Need the walks; ask the parent to load the unsimplified graph. Only its
+		// walks are used — the displayed graph stays exactly as it is.
 		pendingDisco = true;
 		trackEvent('widget_interact', { widget: 'graph_layout', action: 'disco_walks_start' });
 		onRequestDiscoGraph?.();
 	}
 
-	// Start a pending disco run, but only once the layout being displayed is the
-	// full-walk graph's own (canDiscoNow) — called right after a layout is applied,
-	// never on a bare `canDiscoNow` transition. Starting on the transition alone
-	// would light up the walk against whatever layout is still on screen (the
-	// simplified one) for the frames until the real layout lands.
-	function maybeStartDisco() {
+	// Start a pending run as soon as the walks arrive. There's no layout to wait for
+	// — disco animates over whatever graph is already on screen.
+	$effect(() => {
 		if (pendingDisco && canDiscoNow) {
 			pendingDisco = false;
 			discoIndex = 0;
 			disco = true;
 		}
-	}
+	});
 
-	// The full-graph load failed (no graph fetched, and none being laid out in the
-	// background) — give up on the pending start rather than showing "loading"
-	// forever. `discoPrewarmGfa` being set means the background layout is still in
-	// flight, which is a valid wait, not a failure.
+	// The load finished (or failed) without producing walks — give up on the pending
+	// start rather than showing "loading" forever.
 	$effect(() => {
-		if (pendingDisco && !discoLoading && !discoPrewarmGfa && !canDiscoNow) pendingDisco = false;
+		if (pendingDisco && !discoLoading && !canDiscoNow) pendingDisco = false;
 	});
 
 	// If the walks disappear (e.g. a new query reverted to the reduced graph), stop.
@@ -215,7 +228,22 @@
 	const currentDiscoWalk = $derived(
 		disco && discoWalks.length > 0 ? discoWalks[discoIndex % discoWalks.length] : null
 	);
-	const discoPath = $derived(currentDiscoWalk?.steps ?? null);
+	// Project the current walk onto the displayed segments: map each step through
+	// origToDisplayed, drop steps with no representative here (popped), and collapse
+	// a run of steps that all landed in the same displayed segment into one.
+	const discoPath = $derived.by(() => {
+		const w = currentDiscoWalk;
+		if (!w) return null;
+		const out: { id: string; orient: '+' | '-' }[] = [];
+		let lastId: string | null = null;
+		for (const step of w.steps) {
+			const id = origToDisplayed.get(step.id);
+			if (!id || id === lastId) continue;
+			out.push({ id, orient: step.orient });
+			lastId = id;
+		}
+		return out.length > 0 ? out : null;
+	});
 	// Spin the hue with the cycle so each walk gets its own disco color.
 	const discoColor = $derived(`hsl(${(discoIndex * 47) % 360}, 95%, 62%)`);
 	// Show the button whenever disco is either already possible or loadable.
@@ -309,12 +337,10 @@
 
 	// --- layout worker ---
 	let worker: Worker | null = null;
-	// One monotonic id source; `mainReqId`/`prewarmReqId` track the id each channel
-	// is currently awaiting, so a response is matched to its channel and stale ones
-	// (superseded within a channel) are dropped.
+	// `mainReqId` is the id of the layout request we're currently awaiting; a
+	// response with any other id has been superseded and is dropped.
 	let nextReqId = 0;
 	let mainReqId = -1;
-	let prewarmReqId = -1;
 	// `$state.raw`, not `$state`: the layout is a large graph structure (a
 	// `nodesById` Map of thousands of nodes, the chains array, every SimNode) that
 	// GraphCanvas reads hundreds of thousands of times per draw. Plain `$state`
@@ -335,28 +361,15 @@
 	let recomputeKeepsCanvas = $state(false);
 
 	// The layout-shaping options the user controls — anything here changes the
-	// computed layout, so it's both the worker's options and the prewarm cache key.
+	// computed layout, so it's the worker's options.
 	interface LayoutKnobs {
 		bubblesAbove: boolean;
 		anchorToReference: boolean;
 		// The rough override only (null = auto); the effective rough decision folds in
-		// each graph's own node count inside layoutOptionsFor, so the same override on
-		// two differently-sized graphs still lays each out appropriately.
+		// each graph's own node count inside layoutOptionsFor.
 		roughOverride: boolean | null;
 	}
 	const layoutKnobs = $derived<LayoutKnobs>({ bubblesAbove, anchorToReference, roughOverride });
-	const sameKnobs = (a: LayoutKnobs, b: LayoutKnobs) =>
-		a.bubblesAbove === b.bubblesAbove &&
-		a.anchorToReference === b.anchorToReference &&
-		a.roughOverride === b.roughOverride;
-
-	// A layout computed ahead of time for a graph we're not showing yet (disco's
-	// unsimplified graph), so the switch to it is instant — no "computing" takeover
-	// of the current view. Keyed by the exact gfa + knobs it was built for.
-	let prewarmed = $state.raw<{ gfa: Gfa; knobs: LayoutKnobs; layout: LayoutResult; ms: number } | null>(
-		null
-	);
-	let prewarmTarget: { gfa: Gfa; knobs: LayoutKnobs } | null = null;
 
 	// Worker options for a graph of this size. Rough mode (past the threshold unless
 	// overridden) collapses each segment to one node, cuts iterations and drops bend
@@ -374,19 +387,12 @@
 		if (!worker) {
 			worker = new Worker(new URL('./layout.worker.ts', import.meta.url), { type: 'module' });
 			worker.onmessage = (ev: MessageEvent<LayoutResponse>) => {
-				if (ev.data.id === mainReqId) {
-					layout = ev.data.layout;
-					ms = ev.data.ms;
-					layoutGfa = mainReqGfa;
-					computing = false;
-					recomputeKeepsCanvas = false;
-					maybeStartDisco();
-				} else if (ev.data.id === prewarmReqId && prewarmTarget) {
-					prewarmed = { ...prewarmTarget, layout: ev.data.layout, ms: ev.data.ms };
-					prewarmReqId = -1;
-					onDiscoLayoutReady?.();
-				}
-				// else: superseded within its channel — drop it.
+				if (ev.data.id !== mainReqId) return; // superseded — drop it
+				layout = ev.data.layout;
+				ms = ev.data.ms;
+				layoutGfa = mainReqGfa;
+				computing = false;
+				recomputeKeepsCanvas = false;
 			};
 		}
 		return worker;
@@ -403,46 +409,16 @@
 		return id;
 	}
 
-	// Kick off a (re)layout whenever the displayed graph changes — unless we already
-	// prewarmed a layout for exactly this graph (the disco swap), in which case apply
-	// it instantly with no worker roundtrip and no "computing" state.
+	// Kick off a (re)layout whenever the displayed graph or a layout knob changes.
 	$effect(() => {
 		const graph = adapted.graph;
 		const knobs = layoutKnobs;
-		const pre = untrack(() => prewarmed);
-		if (pre && pre.gfa === gfa && sameKnobs(pre.knobs, knobs)) {
-			layout = pre.layout;
-			ms = pre.ms;
-			layoutGfa = gfa;
-			computing = false;
-			recomputeKeepsCanvas = false;
-			untrack(() => maybeStartDisco());
-			return;
-		}
 		// Same graph, only the knobs changed → keep the current canvas up while it
 		// re-lays out, so a toggle updates in place instead of blanking the view.
 		recomputeKeepsCanvas = untrack(() => layout != null && layoutGfa === gfa);
 		computing = true;
 		mainReqGfa = gfa;
 		mainReqId = postLayout(graph, layoutOptionsFor(adapted.keptSegments, knobs));
-	});
-
-	// Prewarm the disco graph's layout in the background: build and lay it out
-	// without touching `layout`/`computing`, so the graph on screen is undisturbed
-	// and fully interactive while it runs. Notify the parent once it's ready.
-	$effect(() => {
-		const pg = discoPrewarmGfa;
-		const knobs = layoutKnobs;
-		if (!pg) return;
-		const pre = untrack(() => prewarmed);
-		if (pre && pre.gfa === pg && sameKnobs(pre.knobs, knobs)) {
-			onDiscoLayoutReady?.();
-			return;
-		}
-		if (prewarmTarget && prewarmTarget.gfa === pg && sameKnobs(prewarmTarget.knobs, knobs)) return; // in flight
-		const pAdapted = gfaToGraph(pg, { referenceSample });
-		prewarmTarget = { gfa: pg, knobs };
-		prewarmReqId = postLayout(pAdapted.graph, layoutOptionsFor(pAdapted.keptSegments, knobs));
 	});
 
 	onDestroy(() => worker?.terminate());
@@ -472,7 +448,7 @@
 					<span class="track"><span class="thumb"></span></span>
 					<span class="switch-text">
 						<span class="switch-label">Anchor to reference</span>
-						<span class="switch-sub">stack bubbles over their node</span>
+						<span class="switch-sub">stack bubbles over their ref nodes</span>
 					</span>
 				</label>
 				<label
