@@ -595,6 +595,12 @@
 						{/if}
 					</span>
 				</div>
+			{:else if computing}
+				<!-- In-place recompute (a knob change): keep the current graph visible but
+				     still signal that the new layout is being computed. -->
+				<div class="busy-badge">
+					<span class="spinner"></span> computing layout…
+				</div>
 			{/if}
 		</div>
 	</div>
@@ -838,6 +844,37 @@
 		background: rgba(11, 13, 18, 0.55);
 		font-size: 0.9rem;
 		padding: 0 1.5rem;
+	}
+	/* Non-blocking "still working" pill for in-place recomputes: sits in a corner
+	   over the (still-visible, still-interactive) graph. */
+	.busy-badge {
+		position: absolute;
+		top: 10px;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		pointer-events: none;
+		padding: 0.25rem 0.6rem;
+		border-radius: 999px;
+		background: rgba(11, 13, 18, 0.78);
+		border: 1px solid rgba(154, 163, 178, 0.3);
+		color: #cbd3e0;
+		font-size: 0.76rem;
+	}
+	.spinner {
+		width: 12px;
+		height: 12px;
+		border-radius: 50%;
+		border: 2px solid rgba(154, 163, 178, 0.35);
+		border-top-color: #a9c7ff;
+		animation: spin 0.7s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 	.overlay-warning {
 		display: inline-block;
