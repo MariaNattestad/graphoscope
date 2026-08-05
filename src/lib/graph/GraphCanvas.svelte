@@ -418,23 +418,32 @@
 			ctx.fillText(text, sx, sy + 8);
 		};
 
+		// The end coordinate of the last anchor, pinned to the far right — always
+		// shown since it bounds the view. Reserve its left edge so no start label to
+		// its left is allowed to run into it (the source of the right-side overlap:
+		// the last segment's start tick used to be force-drawn regardless of gap).
+		const last = anchors[anchors.length - 1];
+		const endX = toScreenX(last.maxX);
+		const endText = fmt(last.coord.end);
+		const endLeft = endX - ctx.measureText(endText).width;
+		const endVisible = endX >= -40 && endX <= width + 40;
+
 		for (let i = 0; i < anchors.length; i++) {
 			const a = anchors[i];
 			const sx = toScreenX(a.minX);
 			const sy = toScreenY(a.y);
 			if (sx < -40 || sx > width + 40) continue; // off-screen
 			const isFirst = i === 0;
-			const isLast = i === anchors.length - 1;
 			const textW = ctx.measureText(fmt(a.coord.start)).width;
-			if (isFirst || isLast || sx - lastLabelRight >= MIN_GAP) {
+			// A centered start label spans [sx - w/2, sx + w/2].
+			const clearsPrev = isFirst || sx - lastLabelRight >= MIN_GAP;
+			const clearsEnd = !endVisible || sx + textW / 2 < endLeft - 8;
+			if (clearsPrev && clearsEnd) {
 				drawTick(sx, sy, fmt(a.coord.start), 'center');
 				lastLabelRight = sx + textW / 2;
 			}
-			if (isLast) {
-				const ex = toScreenX(a.maxX);
-				drawTick(ex, sy, fmt(a.coord.end), 'right');
-			}
 		}
+		if (endVisible) drawTick(endX, toScreenY(last.y), endText, 'right');
 		// Contig label, once, at the far left.
 		ctx.textAlign = 'left';
 		ctx.fillStyle = theme.contigLabel;
