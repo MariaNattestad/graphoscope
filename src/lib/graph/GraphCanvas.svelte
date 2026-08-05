@@ -28,6 +28,7 @@
 		discoColor = '#ff3ce0',
 		discoActive = false,
 		lightMode = false,
+		showExits = true,
 		onReady,
 		nodeTooltip
 	}: {
@@ -47,6 +48,8 @@
 		discoActive?: boolean;
 		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
 		lightMode?: boolean;
+		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
+		showExits?: boolean;
 		/** Hands the parent a small API (currently just PNG export) once mounted. */
 		onReady?: (api: { exportImage: (filename: string) => void }) => void;
 	} = $props();
@@ -55,6 +58,18 @@
 
 	// segId -> its chain, for tracing a walk's polyline through the layout.
 	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
+
+	// Node ids that a structural link attaches to. A non-backbone chain end that
+	// isn't in here is a strand that just stops — a haplotype chopped at the
+	// subgraph boundary — which drawExitCues() marks as leaving the locus.
+	const linkedNodeIds = $derived.by(() => {
+		const s = new Set<string>();
+		for (const l of layout.structuralLinkPaths) {
+			s.add(l.fromNode);
+			s.add(l.toNode);
+		}
+		return s;
+	});
 
 	// Reserved bottom bands, in screen (CSS) px. The coordinate axis sits directly
 	// under the backbone; the gene track (only when there are genes to show) sits
@@ -271,6 +286,9 @@
 			ctx.lineWidth = chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth;
 			ctx.stroke();
 		}
+
+		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
+		drawExitCues(ctx, width);
 
 		// Spotlight overlay: the current disco walk, traced through its segments'
 		// chains and stroked as a glowing line over the full-brightness base graph.
@@ -659,6 +677,44 @@
 		ctx.restore();
 	}
 
+	// A haplotype that continues past the queried locus is chopped at the subgraph
+	// boundary, leaving a strand that just stops mid-air — reading as a random
+	// dangle. For each such loose end (a non-backbone chain end no link attaches to)
+	// draw a short fading dashed line toward the nearer frame edge: the direction the
+	// haplotype exits the locus. We can't know *which* node it reconnects to (it's
+	// outside the subgraph), only that it leaves this way.
+	function drawExitCues(ctx: CanvasRenderingContext2D, width: number) {
+		if (!showExits) return;
+		ctx.save();
+		ctx.setLineDash([4, 4]);
+		ctx.lineWidth = 1.5;
+		ctx.lineCap = 'butt';
+		for (const chain of layout.chains) {
+			if (layout.backboneSegIds.has(chain.segId)) continue; // the reference axis marks its own ends
+			const ids = chain.nodeIds;
+			const endIdx: number[] = [];
+			if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
+			if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
+			for (const i of endIdx) {
+				const n = layout.nodesById.get(ids[i]);
+				if (!n) continue;
+				const ex = toScreenX(n.x);
+				const ey = toScreenY(n.y);
+				const edgeX = ex < width / 2 ? 0 : width;
+				const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+				grad.addColorStop(0, theme.exitCue);
+				grad.addColorStop(1, theme.exitCueFade);
+				ctx.strokeStyle = grad;
+				ctx.beginPath();
+				ctx.moveTo(ex, ey);
+				ctx.lineTo(edgeX, ey);
+				ctx.stroke();
+			}
+		}
+		ctx.setLineDash([]);
+		ctx.restore();
+	}
+
 	function findSegmentAt(px: number, py: number): string | null {
 		if (!canvasEl) return null;
 		// Hit-testing happens in screen space: with x and y on different scales
@@ -727,6 +783,7 @@
 		discoColor;
 		discoActive;
 		theme;
+		showExits;
 		untrack(() => draw());
 	});
 

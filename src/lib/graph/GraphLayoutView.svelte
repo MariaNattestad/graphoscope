@@ -64,6 +64,11 @@
 	// where the link forces open bubbles out into more organic sideways shapes.
 	let anchorToReference = $state(true);
 
+	// Mark strands chopped at the subgraph boundary with a fading cue toward the
+	// frame edge (the direction the haplotype leaves the locus), so they don't read
+	// as random dangles. Off for a clean figure.
+	let showExits = $state(true);
+
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
 	let lightMode = $state(false);
@@ -512,6 +517,17 @@
 						</span>
 					</span>
 				</label>
+				<label
+					class="switch"
+					title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
+				>
+					<input type="checkbox" bind:checked={showExits} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Off-locus exits</span>
+						<span class="switch-sub">cue chopped-off haplotypes</span>
+					</span>
+				</label>
 			</section>
 
 			<section class="group">
@@ -618,6 +634,7 @@
 					{discoColor}
 					{lightMode}
 					{nodeTooltip}
+					{showExits}
 					discoActive={disco}
 					onReady={(api) => (canvasApi = api)}
 					onSelectSegment={(id) => {
