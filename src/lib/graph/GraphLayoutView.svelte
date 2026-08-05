@@ -476,38 +476,6 @@
 						<span class="switch-sub">stack bubbles over their node</span>
 					</span>
 				</label>
-			</section>
-
-			<section class="group">
-				<h4 class="group-title">Detail</h4>
-				{#if discoAvailable || showingAllNodes}
-					<label
-						class="switch"
-						title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
-					>
-						<input
-							type="checkbox"
-							checked={!showingAllNodes}
-							disabled={discoLoading}
-							onchange={() => onToggleSimplify?.()}
-						/>
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Simplify</span>
-							<span class="switch-sub">
-								{#if discoLoading}
-									loading…
-								{:else if showingAllNodes}
-									all {allNodesCount.toLocaleString()} nodes shown
-								{:else}
-									small variants collapsed
-								{/if}
-							</span>
-						</span>
-					</label>
-				{:else if allNodesTooMany}
-					<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
-				{/if}
 				<label
 					class="switch"
 					title="A faster, approximate layout for very large graphs. Chosen automatically by node count; toggle to override it for this graph."
@@ -528,6 +496,40 @@
 					</span>
 				</label>
 			</section>
+
+			{#if discoAvailable || showingAllNodes || allNodesTooMany}
+				<section class="group">
+					<h4 class="group-title">Detail</h4>
+					{#if discoAvailable || showingAllNodes}
+						<label
+							class="switch"
+							title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
+						>
+							<input
+								type="checkbox"
+								checked={!showingAllNodes}
+								disabled={discoLoading}
+								onchange={() => onToggleSimplify?.()}
+							/>
+							<span class="track"><span class="thumb"></span></span>
+							<span class="switch-text">
+								<span class="switch-label">Simplify</span>
+								<span class="switch-sub">
+									{#if discoLoading}
+										loading…
+									{:else if showingAllNodes}
+										all {allNodesCount.toLocaleString()} nodes shown
+									{:else}
+										small variants collapsed
+									{/if}
+								</span>
+							</span>
+						</label>
+					{:else if allNodesTooMany}
+						<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
+					{/if}
+				</section>
+			{/if}
 
 			{#if showDiscoButton}
 				<section class="group">
