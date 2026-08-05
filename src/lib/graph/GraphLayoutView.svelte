@@ -24,7 +24,11 @@
 		discoLoading = false,
 		onRequestDiscoGraph,
 		discoPrewarmGfa = null,
-		onDiscoLayoutReady
+		onDiscoLayoutReady,
+		showingAllNodes = false,
+		allNodesCount = 0,
+		allNodesTooMany = false,
+		onToggleSimplify
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
@@ -41,6 +45,14 @@
 		discoPrewarmGfa?: Gfa | null;
 		/** Fired once that background layout is ready — the parent then swaps it in. */
 		onDiscoLayoutReady?: () => void;
+		/** Whether the full (unsimplified) graph is the one currently displayed. */
+		showingAllNodes?: boolean;
+		/** Node count the unsimplified graph would have (for the Simplify switch label). */
+		allNodesCount?: number;
+		/** The unsimplified graph is past the render ceiling — offer it as info, not a control. */
+		allNodesTooMany?: boolean;
+		/** Toggle between the simplified and full graph (parent owns the fetch/swap). */
+		onToggleSimplify?: () => void;
 	} = $props();
 
 	// Keep all non-reference bubbles on one side (above the reference line). This
@@ -59,6 +71,8 @@
 	$effect(() => {
 		gfa;
 		selected = null;
+		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
+		roughOverride = null;
 	});
 
 	// Walks that start or end exactly at the selected node — the tell for a
@@ -274,11 +288,15 @@
 	});
 
 	// Past this node count the full-quality layout takes minutes, so switch to a
-	// rough one automatically rather than making people wait or choose. Below it,
-	// quality is cheap and rough mode looked wrong on small graphs — which is why
-	// it isn't offered as a manual toggle.
+	// rough one automatically rather than making people wait. Below it, quality is
+	// cheap. This is the automatic default; the "Rough layout" switch lets the user
+	// override it either way for the current graph.
 	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
-	const roughLayout = $derived(adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD);
+	const autoRough = $derived(adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD);
+	// null = follow the automatic default; true/false = a manual override. Reset to
+	// null on every new graph so rough mode keeps adapting automatically per query.
+	let roughOverride = $state<boolean | null>(null);
+	const effectiveRough = $derived(roughOverride ?? autoRough);
 
 	// Only warn "this can take a while" for genuinely heavy layouts. This is a much
 	// higher bar than the rough-layout switch above: rough mode makes even a
@@ -307,16 +325,30 @@
 	let layout = $state.raw<LayoutResult | null>(null);
 	let ms = $state(0);
 	let computing = $state(false);
+	// The gfa the current `layout` was built for, so we can tell a re-layout of the
+	// same graph (a knob toggle) from a switch to a different graph.
+	let layoutGfa = $state.raw<Gfa | null>(null);
+	let mainReqGfa: Gfa | null = null;
+	// True while a recompute is running that we can keep the current canvas up for
+	// (same graph, just new knobs) — so a toggle updates in place instead of blanking
+	// the view behind the "computing" overlay.
+	let recomputeKeepsCanvas = $state(false);
 
 	// The layout-shaping options the user controls — anything here changes the
 	// computed layout, so it's both the worker's options and the prewarm cache key.
 	interface LayoutKnobs {
 		bubblesAbove: boolean;
 		anchorToReference: boolean;
+		// The rough override only (null = auto); the effective rough decision folds in
+		// each graph's own node count inside layoutOptionsFor, so the same override on
+		// two differently-sized graphs still lays each out appropriately.
+		roughOverride: boolean | null;
 	}
-	const layoutKnobs = $derived<LayoutKnobs>({ bubblesAbove, anchorToReference });
+	const layoutKnobs = $derived<LayoutKnobs>({ bubblesAbove, anchorToReference, roughOverride });
 	const sameKnobs = (a: LayoutKnobs, b: LayoutKnobs) =>
-		a.bubblesAbove === b.bubblesAbove && a.anchorToReference === b.anchorToReference;
+		a.bubblesAbove === b.bubblesAbove &&
+		a.anchorToReference === b.anchorToReference &&
+		a.roughOverride === b.roughOverride;
 
 	// A layout computed ahead of time for a graph we're not showing yet (disco's
 	// unsimplified graph), so the switch to it is instant — no "computing" takeover
@@ -326,19 +358,16 @@
 	);
 	let prewarmTarget: { gfa: Gfa; knobs: LayoutKnobs } | null = null;
 
-	// Layout options for a graph of this size: past the threshold, a rough, much
-	// faster layout (see the 62.5s→6.0s note); below it, the full-quality one.
+	// Worker options for a graph of this size. Rough mode (past the threshold unless
+	// overridden) collapses each segment to one node, cuts iterations and drops bend
+	// nodes — the much faster layout (see the 62.5s→6.0s note); otherwise full quality.
 	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
-		return keptSegments > LARGE_LAYOUT_NODE_THRESHOLD
-			? {
-					referenceSample,
-					maxEdgesPerSegment: 1,
-					targetTotalSubNodes: 400,
-					iterations: 60,
-					bendNodes: false,
-					...knobs
-				}
-			: { referenceSample, ...knobs };
+		const { bubblesAbove, anchorToReference, roughOverride } = knobs;
+		const rough = roughOverride ?? keptSegments > LARGE_LAYOUT_NODE_THRESHOLD;
+		const base = { referenceSample, bubblesAbove, anchorToReference };
+		return rough
+			? { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
+			: base;
 	}
 
 	function ensureWorker(): Worker {
@@ -348,7 +377,9 @@
 				if (ev.data.id === mainReqId) {
 					layout = ev.data.layout;
 					ms = ev.data.ms;
+					layoutGfa = mainReqGfa;
 					computing = false;
+					recomputeKeepsCanvas = false;
 					maybeStartDisco();
 				} else if (ev.data.id === prewarmReqId && prewarmTarget) {
 					prewarmed = { ...prewarmTarget, layout: ev.data.layout, ms: ev.data.ms };
@@ -383,11 +414,17 @@
 		if (pre && pre.gfa === gfa && sameKnobs(pre.knobs, knobs)) {
 			layout = pre.layout;
 			ms = pre.ms;
+			layoutGfa = gfa;
 			computing = false;
+			recomputeKeepsCanvas = false;
 			untrack(() => maybeStartDisco());
 			return;
 		}
+		// Same graph, only the knobs changed → keep the current canvas up while it
+		// re-lays out, so a toggle updates in place instead of blanking the view.
+		recomputeKeepsCanvas = untrack(() => layout != null && layoutGfa === gfa);
 		computing = true;
+		mainReqGfa = gfa;
 		mainReqId = postLayout(graph, layoutOptionsFor(adapted.keptSegments, knobs));
 	});
 
@@ -441,6 +478,57 @@
 				</label>
 			</section>
 
+			<section class="group">
+				<h4 class="group-title">Detail</h4>
+				{#if discoAvailable || showingAllNodes}
+					<label
+						class="switch"
+						title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
+					>
+						<input
+							type="checkbox"
+							checked={!showingAllNodes}
+							disabled={discoLoading}
+							onchange={() => onToggleSimplify?.()}
+						/>
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Simplify</span>
+							<span class="switch-sub">
+								{#if discoLoading}
+									loading…
+								{:else if showingAllNodes}
+									all {allNodesCount.toLocaleString()} nodes shown
+								{:else}
+									small variants collapsed
+								{/if}
+							</span>
+						</span>
+					</label>
+				{:else if allNodesTooMany}
+					<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
+				{/if}
+				<label
+					class="switch"
+					title="A faster, approximate layout for very large graphs. Chosen automatically by node count; toggle to override it for this graph."
+				>
+					<input
+						type="checkbox"
+						checked={effectiveRough}
+						onchange={() => (roughOverride = !effectiveRough)}
+					/>
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Rough layout</span>
+						<span class="switch-sub">
+							{effectiveRough ? 'faster, approximate' : 'full quality'}{roughOverride === null
+								? ' · auto'
+								: ''}
+						</span>
+					</span>
+				</label>
+			</section>
+
 			{#if showDiscoButton}
 				<section class="group">
 					<h4 class="group-title">Walks</h4>
@@ -470,14 +558,9 @@
 			<section class="group status">
 				<div class="stat"><b>{adapted.keptSegments.toLocaleString()}</b> nodes</div>
 				{#if computing}
-					<div class="computing">computing…</div>
+					<div class="computing">{recomputeKeepsCanvas ? 'updating…' : 'computing…'}</div>
 				{:else if layout}
 					<div class="muted">laid out in {ms} ms</div>
-				{/if}
-				{#if roughLayout}
-					<div class="rough" title="Too many nodes for the full-quality layout; positions are approximate">
-						rough layout
-					</div>
 				{/if}
 			</section>
 		</aside>
@@ -497,7 +580,7 @@
 					}}
 				/>
 			{/if}
-			{#if computing}
+			{#if computing && !recomputeKeepsCanvas}
 				<div class="overlay">
 					<span>
 						computing layout…
@@ -679,6 +762,9 @@
 		color: #9aa0aa;
 		font-size: 0.7rem;
 	}
+	.switch-sub.note {
+		color: #b45309;
+	}
 
 	.status {
 		gap: 0.25rem;
@@ -692,9 +778,6 @@
 	}
 	.computing {
 		color: #2563eb;
-	}
-	.rough {
-		color: #b45309;
 	}
 
 	.disco {

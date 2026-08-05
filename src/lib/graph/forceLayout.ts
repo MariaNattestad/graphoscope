@@ -441,15 +441,16 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// job: it *spreads*, since a node's target grows with its BFS depth, where
 	// the clearance force below only ever enforced a minimum and so left
 	// everything stacked in one band against the backbone.
+	// The whole anchor force is what #8 added on top of the original free layout:
+	// the x-pull stacks a bubble into a vertical column over its reference node, and
+	// the y-pull spreads bubbles apart by BFS depth. With `anchorToReference` off
+	// neither runs — the simulation falls back to charge + links + collide + the
+	// baseline push, which is the older, freer relaxation (bubbles drift sideways
+	// and open into more organic shapes, seeded but not pinned).
 	function anchorForce(alpha: number) {
 		for (const node of nodeArray) {
 			if (node.fy != null) continue; // backbone nodes are pinned
-			// The x-pull is what stacks a bubble into a vertical column over its
-			// reference node; without it (anchorToReference off) charge + links open
-			// bubbles out sideways into the older, freer shape. The y-pull always
-			// runs — it's what spreads bubbles by depth rather than piling them into
-			// one band, and turning it off would collapse the layout, not free it.
-			if (opts.anchorToReference && node.anchorX != null) {
+			if (node.anchorX != null) {
 				node.vx = (node.vx ?? 0) + (node.anchorX - node.x) * ANCHOR_X_STRENGTH * alpha;
 			}
 			if (node.targetY != null) {
@@ -468,7 +469,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		)
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
 		.force('collide', forceCollide(8))
-		.force('anchor', anchorForce)
+		.force('anchor', opts.anchorToReference ? anchorForce : null)
 		.force('avoidBaseline', avoidBaselineForce)
 		.stop();
 

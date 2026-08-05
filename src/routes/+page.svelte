@@ -528,27 +528,6 @@
 					{#if queriedGene}<span class="muted small">· {queriedGene} · <code>{locusText}</code></span
 						>{/if}
 				</h2>
-				{#if canShowUnsimplified}
-					<button
-						class="mini-toggle"
-						class:on={showUnsimplified}
-						onclick={toggleUnsimplified}
-						disabled={loadingUnsimplified}
-						title="Load every node, before small-variant collapsing — {unsimplifiedNodes.toLocaleString()} nodes"
-					>
-						{#if loadingUnsimplified}
-							loading…
-						{:else if showUnsimplified}
-							showing all {unsimplifiedNodes.toLocaleString()} nodes — simplify
-						{:else}
-							show all {unsimplifiedNodes.toLocaleString()} nodes
-						{/if}
-					</button>
-				{:else if unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
-					<span class="muted small" title="Download it from the data panel below to inspect elsewhere">
-						{unsimplifiedNodes.toLocaleString()} nodes unsimplified — too many to render
-					</span>
-				{/if}
 			</div>
 			{#if displayGfa}
 				<GraphLayoutView
@@ -560,6 +539,10 @@
 					onRequestDiscoGraph={requestDiscoGraph}
 					{discoPrewarmGfa}
 					{onDiscoLayoutReady}
+					showingAllNodes={showUnsimplified}
+					allNodesCount={unsimplifiedNodes}
+					allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+					onToggleSimplify={toggleUnsimplified}
 				/>
 			{/if}
 		</section>
@@ -813,28 +796,6 @@
 	}
 	.toolbar .go {
 		padding: 0.4rem 1rem;
-	}
-	.mini-toggle {
-		font: inherit;
-		font-size: 0.75rem;
-		padding: 0.2rem 0.6rem;
-		border: 1px solid #d0d0d0;
-		background: #fff;
-		border-radius: 6px;
-		color: #444;
-		cursor: pointer;
-	}
-	.mini-toggle:hover:not(:disabled) {
-		border-color: #999;
-	}
-	.mini-toggle.on {
-		background: #2563eb;
-		border-color: #2563eb;
-		color: #fff;
-	}
-	.mini-toggle:disabled {
-		opacity: 0.6;
-		cursor: default;
 	}
 	.graph-panel {
 		margin-bottom: 0.75rem;
