@@ -145,6 +145,8 @@
 		selectedExit = null;
 		// A new graph clears any pinned haplotype trace (its walk keys won't exist).
 		pinnedKey = null;
+		// …and any node-restricted haplotype filter (node ids won't carry over).
+		nodeFilter = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
 	});
@@ -220,6 +222,9 @@
 		const seen = new Set<string>();
 		for (const w of src.walks) {
 			if (w.steps.length < 2) continue; // a single node isn't a path to trace
+			// When a node filter is active (set from the node inspector), disco cycles
+			// only the walks that actually pass through that node.
+			if (nodeFilter && !walkThroughNode(w.steps, nodeFilter)) continue;
 			const ids = w.steps.map((s) => s.id);
 			const fwd = ids.join('>');
 			let rev = '';
@@ -231,6 +236,14 @@
 		}
 		return out;
 	});
+
+	// Whether a walk's steps pass through a given displayed node. Steps are mapped
+	// through origToDisplayed so a click on a merged u-chain still matches the
+	// original nodes it swallowed (identity on the full /gfa graph).
+	function walkThroughNode(steps: { id: string; orient: '+' | '-' }[], nodeId: string): boolean {
+		for (const s of steps) if (origToDisplayed.get(s.id) === nodeId) return true;
+		return false;
+	}
 
 	// Map every original node id to the displayed segment that represents it — the
 	// segment itself, or the unchop-merged u-chain that swallowed it (`members`).
@@ -286,11 +299,25 @@
 	// disco starts.
 	let pinnedKey = $state<string | null>(null);
 	let haploFilter = $state('');
+	// A displayed node id the haplotype list is restricted to, set from the node
+	// inspector's "haplotypes through this node" button. Independent of `selected`,
+	// so it survives closing the inspector; cleared from the panel or on a new graph.
+	let nodeFilter = $state<string | null>(null);
+	// The named walks passing through the filter node (all of them when no filter).
+	const throughNodeWalks = $derived.by(() =>
+		nodeFilter ? namedWalks.filter((w) => walkThroughNode(w.steps, nodeFilter!)) : namedWalks
+	);
 	const filteredNamedWalks = $derived.by(() => {
+		const base = throughNodeWalks;
 		const q = haploFilter.trim().toLowerCase();
-		if (!q) return namedWalks;
-		return namedWalks.filter((w) => `${w.sample} ${w.seqId} hap ${w.hapIndex}`.toLowerCase().includes(q));
+		if (!q) return base;
+		return base.filter((w) => `${w.sample} ${w.seqId} hap ${w.hapIndex}`.toLowerCase().includes(q));
 	});
+	// Count of named walks through the currently-selected node — drives the label on
+	// the inspector button (only computed while a node is selected and the list is on).
+	const selectedThroughCount = $derived(
+		showHaplotypes && selected ? namedWalks.filter((w) => walkThroughNode(w.steps, selected!)).length : 0
+	);
 	const pinnedWalk = $derived(pinnedKey ? (namedWalks.find((w) => w.key === pinnedKey) ?? null) : null);
 
 	function togglePin(key: string) {
@@ -686,9 +713,26 @@
 				<section class="group haplo">
 					<div class="haplo-head">
 						<span class="switch-label">Haplotypes</span>
-						<span class="switch-sub">{namedWalks.length} named walks · click to trace</span>
+						{#if nodeFilter}
+							<span class="switch-sub"
+								>{throughNodeWalks.length} of {namedWalks.length} through node <code>{nodeFilter}</code
+								></span
+							>
+						{:else}
+							<span class="switch-sub">{namedWalks.length} named walks · click to trace</span>
+						{/if}
 					</div>
-					{#if namedWalks.length > 8}
+					{#if nodeFilter}
+						<button
+							class="haplo-nodefilter"
+							onclick={() => (nodeFilter = null)}
+							title="Show all haplotypes again"
+						>
+							<span>filtered to node <code>{nodeFilter}</code></span>
+							<span class="hnf-x">clear ×</span>
+						</button>
+					{/if}
+					{#if throughNodeWalks.length > 8}
 						<input class="haplo-filter" placeholder="filter…" bind:value={haploFilter} />
 					{/if}
 					<ul class="haplo-list">
@@ -710,7 +754,10 @@
 							</li>
 						{/each}
 						{#if filteredNamedWalks.length === 0}
-							<li class="haplo-empty">no haplotype matches “{haploFilter}”</li>
+							<li class="haplo-empty">
+								{#if haploFilter.trim()}no haplotype matches “{haploFilter}”{:else}no haplotypes through
+									this node{/if}
+							</li>
 						{/if}
 					</ul>
 					{#if pinnedKey}
@@ -881,6 +928,33 @@
 												class="muted">—</span
 											>{/if}</span
 									>
+								{/if}
+							</div>
+						{/if}
+
+						{#if showHaplotypes}
+							<div class="ni-haplo">
+								{#if selectedThroughCount > 0}
+									<button
+										class="ni-haplo-btn"
+										class:active={nodeFilter === selected}
+										onclick={() => (nodeFilter = nodeFilter === selected ? null : selected)}
+									>
+										{#if nodeFilter === selected}
+											✓ showing {selectedThroughCount} haplotype{selectedThroughCount === 1 ? '' : 's'} through
+											this node
+										{:else}
+											Filter haplotypes to the {selectedThroughCount} through this node
+										{/if}
+									</button>
+									<span class="ni-haplo-hint"
+										>disco-walks will then cycle only these {selectedThroughCount} walk{selectedThroughCount ===
+										1
+											? ''
+											: 's'}</span
+									>
+								{:else}
+									<span class="ni-haplo-hint muted">no named haplotype passes through this node</span>
 								{/if}
 							</div>
 						{/if}
@@ -1283,6 +1357,69 @@
 	.haplo-clear:hover {
 		background: #f6f2ff;
 		border-color: #c7b8ec;
+	}
+	/* Active node-filter chip at the top of the haplotype panel. */
+	.haplo-nodefilter {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.4rem;
+		width: 100%;
+		font: inherit;
+		font-size: 0.72rem;
+		cursor: pointer;
+		border: 1px solid #bfdbfe;
+		background: #eff6ff;
+		color: #1d4ed8;
+		padding: 0.25rem 0.45rem;
+		border-radius: 6px;
+		text-align: left;
+	}
+	.haplo-nodefilter:hover {
+		background: #dbeafe;
+	}
+	.haplo-nodefilter code {
+		background: rgba(37, 99, 235, 0.12);
+		padding: 0 3px;
+		border-radius: 3px;
+	}
+	.hnf-x {
+		flex: 0 0 auto;
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	/* Node-inspector "filter haplotypes through this node" control. */
+	.ni-haplo {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.ni-haplo-btn {
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 600;
+		cursor: pointer;
+		border: 1px solid #d1c4f0;
+		background: #f6f2ff;
+		color: #5b21b6;
+		padding: 0.35rem 0.5rem;
+		border-radius: 7px;
+		text-align: left;
+		line-height: 1.3;
+	}
+	.ni-haplo-btn:hover {
+		background: #efe7ff;
+		border-color: #c7b8ec;
+	}
+	.ni-haplo-btn.active {
+		border-color: #7c3aed;
+		background: linear-gradient(90deg, #7c3aed, #db2777);
+		color: #fff;
+	}
+	.ni-haplo-hint {
+		font-size: 0.7rem;
+		line-height: 1.35;
+		color: #9aa0aa;
 	}
 	/* Floating "tracing X" badge over the graph while a haplotype is pinned. */
 	.trace-badge {
