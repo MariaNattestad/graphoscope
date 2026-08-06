@@ -675,194 +675,195 @@
 			</div>
 		</aside>
 
-		<div class="stage">
-			{#if layout}
-				<GraphCanvas
-					{layout}
-					{refCoords}
-					{genes}
-					{discoPath}
-					{discoColor}
-					{lightMode}
-					{nodeTooltip}
-					{showExits}
-					discoActive={disco}
-					onReady={(api) => (canvasApi = api)}
-					onSelectSegment={(id) => {
-						selected = id;
-						if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
-					}}
-					onSelectFeature={(f) => {
-						selectedFeature = f;
-						if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
-					}}
-					onSelectExit={(e) => {
-						selectedExit = e;
-						if (e) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
-					}}
-				/>
-			{/if}
-			{#if computing && !recomputeKeepsCanvas}
-				<div class="overlay">
-					<span>
-						computing layout…
-						{#if showSlowLayoutWarning}
-							<br />
-							<span class="overlay-warning">
-								{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
-								a large or repetitive locus. Still working, not stuck.
-							</span>
-						{/if}
-					</span>
-				</div>
-			{:else if computing}
-				<!-- In-place recompute (a knob change): keep the current graph visible but
-				     still signal that the new layout is being computed. -->
-				<div class="busy-badge">
-					<span class="spinner"></span> computing layout…
-				</div>
-			{/if}
-
-			<!-- Floating node inspector: only present while a node is selected, so it
-			     never reserves layout space (click empty graph or × to dismiss). -->
-			{#if selected}
-				<div class="inspector">
-					<div class="insp-head">
-						<span class="insp-title">
-							{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
+	<div class="stage-col">
+			<div class="stage">
+				{#if layout}
+					<GraphCanvas
+						{layout}
+						{refCoords}
+						{genes}
+						{discoPath}
+						{discoColor}
+						{lightMode}
+						{nodeTooltip}
+						{showExits}
+						discoActive={disco}
+						onReady={(api) => (canvasApi = api)}
+						onSelectSegment={(id) => {
+							selected = id;
+							if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
+						}}
+						onSelectFeature={(f) => {
+							selectedFeature = f;
+							if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
+						}}
+						onSelectExit={(e) => {
+							selectedExit = e;
+							if (e) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
+						}}
+					/>
+				{/if}
+				{#if computing && !recomputeKeepsCanvas}
+					<div class="overlay">
+						<span>
+							computing layout…
+							{#if showSlowLayoutWarning}
+								<br />
+								<span class="overlay-warning">
+									{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
+									a large or repetitive locus. Still working, not stuck.
+								</span>
+							{/if}
 						</span>
-						<button class="insp-close" onclick={() => (selected = null)} aria-label="Close">×</button>
 					</div>
+				{:else if computing}
+					<!-- In-place recompute (a knob change): keep the current graph visible but
+					     still signal that the new layout is being computed. -->
+					<div class="busy-badge">
+						<span class="spinner"></span> computing layout…
+					</div>
+				{/if}
 
-					{#if showLength || showCoords}
-						<div class="ni-fields">
-							{#if showLength}
-								<span class="ni-field"
-									><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
-								>
-							{/if}
-							{#if showCoords}
-								<span class="ni-field"
-									><span class="ni-key">coords</span>
-									{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span
-											class="muted">—</span
-										>{/if}</span
-								>
-							{/if}
+				<!-- Floating node inspector: only present while a node is selected, so it
+				     never reserves layout space (click empty graph or × to dismiss). -->
+				{#if selected}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">
+								{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
+							</span>
+							<button class="insp-close" onclick={() => (selected = null)} aria-label="Close">×</button>
 						</div>
-					{/if}
 
-					{#if showSequence}
-						<div class="ni-seq">
-							<div class="ni-seq-head">
-								<span class="ni-key">sequence</span>
-								{#if selectedSeq}
-									<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
-									<button class="copy" onclick={copySelectedSeq}>copy</button>
+						{#if showLength || showCoords}
+							<div class="ni-fields">
+								{#if showLength}
+									<span class="ni-field"
+										><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
+									>
+								{/if}
+								{#if showCoords}
+									<span class="ni-field"
+										><span class="ni-key">coords</span>
+										{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span
+												class="muted">—</span
+											>{/if}</span
+									>
 								{/if}
 							</div>
-							{#if selectedSeq}
-								<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
-									>{selectedSeq}</textarea
-								>
-							{:else}
-								<span class="muted">no sequence stored for this node</span>
-							{/if}
-						</div>
-					{/if}
+						{/if}
 
-					{#if endpointCounts}
-						{@const total = endpointCounts.starts + endpointCounts.ends}
-						<div class="endpoints">
-							<span class="hint muted">
-								a walk dead-ending here usually indicates a haplotype connects to another locus and
-								got chopped off this subgraph
-							</span>
-							<span class="etag"
-								>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
+						{#if showSequence}
+							<div class="ni-seq">
+								<div class="ni-seq-head">
+									<span class="ni-key">sequence</span>
+									{#if selectedSeq}
+										<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
+										<button class="copy" onclick={copySelectedSeq}>copy</button>
+									{/if}
+								</div>
+								{#if selectedSeq}
+									<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
+										>{selectedSeq}</textarea
+									>
+								{:else}
+									<span class="muted">no sequence stored for this node</span>
+								{/if}
+							</div>
+						{/if}
+
+						{#if endpointCounts}
+							{@const total = endpointCounts.starts + endpointCounts.ends}
+							<div class="endpoints">
+								<span class="hint muted">
+									a walk dead-ending here usually indicates a haplotype connects to another locus and
+									got chopped off this subgraph
+								</span>
+								<span class="etag"
+									>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
+								>
+							</div>
+						{:else if endpoints.length > 0}
+							<div class="endpoints">
+								<span class="hint muted">
+									a walk dead-ending here usually indicates a haplotype connects to another locus and
+									got chopped off this subgraph
+								</span>
+								<div class="erow">
+									<span class="etag"
+										>{endpoints.length} walk{endpoints.length === 1
+											? ' starts/ends'
+											: 's start/end'} here</span
+									>
+									{#each endpoints.slice(0, 6) as e (e.label)}
+										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
+									{/each}
+									{#if endpoints.length > 6}<span class="muted">+{endpoints.length - 6}</span>{/if}
+								</div>
+							</div>
+						{/if}
+					</div>
+				{:else if selectedFeature}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">Gene <code>{selectedFeature.symbol}</code></span>
+							<button class="insp-close" onclick={() => (selectedFeature = null)} aria-label="Close"
+								>×</button
 							>
 						</div>
-					{:else if endpoints.length > 0}
-						<div class="endpoints">
-							<span class="hint muted">
-								a walk dead-ending here usually indicates a haplotype connects to another locus and
-								got chopped off this subgraph
-							</span>
-							<div class="erow">
-								<span class="etag"
-									>{endpoints.length} walk{endpoints.length === 1
-										? ' starts/ends'
-										: 's start/end'} here</span
-								>
-								{#each endpoints.slice(0, 6) as e (e.label)}
-									<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-								{/each}
-								{#if endpoints.length > 6}<span class="muted">+{endpoints.length - 6}</span>{/if}
-							</div>
+						<div class="ni-fields">
+							{#if selectedFeature.name && selectedFeature.name !== selectedFeature.symbol}
+								<span class="ni-field"><span class="ni-key">name</span> {selectedFeature.name}</span>
+							{/if}
+							<span class="ni-field"
+								><span class="ni-key">exon</span> {selectedFeature.exonNum} of
+								{selectedFeature.nExons}</span
+							>
+							<span class="ni-field"
+								><span class="ni-key">coords</span>
+								<span class="coord"
+									>{selectedFeature.contig}:{selectedFeature.start.toLocaleString()}–{selectedFeature.end.toLocaleString()}</span
+								></span
+							>
+							<span class="ni-field"
+								><span class="ni-key">length</span>
+								{(selectedFeature.end - selectedFeature.start).toLocaleString()} bp</span
+							>
 						</div>
-					{/if}
-				</div>
-			{:else if selectedFeature}
-				<div class="inspector">
-					<div class="insp-head">
-						<span class="insp-title">Gene <code>{selectedFeature.symbol}</code></span>
-						<button class="insp-close" onclick={() => (selectedFeature = null)} aria-label="Close"
-							>×</button
-						>
 					</div>
-					<div class="ni-fields">
-						{#if selectedFeature.name && selectedFeature.name !== selectedFeature.symbol}
-							<span class="ni-field"><span class="ni-key">name</span> {selectedFeature.name}</span>
+				{:else if selectedExit}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">Off-locus exit</span>
+							<button class="insp-close" onclick={() => (selectedExit = null)} aria-label="Close"
+								>×</button
+							>
+						</div>
+						<p class="exit-note">
+							A haplotype leaves the queried window here and continues into the graph
+							<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
+							is outside this subgraph — so it's drawn as a dashed cue toward the
+							{selectedExit.side} edge, the direction it exits.
+						</p>
+						{#if onRequestMoreContext}
+							<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
+								Increase context &amp; re-query
+							</button>
+							<span class="exit-hint">
+								Widens the window past the locus so the query follows these haplotypes further — fewer
+								dangling exits, more nodes shown.
+							</span>
 						{/if}
-						<span class="ni-field"
-							><span class="ni-key">exon</span> {selectedFeature.exonNum} of
-							{selectedFeature.nExons}</span
-						>
-						<span class="ni-field"
-							><span class="ni-key">coords</span>
-							<span class="coord"
-								>{selectedFeature.contig}:{selectedFeature.start.toLocaleString()}–{selectedFeature.end.toLocaleString()}</span
-							></span
-						>
-						<span class="ni-field"
-							><span class="ni-key">length</span>
-							{(selectedFeature.end - selectedFeature.start).toLocaleString()} bp</span
-						>
 					</div>
-				</div>
-			{:else if selectedExit}
-				<div class="inspector">
-					<div class="insp-head">
-						<span class="insp-title">Off-locus exit</span>
-						<button class="insp-close" onclick={() => (selectedExit = null)} aria-label="Close"
-							>×</button
-						>
-					</div>
-					<p class="exit-note">
-						A haplotype leaves the queried window here and continues into the graph
-						<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
-						is outside this subgraph — so it's drawn as a dashed cue toward the
-						{selectedExit.side} edge, the direction it exits.
-					</p>
-					{#if onRequestMoreContext}
-						<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
-							Increase context &amp; re-query
-						</button>
-						<span class="exit-hint">
-							Widens the window past the locus so the query follows these haplotypes further — fewer
-							dangling exits, more nodes shown.
-						</span>
-					{/if}
-				</div>
-			{/if}
+				{/if}
+			</div>
+		<div class="foot">
+			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
+			<span class="spacer"></span>
+			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
+			<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 		</div>
 	</div>
-
-	<div class="foot">
-		<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
-		<span class="spacer"></span>
-		<span class="legend"><span class="sw backbone"></span> reference backbone</span>
-		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 	</div>
 </div>
 
@@ -895,8 +896,17 @@
 		flex: 1;
 		min-height: 0;
 	}
+	/* The graph column: canvas above its own footer, so the scroll/zoom hint and
+	   legend sit under the graph rather than spanning under the sidebar too. */
+	.stage-col {
+		flex: 1 1 auto;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
 	.sidebar {
-		flex: 0 0 200px;
+		flex: 0 0 224px;
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;

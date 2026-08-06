@@ -5,6 +5,7 @@
 	import RefArcView from '$lib/RefArcView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
+	import QueryReport from '$lib/graph/QueryReport.svelte';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
 	import { searchGenes, resolveGene, geneToLocus, type GeneEntry } from '$lib/genes';
 	import { GRAPHS, DEFAULT_GENE, MAX_GFA_BYTES, type GraphId } from '$lib/graphs';
@@ -658,19 +659,37 @@
 				</div>
 			</section>
 		{:else}
-			<div class="placeholder">
-				{#if running}
-					<div class="ph-inner"><span class="ph-spinner"></span> Querying <code>{locusText}</code>…</div>
-				{:else if oversized}
-					<div class="ph-inner warn">
-						<b>This region's graph is too tangled to render.</b> Even after simplification it came back
-						at ~{fmtBytes(oversized.bytes)}, far past anything we've seen from a normal locus — try a
-						smaller window or a specific gene.
+			<!-- Before the first graph exists, still show the whole shell (tabs, options
+			     panel with the live report, canvas frame) rather than a bare message. -->
+			<section class="mainview">
+				<nav class="tabs">
+					<button class="tab active">Graph layout</button>
+					<button class="tab" disabled>Variant arcs</button>
+					<button class="tab" disabled>Raw data</button>
+				</nav>
+				<div class="tabbody">
+					<div class="shell">
+						<aside class="shell-side">
+							<QueryReport locusLabel={queriedGene ?? locusText} querying={running} />
+						</aside>
+						<div class="shell-stage">
+							{#if running}
+								<div class="ph-inner light">
+									<span class="ph-spinner"></span> Querying <code>{locusText}</code>…
+								</div>
+							{:else if oversized}
+								<div class="ph-inner warn">
+									<b>This region's graph is too tangled to render.</b> Even after simplification it came
+									back at ~{fmtBytes(oversized.bytes)}, far past anything we've seen from a normal locus —
+									try a smaller window or a specific gene.
+								</div>
+							{:else}
+								<div class="ph-inner light">Open the query menu at the top to choose a locus.</div>
+							{/if}
+						</div>
 					</div>
-				{:else}
-					<div class="ph-inner">Enter a locus or pick an example above to begin.</div>
-				{/if}
-			</div>
+				</div>
+			</section>
 		{/if}
 	</div>
 </div>
@@ -1228,14 +1247,25 @@
 	/* Arrow linking the query controls to their result box on the right. */
 
 	/* ---- placeholder (empty / loading / oversized) ---- */
-	.placeholder {
+	/* Pre-first-query shell: the options panel beside an empty canvas frame. */
+	.shell {
+		display: flex;
+		gap: 0.75rem;
+		height: 100%;
+		padding: 0.6rem;
+	}
+	.shell-side {
+		flex: 0 0 224px;
+	}
+	.shell-stage {
 		flex: 1;
+		min-width: 0;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		background: #fff;
-		border: 1px solid #e3e7ee;
-		border-radius: 10px;
+		border: 1px solid #eee;
+		border-radius: 8px;
+		background: #0b0d12;
 	}
 	.ph-inner {
 		color: #7a828f;
@@ -1248,8 +1278,11 @@
 		text-align: center;
 		line-height: 1.5;
 	}
+	.ph-inner.light {
+		color: #9aa3b2;
+	}
 	.ph-inner.warn {
-		color: #92400e;
+		color: #fbbf6b;
 	}
 	.ph-spinner {
 		flex: 0 0 auto;
