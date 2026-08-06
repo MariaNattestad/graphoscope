@@ -66,6 +66,15 @@
 	// The "This locus" details popover in the top bar (freeing the workspace for
 	// the graph). Closed by clicking its trigger again, outside it, or Escape.
 	let statsOpen = $state(false);
+	// The query-options popover: reference graph + context, tucked behind one
+	// trigger so the search box reads as the only thing you need to get started.
+	let optsOpen = $state(false);
+	// One-line explanation of each hosted graph, shown in that popover so the
+	// choice isn't just two opaque labels.
+	const GRAPH_BLURB: Record<GraphId, string> = {
+		grch38: 'The standard human reference. Coordinates most tools and papers use.',
+		chm13: 'The T2T complete assembly — gapless, including centromeres and other regions GRCh38 leaves out.'
+	};
 	// The graph the widgets see. It arrives already simplified + walk-counted from
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
 	// per-node/edge coverage tags), so the browser never parses the full,
@@ -280,6 +289,7 @@
 
 
 	function selectGraph(id: GraphId) {
+		optsOpen = false;
 		if (id === graphId) return;
 		graphId = id;
 		locusText = DEFAULT_GENE;
@@ -292,6 +302,15 @@
 	function runExampleGene(gene: string) {
 		locusText = gene;
 		run('example');
+	}
+
+	// Widen the context and re-query the current locus. Offered from the off-locus
+	// exit inspector in the graph, where "there's more past the edge" is the whole
+	// point; doubling is a meaningful jump without a fiddly guess (100 → 200 → 400).
+	function requestMoreContext() {
+		contextBp = contextBp > 0 ? contextBp * 2 : 200;
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'increase_context' });
+		run();
 	}
 
 	// ---- Break-glass: view the unsimplified graph -------------------------------
@@ -457,10 +476,12 @@
 		if (e.key === 'Escape') {
 			aboutOpen = false;
 			statsOpen = false;
+			optsOpen = false;
 		}
 	}}
 	onclick={(e) => {
 		if (statsOpen && e.target instanceof Element && !e.target.closest('.locus-stats')) statsOpen = false;
+		if (optsOpen && e.target instanceof Element && !e.target.closest('.query-opts')) optsOpen = false;
 	}}
 />
 
@@ -472,19 +493,69 @@
 				<span class="tagline">HPRC pangenome graphs, queried by locus</span>
 			</div>
 
-			<span class="switch-lbl">Graph</span>
-			<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
-			{#each GRAPHS as g (g.id)}
+			<div class="query-opts">
 				<button
-					class="gbtn"
-					class:active={g.id === graphId}
-					onclick={() => selectGraph(g.id)}
-					disabled={running}
-					title="reference: {g.referenceSample}"
+					class="opts-trigger"
+					class:open={optsOpen}
+					onclick={() => (optsOpen = !optsOpen)}
+					title="Reference graph & context — the query's advanced options"
 				>
-					{g.label}
+					<span class="ot-graph">{graph.label}</span>
+					{#if contextBp !== DEFAULT_CONTEXT_BP}
+						<span class="ot-ctx">±{contextBp.toLocaleString()} bp</span>
+					{/if}
+					<span class="caret" aria-hidden="true">▾</span>
 				</button>
-			{/each}
+				{#if optsOpen}
+					<div class="opts-popover">
+						<div class="opt-block">
+							<span class="opt-head">Reference graph</span>
+							<p class="opt-help">
+								The coordinate system every locus is queried in. Gene names and coordinates resolve
+								against whichever you pick.
+							</p>
+							<div class="opt-graphs" role="group" aria-label="Choose pangenome graph">
+								{#each GRAPHS as g (g.id)}
+									<button
+										class="opt-graph"
+										class:active={g.id === graphId}
+										onclick={() => selectGraph(g.id)}
+										disabled={running}
+									>
+										<b>{g.label}</b>
+										<span class="opt-desc">{GRAPH_BLURB[g.id]}</span>
+									</button>
+								{/each}
+							</div>
+						</div>
+						<div class="opt-block">
+							<span class="opt-head">Context <span class="opt-unit">bp</span></span>
+							<p class="opt-help">
+								How far past your locus the query follows each haplotype into the graph before cutting
+								it off. Higher reveals more of where haplotypes go — fewer dashed “off-locus exits” —
+								but a bigger, denser subgraph. Applied on the next query.
+							</p>
+							<div class="opt-ctx-row">
+								<input
+									class="opt-ctx-input"
+									type="number"
+									min="0"
+									step="50"
+									bind:value={contextBp}
+									onkeydown={(e) => e.key === 'Enter' && (optsOpen = false)}
+								/>
+								<button
+									class="opt-apply"
+									onclick={() => {
+										optsOpen = false;
+										run();
+									}}
+									disabled={running}>Apply &amp; query</button
+								>
+							</div>
+						</div>
+					</div>
+				{/if}
 			</div>
 		</div>
 
@@ -525,20 +596,6 @@
 						</ul>
 					{/if}
 				</div>
-			</label>
-			<label
-				class="context-field"
-				title="How far past the locus (bp) the query follows haplotypes into the graph before cutting them off. Larger reveals more of where they go (fewer dangling dead-ends), at the cost of a bigger, denser subgraph. Applied on the next Query."
-			>
-				<span class="lbl">Context (bp)</span>
-				<input
-					class="ctx-input"
-					type="number"
-					min="0"
-					step="50"
-					bind:value={contextBp}
-					onkeydown={(e) => e.key === 'Enter' && run()}
-				/>
 			</label>
 			<button class="go" onclick={() => run()} disabled={running}>
 				{running ? 'Querying…' : 'Query'}
@@ -683,6 +740,7 @@
 							allNodesCount={unsimplifiedNodes}
 							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
 							onToggleSimplify={toggleUnsimplified}
+							onRequestMoreContext={requestMoreContext}
 							onStatus={(s) => (layoutStatus = s)}
 						/>
 					{:else if view === 'arcs'}
@@ -864,41 +922,159 @@
 		font-size: 0.72rem;
 	}
 
-	.switch-lbl {
-		font-size: 0.7rem;
-		font-weight: 600;
-		color: #98a0ac;
-		margin-right: -0.4rem;
+	/* ---- query options (reference graph + context) behind one trigger ---- */
+	.query-opts {
+		position: relative;
 	}
-	.graph-switch {
+	.opts-trigger {
 		display: inline-flex;
-		gap: 2px;
+		align-items: center;
+		gap: 0.4rem;
 		background: #f0f2f6;
 		border: 1px solid #e3e7ee;
 		border-radius: 8px;
-		padding: 2px;
-	}
-	.gbtn {
-		background: transparent;
-		color: #3a424e;
-		border: none;
-		border-radius: 6px;
-		padding: 0.35rem 0.7rem;
+		padding: 0.3rem 0.55rem;
+		font: inherit;
 		font-size: 0.82rem;
-		font-weight: 600;
+		color: #3a424e;
 		cursor: pointer;
 		white-space: nowrap;
 	}
-	.gbtn:hover:not(:disabled) {
+	.opts-trigger:hover {
 		background: #e6e9ef;
 	}
-	.gbtn.active {
+	.opts-trigger.open {
+		border-color: #2563eb;
+		box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+	}
+	.ot-graph {
+		font-weight: 600;
+	}
+	.ot-ctx {
+		font-size: 0.72rem;
+		color: #6b7280;
+		background: #e3e7ee;
+		border-radius: 5px;
+		padding: 0.05rem 0.3rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.opts-popover {
+		position: absolute;
+		top: calc(100% + 6px);
+		left: 0;
+		z-index: 40;
+		width: 300px;
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 10px;
+		padding: 0.9rem 1rem;
+		box-shadow: 0 12px 32px rgba(16, 24, 40, 0.16);
+		display: flex;
+		flex-direction: column;
+		gap: 1rem;
+	}
+	.opt-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+	.opt-head {
+		font-size: 0.7rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: #6b7280;
+	}
+	.opt-unit {
+		font-weight: 500;
+		letter-spacing: 0;
+		text-transform: none;
+		color: #b0b6c0;
+	}
+	.opt-help {
+		margin: 0;
+		font-size: 0.76rem;
+		line-height: 1.45;
+		color: #6b7280;
+	}
+	.opt-graphs {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.opt-graph {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		text-align: left;
+		font: inherit;
+		background: #f7f8fa;
+		border: 1px solid #e3e7ee;
+		border-radius: 8px;
+		padding: 0.45rem 0.55rem;
+		cursor: pointer;
+	}
+	.opt-graph:hover:not(:disabled) {
+		background: #eef2ff;
+		border-color: #c7d2fe;
+	}
+	.opt-graph.active {
+		background: #eef4ff;
+		border-color: #2563eb;
+		box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
+	}
+	.opt-graph b {
+		font-size: 0.85rem;
+		color: #1f2430;
+	}
+	.opt-graph.active b {
+		color: #1d4ed8;
+	}
+	.opt-desc {
+		font-size: 0.72rem;
+		line-height: 1.35;
+		color: #7a828f;
+	}
+	.opt-graph:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.opt-ctx-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.opt-ctx-input {
+		width: 6rem;
+		font: inherit;
+		font-size: 0.9rem;
+		padding: 0.35rem 0.5rem;
+		border: 1px solid #d3d9e2;
+		border-radius: 7px;
+		background: #fff;
+		color: #1f2430;
+	}
+	.opt-ctx-input:focus {
+		outline: 2px solid #2563eb;
+		outline-offset: -1px;
+		border-color: #2563eb;
+	}
+	.opt-apply {
+		font: inherit;
+		font-size: 0.82rem;
+		font-weight: 600;
+		padding: 0.38rem 0.6rem;
+		border: none;
+		border-radius: 7px;
 		background: #2563eb;
 		color: #fff;
-		box-shadow: 0 1px 2px rgba(37, 99, 235, 0.3);
+		cursor: pointer;
 	}
-	.gbtn:disabled {
-		opacity: 0.6;
+	.opt-apply:hover:not(:disabled) {
+		background: #1d4ed8;
+	}
+	.opt-apply:disabled {
+		background: #9db8ef;
 		cursor: default;
 	}
 
@@ -912,8 +1088,7 @@
 		align-items: flex-end;
 		gap: 0.5rem;
 	}
-	.locus-field,
-	.context-field {
+	.locus-field {
 		display: flex;
 		flex-direction: column;
 		gap: 0.15rem;
@@ -944,9 +1119,6 @@
 	}
 	.locus-input input {
 		width: 15rem;
-	}
-	.ctx-input {
-		width: 5rem;
 	}
 	.go {
 		font: inherit;

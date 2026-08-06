@@ -28,6 +28,7 @@
 		allNodesCount = 0,
 		allNodesTooMany = false,
 		onToggleSimplify,
+		onRequestMoreContext,
 		onStatus
 	}: {
 		gfa: Gfa;
@@ -52,6 +53,9 @@
 		allNodesTooMany?: boolean;
 		/** Toggle between the simplified and full graph (parent owns the fetch/swap). */
 		onToggleSimplify?: () => void;
+		/** Raise the query context and re-run — offered when an off-locus exit is
+		 * selected, to follow chopped haplotypes further past the locus. */
+		onRequestMoreContext?: () => void;
 		/** Report layout status (node count + timing) up so the shell can show it in
 		 * the tab bar rather than the sidebar. */
 		onStatus?: (s: { nodes: number; ms: number; computing: boolean; recomputing: boolean }) => void;
@@ -106,10 +110,20 @@
 	}
 	let selectedFeature = $state<SelectedFeature | null>(null);
 
+	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), shown in
+	// the same inspector. Mutually exclusive with node/feature by the same trick:
+	// every click emits all three, so selecting one nulls the others.
+	interface SelectedExit {
+		segId: string;
+		side: 'left' | 'right';
+	}
+	let selectedExit = $state<SelectedExit | null>(null);
+
 	$effect(() => {
 		gfa;
 		selected = null;
 		selectedFeature = null;
+		selectedExit = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
 	});
@@ -660,6 +674,10 @@
 						selectedFeature = f;
 						if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
 					}}
+					onSelectExit={(e) => {
+						selectedExit = e;
+						if (e) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
+					}}
 				/>
 			{/if}
 			{#if computing && !recomputeKeepsCanvas}
@@ -789,6 +807,30 @@
 							{(selectedFeature.end - selectedFeature.start).toLocaleString()} bp</span
 						>
 					</div>
+				</div>
+			{:else if selectedExit}
+				<div class="inspector">
+					<div class="insp-head">
+						<span class="insp-title">Off-locus exit</span>
+						<button class="insp-close" onclick={() => (selectedExit = null)} aria-label="Close"
+							>×</button
+						>
+					</div>
+					<p class="exit-note">
+						A haplotype leaves the queried window here and continues into the graph
+						<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
+						is outside this subgraph — so it's drawn as a dashed cue toward the
+						{selectedExit.side} edge, the direction it exits.
+					</p>
+					{#if onRequestMoreContext}
+						<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
+							Increase context &amp; re-query
+						</button>
+						<span class="exit-hint">
+							Widens the window past the locus so the query follows these haplotypes further — fewer
+							dangling exits, more nodes shown.
+						</span>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -1246,5 +1288,32 @@
 		padding: 0.05rem 0.4rem;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.74rem;
+	}
+	.exit-note {
+		margin: 0;
+		font-size: 0.8rem;
+		line-height: 1.45;
+		color: #4b5563;
+	}
+	.exit-more {
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		border: 1px solid #bfdbfe;
+		background: #eff6ff;
+		color: #1d4ed8;
+		padding: 0.35rem 0.5rem;
+		border-radius: 7px;
+		text-align: center;
+	}
+	.exit-more:hover {
+		background: #dbeafe;
+		border-color: #93c5fd;
+	}
+	.exit-hint {
+		font-size: 0.72rem;
+		line-height: 1.4;
+		color: #9aa0aa;
 	}
 </style>
