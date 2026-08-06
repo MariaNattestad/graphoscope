@@ -547,88 +547,87 @@
 		</div>
 		</div>
 
-		{#if stats && gfa}
-			<div class="locus-stats">
-				<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
-					<span class="statbtn-main"><b>{queriedGene ?? locusText}</b></span>
-					<span class="statbtn-sub"
-						>{stats.segments.toLocaleString()} nodes · {stats.walks.toLocaleString()} walks</span
-					>
-					<span class="caret" aria-hidden="true">▾</span>
-				</button>
-				{#if statsOpen}
-					<div class="stats-popover">
-						<div class="card-head">
-							<h3 class="card-title">This locus</h3>
-							<span class="card-sub">after simplification · <em>of as-stored</em></span>
-						</div>
-						<div class="statgrid">
-							<div class="srow">
-								<span class="k">nodes</span>
-								<span class="v"
-									><b>{stats.segments.toLocaleString()}</b>
-									<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
-								>
-							</div>
-							<div class="srow">
-								<span class="k">links</span>
-								<span class="v"
-									><b>{stats.links.toLocaleString()}</b>
-									<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
-								>
-							</div>
-							<div class="srow">
-								<span class="k">haplotype walks</span>
-								<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
-							</div>
-							{#if gfa.reduced}
-								<div class="srow">
-									<span class="k">sites collapsed</span>
-									<span class="v"
-										><b>{gfa.reduced.sites.toLocaleString()}</b>
-										<em
-											>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
-											bp</em
-										></span
-									>
-								</div>
-								<div class="srow">
-									<span class="k">chains merged</span>
-									<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
-								</div>
-							{/if}
-							{#if stats.referencePathBp != null}
-								<div class="srow">
-									<span class="k">reference span</span>
-									<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
-								</div>
-							{/if}
-							<div class="srow">
-								<span class="k">sequence shown</span>
-								<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
-							</div>
-							{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
-								<div class="srow">
-									<span class="k">traversal fragments</span>
-									<span class="v"
-										><b>{stats.walkRecords.toLocaleString()}</b>
-										<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
-									>
-								</div>
-							{/if}
-						</div>
-						{#if fetchInfo}
-							<p class="fetchline muted small">
-								Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
-								from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
-							</p>
-						{/if}
-					</div>
-				{/if}
-			</div>
-		{/if}
-
 		<div class="tb-right">
+			{#if stats && gfa}
+				<div class="locus-stats">
+					<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
+						<span class="statbtn-main"><b>{queriedGene ?? locusText}</b></span>
+						<span class="statbtn-sub"
+							>{stats.segments.toLocaleString()} nodes · {stats.walks.toLocaleString()} walks</span
+						>
+						<span class="caret" aria-hidden="true">▾</span>
+					</button>
+					{#if statsOpen}
+						<div class="stats-popover">
+							<div class="card-head">
+								<h3 class="card-title">This locus</h3>
+								<span class="card-sub">after simplification · <em>of as-stored</em></span>
+							</div>
+							<div class="statgrid">
+								<div class="srow">
+									<span class="k">nodes</span>
+									<span class="v"
+										><b>{stats.segments.toLocaleString()}</b>
+										<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
+									>
+								</div>
+								<div class="srow">
+									<span class="k">links</span>
+									<span class="v"
+										><b>{stats.links.toLocaleString()}</b>
+										<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
+									>
+								</div>
+								<div class="srow">
+									<span class="k">haplotype walks</span>
+									<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
+								</div>
+								{#if gfa.reduced}
+									<div class="srow">
+										<span class="k">sites collapsed</span>
+										<span class="v"
+											><b>{gfa.reduced.sites.toLocaleString()}</b>
+											<em
+												>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
+												bp</em
+											></span
+										>
+									</div>
+									<div class="srow">
+										<span class="k">chains merged</span>
+										<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
+									</div>
+								{/if}
+								{#if stats.referencePathBp != null}
+									<div class="srow">
+										<span class="k">reference span</span>
+										<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
+									</div>
+								{/if}
+								<div class="srow">
+									<span class="k">sequence shown</span>
+									<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
+								</div>
+								{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
+									<div class="srow">
+										<span class="k">traversal fragments</span>
+										<span class="v"
+											><b>{stats.walkRecords.toLocaleString()}</b>
+											<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
+										>
+									</div>
+								{/if}
+							</div>
+							{#if fetchInfo}
+								<p class="fetchline muted small">
+									Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
+									from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
+								</p>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
 			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
 			<a class="pg-link" href="{base}/playground">Playground →</a>
 		</div>
@@ -1162,7 +1161,7 @@
 	.stats-popover {
 		position: absolute;
 		top: calc(100% + 6px);
-		left: 0;
+		right: 0;
 		z-index: 40;
 		width: 300px;
 		background: #fff;
