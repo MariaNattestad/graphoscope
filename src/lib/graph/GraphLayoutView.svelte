@@ -27,7 +27,8 @@
 		showingAllNodes = false,
 		allNodesCount = 0,
 		allNodesTooMany = false,
-		onToggleSimplify
+		onToggleSimplify,
+		onStatus
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
@@ -51,6 +52,9 @@
 		allNodesTooMany?: boolean;
 		/** Toggle between the simplified and full graph (parent owns the fetch/swap). */
 		onToggleSimplify?: () => void;
+		/** Report layout status (node count + timing) up so the shell can show it in
+		 * the tab bar rather than the sidebar. */
+		onStatus?: (s: { nodes: number; ms: number; computing: boolean; recomputing: boolean }) => void;
 	} = $props();
 
 	// Keep all non-reference bubbles on one side (above the reference line). This
@@ -446,6 +450,16 @@
 
 	onDestroy(() => worker?.terminate());
 
+	// Surface node count + layout timing to the shell (shown in the tab bar).
+	$effect(() => {
+		onStatus?.({
+			nodes: adapted.keptSegments,
+			ms,
+			computing,
+			recomputing: recomputeKeepsCanvas
+		});
+	});
+
 	const selectedLen = $derived(selected ? (gfa.segments.get(selected)?.length ?? null) : null);
 	const selectedCoord = $derived(selected ? (refCoords.get(selected) ?? null) : null);
 	function fmtCoord(c: RefCoord): string {
@@ -610,15 +624,6 @@
 					</button>
 				{/if}
 			</section>
-
-			<section class="group status">
-				<div class="stat"><b>{adapted.keptSegments.toLocaleString()}</b> nodes</div>
-				{#if computing}
-					<div class="computing">{recomputeKeepsCanvas ? 'updating…' : 'computing…'}</div>
-				{:else if layout}
-					<div class="muted">laid out in {ms} ms</div>
-				{/if}
-			</section>
 		</aside>
 
 		<div class="stage">
@@ -660,6 +665,106 @@
 					<span class="spinner"></span> computing layout…
 				</div>
 			{/if}
+
+			<!-- Floating node inspector: only present while a node is selected, so it
+			     never reserves layout space (click empty graph or × to dismiss). -->
+			{#if selected}
+				<div class="inspector">
+					<div class="insp-head">
+						<span class="insp-title">
+							{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
+						</span>
+						<button class="insp-close" onclick={() => (selected = null)} aria-label="Close">×</button>
+					</div>
+
+					{#if showLength || showCoords}
+						<div class="ni-fields">
+							{#if showLength}
+								<span class="ni-field"
+									><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
+								>
+							{/if}
+							{#if showCoords}
+								<span class="ni-field"
+									><span class="ni-key">coords</span>
+									{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span
+											class="muted">—</span
+										>{/if}</span
+								>
+							{/if}
+						</div>
+					{/if}
+
+					{#if showSequence}
+						<div class="ni-seq">
+							<div class="ni-seq-head">
+								<span class="ni-key">sequence</span>
+								{#if selectedSeq}
+									<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
+									<button class="copy" onclick={copySelectedSeq}>copy</button>
+								{/if}
+							</div>
+							{#if selectedSeq}
+								<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
+									>{selectedSeq}</textarea
+								>
+							{:else}
+								<span class="muted">no sequence stored for this node</span>
+							{/if}
+						</div>
+					{/if}
+
+					{#if endpointCounts}
+						<div class="endpoints">
+							<span class="hint muted">
+								a walk dead-ending here usually indicates a haplotype connects to another locus and
+								got chopped off this subgraph
+							</span>
+							{#if endpointCounts.starts > 0}
+								<span class="etag start"
+									>{endpointCounts.starts.toLocaleString()} walk{endpointCounts.starts === 1
+										? ''
+										: 's'} start here</span
+								>
+							{/if}
+							{#if endpointCounts.ends > 0}
+								<span class="etag end"
+									>{endpointCounts.ends.toLocaleString()} walk{endpointCounts.ends === 1
+										? ''
+										: 's'} end here</span
+								>
+							{/if}
+						</div>
+					{:else if endpoints.length > 0}
+						<div class="endpoints">
+							<span class="hint muted">
+								a walk dead-ending here usually indicates a haplotype connects to another locus and
+								got chopped off this subgraph
+							</span>
+							{#if starts.length > 0}
+								<div class="erow">
+									<span class="etag start"
+										>{starts.length} walk{starts.length === 1 ? '' : 's'} start here</span
+									>
+									{#each starts.slice(0, 6) as e (e.label)}
+										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
+									{/each}
+									{#if starts.length > 6}<span class="muted">+{starts.length - 6}</span>{/if}
+								</div>
+							{/if}
+							{#if ends.length > 0}
+								<div class="erow">
+									<span class="etag end">{ends.length} walk{ends.length === 1 ? '' : 's'} end here</span>
+									{#each ends.slice(0, 6) as e (e.label)}
+										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
+									{/each}
+									{#if ends.length > 6}<span class="muted">+{ends.length - 6}</span>{/if}
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	</div>
 
@@ -669,94 +774,6 @@
 		<span class="legend"><span class="sw backbone"></span> reference backbone (coords shown)</span>
 		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 	</div>
-
-	{#if selected && (showNodeId || showLength || showCoords || showSequence)}
-		<div class="node-info">
-			<div class="ni-fields">
-				{#if showNodeId}
-					<span class="ni-field"><span class="ni-key">node</span> <code>{selected}</code></span>
-				{/if}
-				{#if showLength}
-					<span class="ni-field"
-						><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
-					>
-				{/if}
-				{#if showCoords}
-					<span class="ni-field"
-						><span class="ni-key">coords</span>
-						{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span class="muted">—</span>{/if}</span
-					>
-				{/if}
-			</div>
-			{#if showSequence}
-				<div class="ni-seq">
-					<div class="ni-seq-head">
-						<span class="ni-key">sequence</span>
-						{#if selectedSeq}
-							<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
-							<button class="copy" onclick={copySelectedSeq}>copy</button>
-						{/if}
-					</div>
-					{#if selectedSeq}
-						<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
-							>{selectedSeq}</textarea
-						>
-					{:else}
-						<span class="muted">no sequence stored for this node</span>
-					{/if}
-				</div>
-			{/if}
-		</div>
-	{/if}
-
-	{#if endpointCounts}
-		<div class="endpoints">
-			<span class="hint muted">
-				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) usually
-				indicates a haplotype connects to another locus and got chopped off this subgraph
-			</span>
-			{#if endpointCounts.starts > 0}
-				<div class="erow">
-					<span class="etag start"
-						>{endpointCounts.starts.toLocaleString()} walk{endpointCounts.starts === 1 ? '' : 's'} start
-						here</span
-					>
-				</div>
-			{/if}
-			{#if endpointCounts.ends > 0}
-				<div class="erow">
-					<span class="etag end"
-						>{endpointCounts.ends.toLocaleString()} walk{endpointCounts.ends === 1 ? '' : 's'} end here</span
-					>
-				</div>
-			{/if}
-		</div>
-	{:else if selected && endpoints.length > 0}
-		<div class="endpoints">
-			<span class="hint muted">
-				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) usually
-				indicates a haplotype connects to another locus and got chopped off this subgraph
-			</span>
-			{#if starts.length > 0}
-				<div class="erow">
-					<span class="etag start">{starts.length} walk{starts.length === 1 ? '' : 's'} start here</span>
-					{#each starts.slice(0, 8) as e (e.label)}
-						<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-					{/each}
-					{#if starts.length > 8}<span class="muted">+{starts.length - 8} more</span>{/if}
-				</div>
-			{/if}
-			{#if ends.length > 0}
-				<div class="erow">
-					<span class="etag end">{ends.length} walk{ends.length === 1 ? '' : 's'} end here</span>
-					{#each ends.slice(0, 8) as e (e.label)}
-						<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-					{/each}
-					{#if ends.length > 8}<span class="muted">+{ends.length - 8} more</span>{/if}
-				</div>
-			{/if}
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -926,20 +943,6 @@
 		color: #b45309;
 	}
 
-	.status {
-		gap: 0.25rem;
-		margin-top: auto;
-	}
-	.stat {
-		color: #555;
-	}
-	.stat b {
-		color: #222;
-	}
-	.computing {
-		color: #2563eb;
-	}
-
 	.disco {
 		font: inherit;
 		font-size: 0.82rem;
@@ -1082,15 +1085,53 @@
 		padding: 0 4px;
 		border-radius: 4px;
 	}
-	.node-info {
+	/* Floating node inspector, overlaid on the graph while a node is selected. */
+	.inspector {
+		position: absolute;
+		top: 10px;
+		left: 10px;
+		z-index: 5;
+		width: 258px;
+		max-width: calc(100% - 20px);
+		max-height: calc(100% - 20px);
+		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 0.55rem;
 		font-size: 0.82rem;
-		background: #f8fafc;
-		border: 1px solid #e5e7eb;
-		border-radius: 6px;
+		background: #fff;
+		border: 1px solid #d7dbe2;
+		border-radius: 8px;
 		padding: 0.55rem 0.7rem;
+		box-shadow: 0 10px 28px rgba(16, 24, 40, 0.22);
+	}
+	.insp-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.insp-title {
+		font-weight: 600;
+		color: #1f2430;
+	}
+	.insp-title code {
+		background: #eef1f5;
+		padding: 0 4px;
+		border-radius: 4px;
+	}
+	.insp-close {
+		flex: 0 0 auto;
+		background: none;
+		border: none;
+		font-size: 1.2rem;
+		line-height: 1;
+		color: #98a0ac;
+		cursor: pointer;
+		padding: 0 0.15rem;
+	}
+	.insp-close:hover {
+		color: #1f2430;
 	}
 	.ni-fields {
 		display: flex;

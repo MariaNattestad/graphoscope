@@ -56,6 +56,13 @@
 	// overlay is open. UI-only, so plain local state.
 	let view = $state<'graph' | 'arcs' | 'data'>('graph');
 	let aboutOpen = $state(false);
+	// Layout status reported up by GraphLayoutView, shown in the graph tab bar.
+	let layoutStatus = $state<{
+		nodes: number;
+		ms: number;
+		computing: boolean;
+		recomputing: boolean;
+	} | null>(null);
 	// The "This locus" details popover in the top bar (freeing the workspace for
 	// the graph). Closed by clicking its trigger again, outside it, or Escape.
 	let statsOpen = $state(false);
@@ -650,6 +657,16 @@
 					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
 						>Raw data</button
 					>
+					{#if view === 'graph' && layoutStatus}
+						<span class="layout-status">
+							<b>{layoutStatus.nodes.toLocaleString()}</b> nodes
+							{#if layoutStatus.computing}
+								· <span class="ls-busy">{layoutStatus.recomputing ? 'updating…' : 'computing…'}</span>
+							{:else}
+								· laid out in {layoutStatus.ms} ms
+							{/if}
+						</span>
+					{/if}
 				</nav>
 
 				<div class="tabbody" class:pad={view !== 'graph'}>
@@ -666,6 +683,7 @@
 							allNodesCount={unsimplifiedNodes}
 							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
 							onToggleSimplify={toggleUnsimplified}
+							onStatus={(s) => (layoutStatus = s)}
 						/>
 					{:else if view === 'arcs'}
 						<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
@@ -1106,6 +1124,20 @@
 	.tab.active {
 		color: #2563eb;
 		border-bottom-color: #2563eb;
+	}
+	.layout-status {
+		margin-left: auto;
+		padding: 0 0.6rem;
+		font-size: 0.78rem;
+		color: #98a0ac;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.layout-status b {
+		color: #4b5563;
+	}
+	.ls-busy {
+		color: #2563eb;
 	}
 
 	.tabbody {
