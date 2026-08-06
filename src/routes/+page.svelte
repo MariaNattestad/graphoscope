@@ -612,22 +612,18 @@
 			</button>
 		</div>
 
-		<div class="examples">
-			<span class="ex-lbl">e.g.</span>
-			{#each EXAMPLE_GENES as gene (gene)}
-				<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
-					{gene}
-				</button>
-			{/each}
-		</div>
-
 		{#if stats && gfa}
+			<span class="result-arrow" aria-hidden="true">→</span>
 			<div class="locus-stats">
 				<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
-					<span class="statbtn-main"><b>{queriedGene ?? locusText}</b></span>
-					<span class="statbtn-sub"
-						>{stats.segments.toLocaleString()} nodes · {stats.walks.toLocaleString()} walks</span
-					>
+					<span class="statbtn-face">
+						<span class="statbtn-name">{queriedGene ?? locusText}</span>
+						<span class="statbtn-count"><b>{stats.segments.toLocaleString()}</b> nodes</span>
+						<span class="statbtn-count"><b>{stats.walks.toLocaleString()}</b> walks</span>
+						{#if layoutStatus?.computing}
+							<span class="statbtn-busy">laying out…</span>
+						{/if}
+					</span>
 					<span class="caret" aria-hidden="true">▾</span>
 				</button>
 				{#if statsOpen}
@@ -691,6 +687,12 @@
 								</div>
 							{/if}
 						</div>
+						{#if layoutStatus && !layoutStatus.computing}
+							<p class="fetchline muted small">
+								Laid out {layoutStatus.nodes.toLocaleString()} nodes in {layoutStatus.ms.toLocaleString()}
+								ms
+							</p>
+						{/if}
 						{#if fetchInfo}
 							<p class="fetchline muted small">
 								Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
@@ -701,7 +703,16 @@
 				{/if}
 			</div>
 		{/if}
+
+		<div class="examples">
+			<span class="ex-lbl">e.g.</span>
+			{#each EXAMPLE_GENES as gene (gene)}
+				<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
+					{gene}
+				</button>
+			{/each}
 		</div>
+	</div>
 
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
@@ -720,16 +731,6 @@
 					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
 						>Raw data</button
 					>
-					{#if view === 'graph' && layoutStatus}
-						<span class="layout-status">
-							<b>{layoutStatus.nodes.toLocaleString()}</b> nodes
-							{#if layoutStatus.computing}
-								· <span class="ls-busy">{layoutStatus.recomputing ? 'updating…' : 'computing…'}</span>
-							{:else}
-								· laid out in {layoutStatus.ms} ms
-							{/if}
-						</span>
-					{/if}
 				</nav>
 
 				<div class="tabbody" class:pad={view !== 'graph'}>
@@ -907,9 +908,23 @@
 		justify-content: space-between;
 		gap: 1rem;
 		padding: 0.4rem 1rem;
-		background: #fff;
-		border-bottom: 1px solid #eef1f5;
+		/* A sleek purple strip, nodding to the disco-walks button's gradient. */
+		background: linear-gradient(90deg, #2e1065 0%, #6d28d9 58%, #9333ea 100%);
+		border-bottom: 1px solid #4c1d95;
+		box-shadow: 0 1px 3px rgba(76, 29, 149, 0.25);
 		flex: 0 0 auto;
+	}
+	.appbar .brand h1 {
+		color: #fff;
+	}
+	.appbar .tagline {
+		color: #d6bcfa;
+	}
+	.appbar .link-btn {
+		color: #ede9fe;
+	}
+	.appbar .link-btn:hover {
+		color: #fff;
 	}
 	.querybar {
 		display: flex;
@@ -1151,6 +1166,8 @@
 	}
 
 	.examples {
+		/* Full-width so it always wraps to its own row beneath the query controls. */
+		flex-basis: 100%;
 		display: flex;
 		align-items: center;
 		gap: 0.3rem;
@@ -1302,21 +1319,6 @@
 		color: #2563eb;
 		border-bottom-color: #2563eb;
 	}
-	.layout-status {
-		margin-left: auto;
-		padding: 0 0.6rem;
-		font-size: 0.78rem;
-		color: #98a0ac;
-		font-variant-numeric: tabular-nums;
-		white-space: nowrap;
-	}
-	.layout-status b {
-		color: #4b5563;
-	}
-	.ls-busy {
-		color: #2563eb;
-	}
-
 	.tabbody {
 		flex: 1;
 		min-height: 0;
@@ -1330,38 +1332,64 @@
 		height: 100%;
 	}
 
-	/* ---- "This locus" details: a trigger in the query banner + a dropdown popover ---- */
+	/* Arrow linking the query controls to their result box on the right. */
+	.result-arrow {
+		margin-left: auto;
+		align-self: flex-end;
+		padding-bottom: 0.4rem;
+		font-size: 1.15rem;
+		font-weight: 700;
+		color: #9333ea;
+	}
+
+	/* ---- "This locus" result: a trigger in the query banner + a dropdown popover ---- */
 	.locus-stats {
 		position: relative;
-		margin-left: auto;
 	}
 	.statbtn {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
-		background: #f0f2f6;
+		gap: 0.6rem;
+		background: #fff;
 		border: 1px solid #e3e7ee;
 		border-radius: 8px;
-		padding: 0.3rem 0.6rem;
+		padding: 0.32rem 0.65rem;
 		cursor: pointer;
 		font: inherit;
 		color: #1f2430;
 		white-space: nowrap;
 	}
 	.statbtn:hover {
-		background: #e6e9ef;
+		border-color: #c4b5fd;
+		background: #faf5ff;
 	}
 	.statbtn.open {
-		border-color: #2563eb;
-		box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+		border-color: #9333ea;
+		box-shadow: 0 0 0 1px rgba(147, 51, 234, 0.25);
 	}
-	.statbtn-main {
-		font-size: 0.85rem;
+	.statbtn-face {
+		display: flex;
+		align-items: baseline;
+		gap: 0.55rem;
 	}
-	.statbtn-sub {
-		font-size: 0.76rem;
+	.statbtn-name {
+		font-size: 0.9rem;
+		font-weight: 700;
+		letter-spacing: -0.01em;
+	}
+	.statbtn-count {
+		font-size: 0.78rem;
 		color: #6b7280;
 		font-variant-numeric: tabular-nums;
+	}
+	.statbtn-count b {
+		color: #1f2430;
+		font-weight: 700;
+	}
+	.statbtn-busy {
+		font-size: 0.76rem;
+		color: #9333ea;
+		font-style: italic;
 	}
 	.caret {
 		font-size: 0.6rem;
