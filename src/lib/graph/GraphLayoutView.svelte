@@ -69,6 +69,10 @@
 	// as random dangles. Off for a clean figure.
 	let showExits = $state(true);
 
+	// The two most-used controls (Simplify + disco) stay pinned; everything else
+	// lives behind these sidebar tabs so the panel stays short as options grow.
+	let ctlTab = $state<'layout' | 'nodes' | 'view'>('layout');
+
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
 	let lightMode = $state(false);
@@ -480,117 +484,37 @@
 <div class="wrap">
 	<div class="body">
 		<aside class="sidebar">
-			<section class="group">
-				<h4 class="group-title">Layout</h4>
-				<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
-					<input type="checkbox" bind:checked={bubblesAbove} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">One-sided</span>
-						<span class="switch-sub">bubbles above the line</span>
-					</span>
-				</label>
-				<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
-					<input type="checkbox" bind:checked={anchorToReference} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Anchor to reference</span>
-						<span class="switch-sub">stack bubbles over their ref nodes</span>
-					</span>
-				</label>
-				<label
-					class="switch"
-					title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
-				>
-					<input
-						type="checkbox"
-						checked={!effectiveRough}
-						onchange={() => (roughOverride = !effectiveRough)}
-					/>
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Bendy nodes</span>
-						<span class="switch-sub">
-							{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
-								? ' · auto'
-								: ''}
-						</span>
-					</span>
-				</label>
-				<label
-					class="switch"
-					title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
-				>
-					<input type="checkbox" bind:checked={showExits} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Off-locus exits</span>
-						<span class="switch-sub">cue chopped-off haplotypes</span>
-					</span>
-				</label>
-			</section>
-
-			<section class="group">
-				<h4 class="group-title">View</h4>
-				<label class="switch" title="Render on a white background for figures and publication screenshots">
-					<input type="checkbox" bind:checked={lightMode} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Light mode</span>
-						<span class="switch-sub">white background for figures</span>
-					</span>
-				</label>
-				<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
-					⬇ Export PNG
-				</button>
-			</section>
-
-			<section class="group">
-				<h4 class="group-title">Node info</h4>
-				<span class="group-hint">shown on hover, and under the graph when clicked</span>
-				<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
-				<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
-				<label class="check"><input type="checkbox" bind:checked={showCoords} /> Coordinates</label>
-				<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
-			</section>
-
-			{#if discoAvailable || showingAllNodes || allNodesTooMany}
-				<section class="group">
-					<h4 class="group-title">Detail</h4>
-					{#if discoAvailable || showingAllNodes}
-						<label
-							class="switch"
-							title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
-						>
-							<input
-								type="checkbox"
-								checked={!showingAllNodes}
-								disabled={discoLoading}
-								onchange={() => onToggleSimplify?.()}
-							/>
-							<span class="track"><span class="thumb"></span></span>
-							<span class="switch-text">
-								<span class="switch-label">Simplify</span>
-								<span class="switch-sub">
-									{#if discoLoading}
-										loading…
-									{:else if showingAllNodes}
-										all {allNodesCount.toLocaleString()} nodes shown
-									{:else}
-										small variants collapsed
-									{/if}
-								</span>
+			<!-- Pinned primary controls: the two most-reached-for switches. -->
+			<section class="group primary">
+				{#if discoAvailable || showingAllNodes}
+					<label
+						class="switch"
+						title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
+					>
+						<input
+							type="checkbox"
+							checked={!showingAllNodes}
+							disabled={discoLoading}
+							onchange={() => onToggleSimplify?.()}
+						/>
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Simplify</span>
+							<span class="switch-sub">
+								{#if discoLoading}
+									loading…
+								{:else if showingAllNodes}
+									all {allNodesCount.toLocaleString()} nodes shown
+								{:else}
+									small variants collapsed
+								{/if}
 							</span>
-						</label>
-					{:else if allNodesTooMany}
-						<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
-					{/if}
-				</section>
-			{/if}
-
-			{#if showDiscoButton}
-				<section class="group">
-					<h4 class="group-title">Walks</h4>
+						</span>
+					</label>
+				{:else if allNodesTooMany}
+					<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
+				{/if}
+				{#if showDiscoButton}
 					<button
 						class="disco"
 						class:on={disco}
@@ -608,11 +532,84 @@
 					</button>
 					{#if disco}
 						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} walks</span>
-					{:else}
-						<span class="switch-sub">trace every walk through the graph</span>
 					{/if}
-				</section>
-			{/if}
+				{/if}
+			</section>
+
+			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
+			<nav class="ctl-tabs">
+				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
+				<button class:active={ctlTab === 'nodes'} onclick={() => (ctlTab = 'nodes')}>Nodes</button>
+				<button class:active={ctlTab === 'view'} onclick={() => (ctlTab = 'view')}>View</button>
+			</nav>
+			<section class="group ctl-panel">
+				{#if ctlTab === 'layout'}
+					<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
+						<input type="checkbox" bind:checked={bubblesAbove} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">One-sided</span>
+							<span class="switch-sub">bubbles above the line</span>
+						</span>
+					</label>
+					<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
+						<input type="checkbox" bind:checked={anchorToReference} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Anchor to reference</span>
+							<span class="switch-sub">stack bubbles over their ref nodes</span>
+						</span>
+					</label>
+					<label
+						class="switch"
+						title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
+					>
+						<input
+							type="checkbox"
+							checked={!effectiveRough}
+							onchange={() => (roughOverride = !effectiveRough)}
+						/>
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Bendy nodes</span>
+							<span class="switch-sub">
+								{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
+									? ' · auto'
+									: ''}
+							</span>
+						</span>
+					</label>
+					<label
+						class="switch"
+						title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
+					>
+						<input type="checkbox" bind:checked={showExits} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Off-locus exits</span>
+							<span class="switch-sub">cue chopped-off haplotypes</span>
+						</span>
+					</label>
+				{:else if ctlTab === 'nodes'}
+					<span class="group-hint">shown on hover, and under the graph when clicked</span>
+					<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
+					<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
+					<label class="check"><input type="checkbox" bind:checked={showCoords} /> Coordinates</label>
+					<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
+				{:else if ctlTab === 'view'}
+					<label class="switch" title="Render on a white background for figures and publication screenshots">
+						<input type="checkbox" bind:checked={lightMode} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Light mode</span>
+							<span class="switch-sub">white background for figures</span>
+						</span>
+					</label>
+					<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
+						⬇ Export PNG
+					</button>
+				{/if}
+			</section>
 
 			<section class="group status">
 				<div class="stat"><b>{adapted.keptSegments.toLocaleString()}</b> nodes</div>
@@ -809,18 +806,49 @@
 		border: 1px solid #eee;
 		border-radius: 8px;
 	}
-	.group-title {
-		margin: 0;
-		font-size: 0.66rem;
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
-		color: #9aa0aa;
-	}
 	.group-hint {
 		font-size: 0.7rem;
 		color: #9aa0aa;
 		margin-top: -0.2rem;
+	}
+
+	/* Pinned primary controls sit a touch brighter than the tabbed panel below. */
+	.primary {
+		background: #fff;
+		gap: 0.5rem;
+	}
+
+	/* Sidebar control tabs (Layout / Nodes / View). */
+	.ctl-tabs {
+		display: flex;
+		gap: 2px;
+		background: #eef0f4;
+		border: 1px solid #e6e8ec;
+		border-radius: 8px;
+		padding: 2px;
+	}
+	.ctl-tabs button {
+		flex: 1;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: transparent;
+		border: none;
+		color: #6b7280;
+		padding: 0.3rem 0.2rem;
+		border-radius: 6px;
+	}
+	.ctl-tabs button:hover {
+		color: #333;
+	}
+	.ctl-tabs button.active {
+		background: #fff;
+		color: #2563eb;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1);
+	}
+	.ctl-panel {
+		gap: 0.6rem;
 	}
 
 	/* Compact checkbox rows (node-info field picker). */

@@ -56,6 +56,9 @@
 	// overlay is open. UI-only, so plain local state.
 	let view = $state<'graph' | 'arcs' | 'data'>('graph');
 	let aboutOpen = $state(false);
+	// The "This locus" details popover in the top bar (freeing the workspace for
+	// the graph). Closed by clicking its trigger again, outside it, or Escape.
+	let statsOpen = $state(false);
 	// The graph the widgets see. It arrives already simplified + walk-counted from
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
 	// per-node/edge coverage tags), so the browser never parses the full,
@@ -442,7 +445,17 @@
 	}
 </script>
 
-<svelte:window onkeydown={(e) => aboutOpen && e.key === 'Escape' && (aboutOpen = false)} />
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key === 'Escape') {
+			aboutOpen = false;
+			statsOpen = false;
+		}
+	}}
+	onclick={(e) => {
+		if (statsOpen && e.target instanceof Element && !e.target.closest('.locus-stats')) statsOpen = false;
+	}}
+/>
 
 <div class="app">
 	<header class="topbar">
@@ -534,6 +547,87 @@
 		</div>
 		</div>
 
+		{#if stats && gfa}
+			<div class="locus-stats">
+				<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
+					<span class="statbtn-main"><b>{queriedGene ?? locusText}</b></span>
+					<span class="statbtn-sub"
+						>{stats.segments.toLocaleString()} nodes · {stats.walks.toLocaleString()} walks</span
+					>
+					<span class="caret" aria-hidden="true">▾</span>
+				</button>
+				{#if statsOpen}
+					<div class="stats-popover">
+						<div class="card-head">
+							<h3 class="card-title">This locus</h3>
+							<span class="card-sub">after simplification · <em>of as-stored</em></span>
+						</div>
+						<div class="statgrid">
+							<div class="srow">
+								<span class="k">nodes</span>
+								<span class="v"
+									><b>{stats.segments.toLocaleString()}</b>
+									<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
+								>
+							</div>
+							<div class="srow">
+								<span class="k">links</span>
+								<span class="v"
+									><b>{stats.links.toLocaleString()}</b>
+									<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
+								>
+							</div>
+							<div class="srow">
+								<span class="k">haplotype walks</span>
+								<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
+							</div>
+							{#if gfa.reduced}
+								<div class="srow">
+									<span class="k">sites collapsed</span>
+									<span class="v"
+										><b>{gfa.reduced.sites.toLocaleString()}</b>
+										<em
+											>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
+											bp</em
+										></span
+									>
+								</div>
+								<div class="srow">
+									<span class="k">chains merged</span>
+									<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
+								</div>
+							{/if}
+							{#if stats.referencePathBp != null}
+								<div class="srow">
+									<span class="k">reference span</span>
+									<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
+								</div>
+							{/if}
+							<div class="srow">
+								<span class="k">sequence shown</span>
+								<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
+							</div>
+							{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
+								<div class="srow">
+									<span class="k">traversal fragments</span>
+									<span class="v"
+										><b>{stats.walkRecords.toLocaleString()}</b>
+										<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
+									>
+								</div>
+							{/if}
+						</div>
+						{#if fetchInfo}
+							<p class="fetchline muted small">
+								Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
+								from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
+							</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
 		<div class="tb-right">
 			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
 			<a class="pg-link" href="{base}/playground">Playground →</a>
@@ -557,10 +651,6 @@
 					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
 						>Raw data</button
 					>
-					<span class="spacer"></span>
-					<span class="locus-badge">
-						{#if queriedGene}<b>{queriedGene}</b> · {/if}<code>{locusText}</code>
-					</span>
 				</nav>
 
 				<div class="tabbody" class:pad={view !== 'graph'}>
@@ -585,76 +675,6 @@
 					{/if}
 				</div>
 			</section>
-
-			<aside class="rail">
-				<div class="card">
-					<div class="card-head">
-						<h3 class="card-title">This locus</h3>
-						<span class="card-sub">after simplification · <em>of as-stored</em></span>
-					</div>
-					<div class="statgrid">
-						<div class="srow">
-							<span class="k">nodes</span>
-							<span class="v"
-								><b>{stats.segments.toLocaleString()}</b>
-								<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
-							>
-						</div>
-						<div class="srow">
-							<span class="k">links</span>
-							<span class="v"
-								><b>{stats.links.toLocaleString()}</b>
-								<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
-							>
-						</div>
-						<div class="srow">
-							<span class="k">haplotype walks</span>
-							<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
-						</div>
-						{#if gfa.reduced}
-							<div class="srow">
-								<span class="k">sites collapsed</span>
-								<span class="v"
-									><b>{gfa.reduced.sites.toLocaleString()}</b>
-									<em
-										>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
-										bp</em
-									></span
-								>
-							</div>
-							<div class="srow">
-								<span class="k">chains merged</span>
-								<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
-							</div>
-						{/if}
-						{#if stats.referencePathBp != null}
-							<div class="srow">
-								<span class="k">reference span</span>
-								<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
-							</div>
-						{/if}
-						<div class="srow">
-							<span class="k">sequence shown</span>
-							<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
-						</div>
-						{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
-							<div class="srow">
-								<span class="k">traversal fragments</span>
-								<span class="v"
-									><b>{stats.walkRecords.toLocaleString()}</b>
-									<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
-								>
-							</div>
-						{/if}
-					</div>
-					{#if fetchInfo}
-						<p class="fetchline muted small">
-							Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
-							from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
-						</p>
-					{/if}
-				</div>
-			</aside>
 		{:else}
 			<div class="placeholder">
 				{#if running}
@@ -949,9 +969,6 @@
 		cursor: default;
 	}
 
-	.spacer {
-		flex: 1;
-	}
 	.tb-left {
 		display: flex;
 		align-items: center;
@@ -1092,14 +1109,6 @@
 		color: #2563eb;
 		border-bottom-color: #2563eb;
 	}
-	.locus-badge {
-		font-size: 0.8rem;
-		color: #6b7280;
-		padding-right: 0.4rem;
-	}
-	.locus-badge b {
-		color: #1f2430;
-	}
 
 	.tabbody {
 		flex: 1;
@@ -1114,20 +1123,53 @@
 		height: 100%;
 	}
 
-	/* ---- right rail ---- */
-	.rail {
-		flex: 0 0 300px;
-		display: flex;
-		flex-direction: column;
-		gap: 0.75rem;
-		overflow-y: auto;
+	/* ---- "This locus" details: a trigger in the top bar + a dropdown popover ---- */
+	.locus-stats {
+		position: relative;
 	}
-	.card {
+	.statbtn {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		background: #f0f2f6;
+		border: 1px solid #e3e7ee;
+		border-radius: 8px;
+		padding: 0.3rem 0.6rem;
+		cursor: pointer;
+		font: inherit;
+		color: #1f2430;
+		white-space: nowrap;
+	}
+	.statbtn:hover {
+		background: #e6e9ef;
+	}
+	.statbtn.open {
+		border-color: #2563eb;
+		box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+	}
+	.statbtn-main {
+		font-size: 0.85rem;
+	}
+	.statbtn-sub {
+		font-size: 0.76rem;
+		color: #6b7280;
+		font-variant-numeric: tabular-nums;
+	}
+	.caret {
+		font-size: 0.6rem;
+		color: #98a0ac;
+	}
+	.stats-popover {
+		position: absolute;
+		top: calc(100% + 6px);
+		left: 0;
+		z-index: 40;
+		width: 300px;
 		background: #fff;
 		border: 1px solid #e3e7ee;
 		border-radius: 10px;
 		padding: 0.9rem 1rem;
-		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+		box-shadow: 0 12px 32px rgba(16, 24, 40, 0.16);
 	}
 	.card-head {
 		display: flex;
@@ -1325,9 +1367,6 @@
 	}
 
 	@media (max-width: 860px) {
-		.rail {
-			flex-basis: 240px;
-		}
 		.locus-input input {
 			width: 11rem;
 		}
