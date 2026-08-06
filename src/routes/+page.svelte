@@ -619,7 +619,11 @@
 					<span class="statbtn-face">
 						<span class="statbtn-name">{queriedGene ?? locusText}</span>
 						<span class="statbtn-count"><b>{stats.segments.toLocaleString()}</b> nodes</span>
+						<span class="statbtn-count"><b>{stats.links.toLocaleString()}</b> links</span>
 						<span class="statbtn-count"><b>{stats.walks.toLocaleString()}</b> walks</span>
+						{#if stats.referencePathBp != null}
+							<span class="statbtn-span">{stats.referencePathBp.toLocaleString()} bp</span>
+						{/if}
 						{#if layoutStatus?.computing}
 							<span class="statbtn-busy">laying out…</span>
 						{/if}
@@ -1385,6 +1389,14 @@
 	.statbtn-count b {
 		color: #1f2430;
 		font-weight: 700;
+	}
+	.statbtn-span {
+		font-size: 0.72rem;
+		font-variant-numeric: tabular-nums;
+		color: #7c3aed;
+		background: #f3e8ff;
+		border-radius: 5px;
+		padding: 0.05rem 0.35rem;
 	}
 	.statbtn-busy {
 		font-size: 0.76rem;
