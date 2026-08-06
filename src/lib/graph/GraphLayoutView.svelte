@@ -143,8 +143,8 @@
 		selected = null;
 		selectedFeature = null;
 		selectedExit = null;
-		// A new graph clears any pinned haplotype trace (its walk keys won't exist).
-		pinnedKey = null;
+		// A new graph clears any pinned haplotype traces (its walk keys won't exist).
+		pinnedKeys = [];
 		// …and any node-restricted haplotype filter (node ids won't carry over).
 		nodeFilter = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
@@ -294,10 +294,10 @@
 		}
 		return out;
 	});
-	// The haplotype the user has pinned (clicked in the list): disco spotlights just
-	// this one, paused, instead of cycling. Cleared on a new graph and when cycling
-	// disco starts.
-	let pinnedKey = $state<string | null>(null);
+	// Haplotypes the user has pinned by clicking rows: each is traced at once, in its
+	// own colour, so several can be compared side by side. Cleared on a new graph and
+	// when cycling disco starts.
+	let pinnedKeys = $state<string[]>([]);
 	let haploFilter = $state('');
 	// A displayed node id the haplotype list is restricted to, set from the node
 	// inspector's "haplotypes through this node" button. Independent of `selected`,
@@ -318,22 +318,34 @@
 	const selectedThroughCount = $derived(
 		showHaplotypes && selected ? namedWalks.filter((w) => walkThroughNode(w.steps, selected!)).length : 0
 	);
-	const pinnedWalk = $derived(pinnedKey ? (namedWalks.find((w) => w.key === pinnedKey) ?? null) : null);
+	const pinnedWalks = $derived(
+		pinnedKeys
+			.map((k) => namedWalks.find((w) => w.key === k))
+			.filter((w): w is NamedWalk => w != null)
+	);
 	// Transient hover preview: pointing at a haplotype row traces it without pinning,
 	// so you can skim the list and see each path light up. Takes visual precedence
-	// over a pin/cycle while the pointer is on the row; clears on leave.
+	// over pins/cycle while the pointer is on the row; clears on leave.
 	let hoverKey = $state<string | null>(null);
 	const hoverWalk = $derived(hoverKey ? (namedWalks.find((w) => w.key === hoverKey) ?? null) : null);
-	// The named walk driving the on-graph badge (hover preview wins over a pin).
-	const activeNamedWalk = $derived(hoverWalk ?? pinnedWalk);
+
+	// A stable colour per haplotype, keyed to its position in the list so a given
+	// haplotype keeps its colour whether hovered, pinned, or cycled.
+	function colorForSeed(seed: number): string {
+		return `hsl(${(seed * 47) % 360}, 95%, ${lightMode ? 45 : 62}%)`;
+	}
+	function colorForKey(key: string): string {
+		const i = namedWalks.findIndex((w) => w.key === key);
+		return colorForSeed(i >= 0 ? i : 0);
+	}
 
 	function togglePin(key: string) {
-		if (pinnedKey === key) {
-			pinnedKey = null;
+		if (pinnedKeys.includes(key)) {
+			pinnedKeys = pinnedKeys.filter((k) => k !== key);
 			return;
 		}
-		pinnedKey = key;
-		// Pinning a single haplotype and auto-cycling are mutually exclusive modes.
+		// Add to the comparison set; pins and auto-cycling are mutually exclusive.
+		pinnedKeys = [...pinnedKeys, key];
 		disco = false;
 		pendingDisco = false;
 		trackEvent('widget_interact', { widget: 'graph_layout', action: 'haplotype_trace' });
@@ -348,8 +360,8 @@
 			disco = false;
 			return;
 		}
-		// Cycling and a pinned single-haplotype trace are mutually exclusive.
-		pinnedKey = null;
+		// Cycling and pinned haplotype traces are mutually exclusive.
+		pinnedKeys = [];
 		if (canDiscoNow) {
 			discoIndex = 0;
 			disco = true;
@@ -394,41 +406,50 @@
 		return () => clearInterval(timer);
 	});
 
-	// The walk currently spotlit: a pinned named haplotype takes precedence (a paused
-	// trace); otherwise the auto-cycling disco walk, if running.
+	// The auto-cycling disco walk, if running (one step of the cycle at a time).
 	const currentDiscoWalk = $derived(
 		disco && discoWalks.length > 0 ? discoWalks[discoIndex % discoWalks.length] : null
 	);
-	const activeWalk = $derived<DiscoWalk | null>(hoverWalk ?? pinnedWalk ?? currentDiscoWalk);
-	const traceActive = $derived(disco || pinnedWalk != null || hoverWalk != null);
-	// Project the active walk onto the displayed segments: map each step through
+	// Project a walk onto the displayed segments: map each step through
 	// origToDisplayed, drop steps with no representative here (popped), and collapse
 	// a run of steps that all landed in the same displayed segment into one.
-	const discoPath = $derived.by(() => {
-		const w = activeWalk;
-		if (!w) return null;
-		const out: { id: string; orient: '+' | '-' }[] = [];
+	function projectWalk(steps: { id: string; orient: '+' | '-' }[]): DiscoStep[] | null {
+		const out: DiscoStep[] = [];
 		let lastId: string | null = null;
-		for (const step of w.steps) {
+		for (const step of steps) {
 			const id = origToDisplayed.get(step.id);
 			if (!id || id === lastId) continue;
 			out.push({ id, orient: step.orient });
 			lastId = id;
 		}
 		return out.length > 0 ? out : null;
-	});
-	// Spin the hue with the cycle so each walk gets its own disco color; darker on
-	// the light theme so it reads against white. A pinned haplotype uses a stable hue
-	// keyed to its position in the list, so its trace colour doesn't change.
-	const colorSeed = $derived.by(() => {
-		const key = hoverKey ?? pinnedKey;
-		if (key) {
-			const i = namedWalks.findIndex((w) => w.key === key);
-			return i >= 0 ? i : 0;
+	}
+	interface DiscoStep {
+		id: string;
+		orient: '+' | '-';
+	}
+	// The set of coloured paths the canvas draws. Priority: a hover preview (single),
+	// then the pinned comparison set (each in its own colour), then the cycling walk.
+	const discoPaths = $derived.by((): { path: DiscoStep[]; color: string }[] => {
+		if (hoverWalk) {
+			const p = projectWalk(hoverWalk.steps);
+			return p ? [{ path: p, color: colorForKey(hoverWalk.key) }] : [];
 		}
-		return discoIndex;
+		if (pinnedWalks.length > 0) {
+			const out: { path: DiscoStep[]; color: string }[] = [];
+			for (const w of pinnedWalks) {
+				const p = projectWalk(w.steps);
+				if (p) out.push({ path: p, color: colorForKey(w.key) });
+			}
+			return out;
+		}
+		if (currentDiscoWalk) {
+			const p = projectWalk(currentDiscoWalk.steps);
+			return p ? [{ path: p, color: colorForSeed(discoIndex) }] : [];
+		}
+		return [];
 	});
-	const discoColor = $derived(`hsl(${(colorSeed * 47) % 360}, 95%, ${lightMode ? 45 : 62}%)`);
+	const traceActive = $derived(discoPaths.length > 0);
 	// Show the button whenever disco is either already possible or loadable.
 	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
 
@@ -726,8 +747,10 @@
 								>{throughNodeWalks.length} of {namedWalks.length} through node <code>{nodeFilter}</code
 								></span
 							>
+						{:else if pinnedKeys.length > 0}
+							<span class="switch-sub">{pinnedKeys.length} traced · click more to compare</span>
 						{:else}
-							<span class="switch-sub">{namedWalks.length} named walks · click to trace</span>
+							<span class="switch-sub">{namedWalks.length} named walks · click to trace &amp; compare</span>
 						{/if}
 					</div>
 					{#if nodeFilter}
@@ -745,11 +768,12 @@
 					{/if}
 					<ul class="haplo-list">
 						{#each filteredNamedWalks as w (w.key)}
+							{@const isPinned = pinnedKeys.includes(w.key)}
 							<li>
 								<button
 									class="haplo-item"
-									class:active={w.key === pinnedKey}
-									class:hovering={w.key === hoverKey && w.key !== pinnedKey}
+									class:active={isPinned}
+									class:hovering={w.key === hoverKey && !isPinned}
 									onclick={() => togglePin(w.key)}
 									onmouseenter={() => (hoverKey = w.key)}
 									onmouseleave={() => hoverKey === w.key && (hoverKey = null)}
@@ -757,8 +781,8 @@
 									onblur={() => hoverKey === w.key && (hoverKey = null)}
 									title={`${w.sample} · hap ${w.hapIndex} · ${w.seqId}`}
 								>
-									{#if w.key === pinnedKey || w.key === hoverKey}
-										<span class="hl-dot" style="background:{discoColor}"></span>
+									{#if isPinned || w.key === hoverKey}
+										<span class="hl-dot" style="background:{colorForKey(w.key)}"></span>
 									{/if}
 									<span class="hl-name">{w.sample}</span>
 									<span class="hl-hap">hap {w.hapIndex}</span>
@@ -773,8 +797,10 @@
 							</li>
 						{/if}
 					</ul>
-					{#if pinnedKey}
-						<button class="haplo-clear" onclick={() => (pinnedKey = null)}>clear trace</button>
+					{#if pinnedKeys.length > 0}
+						<button class="haplo-clear" onclick={() => (pinnedKeys = [])}
+							>clear {pinnedKeys.length > 1 ? `all ${pinnedKeys.length} traces` : 'trace'}</button
+						>
 					{/if}
 				</section>
 			{/if}
@@ -863,8 +889,7 @@
 						{layout}
 						{refCoords}
 						{genes}
-						{discoPath}
-						{discoColor}
+						{discoPaths}
 						{lightMode}
 						{nodeTooltip}
 						{showExits}
@@ -905,17 +930,26 @@
 					</div>
 				{/if}
 
-				<!-- Which named haplotype is being traced, over the graph (hover preview
-				     takes precedence over a pin). -->
-				{#if activeNamedWalk}
+				<!-- On-graph legend of the traced haplotypes. A hover preview (single)
+				     supersedes the pinned comparison set. -->
+				{#if hoverWalk}
 					<div class="trace-badge">
-						<span class="tb-dot" style="background:{discoColor}"></span>
-						{hoverWalk ? 'preview' : 'tracing'}
-						<b>{activeNamedWalk.sample} · hap {activeNamedWalk.hapIndex}</b>
-						{#if pinnedKey && !hoverWalk}
-							<button class="tb-close" onclick={() => (pinnedKey = null)} aria-label="Clear trace"
-								>×</button
-							>
+						<span class="tb-dot" style="background:{colorForKey(hoverWalk.key)}"></span>
+						preview <b>{hoverWalk.sample} · hap {hoverWalk.hapIndex}</b>
+					</div>
+				{:else if pinnedWalks.length > 0}
+					<div class="trace-legend">
+						{#each pinnedWalks as w (w.key)}
+							<div class="tl-row">
+								<span class="tb-dot" style="background:{colorForKey(w.key)}"></span>
+								<span class="tl-name">{w.sample} · hap {w.hapIndex}</span>
+								<button class="tb-close" onclick={() => togglePin(w.key)} aria-label="Remove from comparison"
+									>×</button
+								>
+							</div>
+						{/each}
+						{#if pinnedWalks.length > 1}
+							<button class="tl-clear" onclick={() => (pinnedKeys = [])}>clear all</button>
 						{/if}
 					</div>
 				{/if}
@@ -1462,7 +1496,53 @@
 		font-weight: 600;
 		color: #fff;
 	}
+	/* Legend of the pinned comparison set, top-right over the graph. */
+	.trace-legend {
+		position: absolute;
+		top: 10px;
+		right: 10px;
+		z-index: 6;
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		max-width: 260px;
+		max-height: calc(100% - 20px);
+		overflow-y: auto;
+		padding: 0.35rem 0.5rem;
+		border-radius: 10px;
+		background: rgba(11, 13, 18, 0.82);
+		border: 1px solid rgba(154, 163, 178, 0.35);
+		color: #e6e9ef;
+		font-size: 0.75rem;
+	}
+	.tl-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.tl-name {
+		flex: 1;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.tl-clear {
+		align-self: flex-end;
+		margin-top: 0.15rem;
+		background: none;
+		border: none;
+		color: #cbd3e0;
+		font: inherit;
+		font-size: 0.72rem;
+		cursor: pointer;
+		text-decoration: underline;
+		padding: 0;
+	}
+	.tl-clear:hover {
+		color: #fff;
+	}
 	.tb-dot {
+		flex: 0 0 auto;
 		width: 9px;
 		height: 9px;
 		border-radius: 50%;

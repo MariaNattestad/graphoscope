@@ -46,6 +46,7 @@
 		onSelectExit,
 		discoPath = null,
 		discoColor = '#ff3ce0',
+		discoPaths = null,
 		discoActive = false,
 		lightMode = false,
 		showExits = true,
@@ -68,6 +69,9 @@
 		discoPath?: DiscoStep[] | null;
 		/** Cycling glow color for the current disco walk. */
 		discoColor?: string;
+		/** Multiple walks to spotlight at once, each in its own colour (haplotype
+		 * comparison). When set, it supersedes the single `discoPath`/`discoColor`. */
+		discoPaths?: { path: DiscoStep[]; color: string }[] | null;
 		/** When true, dim the base graph so the spotlit walk pops. */
 		discoActive?: boolean;
 		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
@@ -656,7 +660,20 @@
 	// strand thickness (with a bright white core), and the link connectors between
 	// consecutive segments as thin as a normal link.
 	function drawDiscoWalk(ctx: CanvasRenderingContext2D) {
-		if (!discoActive || !discoPath || discoPath.length === 0) return;
+		if (!discoActive) return;
+		// One walk (cycling / single trace) or several (haplotype comparison). A
+		// non-empty `discoPaths` supersedes the single `discoPath`.
+		const toDraw =
+			discoPaths && discoPaths.length > 0
+				? discoPaths
+				: discoPath && discoPath.length > 0
+					? [{ path: discoPath, color: discoColor }]
+					: [];
+		for (const { path, color } of toDraw) drawOnePath(ctx, path, color);
+	}
+
+	function drawOnePath(ctx: CanvasRenderingContext2D, discoPath: DiscoStep[], discoColor: string) {
+		if (discoPath.length === 0) return;
 
 		// Split the walk into per-segment node-strands and the link connectors that
 		// join them, so the two can be stroked at different widths (a single merged
@@ -855,6 +872,7 @@
 		// draw()'s internal reads don't make this effect depend on hover/transform state.
 		discoPath;
 		discoColor;
+		discoPaths;
 		discoActive;
 		theme;
 		showExits;
