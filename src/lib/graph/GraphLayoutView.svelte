@@ -32,11 +32,18 @@
 		onRequestMoreContext,
 		locusLabel = '',
 		fetchInfo = null,
-		querying = false
+		querying = false,
+		showHaplotypes = false
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
 		refKey?: RefKey;
+		/** Show a panel listing the graph's named haplotype walks, where clicking one
+		 * pins the disco spotlight onto that single haplotype's path (a paused disco
+		 * trace). Off by default — the hosted locus browser's walks are anonymised, so
+		 * this is only meaningful for a general GFA with real per-haplotype W-lines
+		 * (the /gfa page). */
+		showHaplotypes?: boolean;
 		/** Label for the query report at the top of the options panel: the gene
 		 * symbol the user searched, or the coordinate string. */
 		locusLabel?: string;
@@ -136,6 +143,8 @@
 		selected = null;
 		selectedFeature = null;
 		selectedExit = null;
+		// A new graph clears any pinned haplotype trace (its walk keys won't exist).
+		pinnedKey = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
 	});
@@ -237,6 +246,65 @@
 
 	const canDiscoNow = $derived(discoWalks.length > 0);
 
+	// --- named haplotypes (the /gfa page) ---------------------------------------
+	// The graph's walks with their real names kept, so a user can pick one and trace
+	// just that haplotype. Unlike `discoWalks` (deduped by trace, anonymous), this
+	// keeps every distinct named W-line so haplotypes sharing a path still each
+	// appear. Only built when `showHaplotypes` is on.
+	interface NamedWalk {
+		key: string;
+		sample: string;
+		hapIndex: number;
+		seqId: string;
+		span: number;
+		steps: { id: string; orient: '+' | '-' }[];
+	}
+	const namedWalks = $derived.by((): NamedWalk[] => {
+		if (!showHaplotypes) return [];
+		const src = walksGfa;
+		if (!src) return [];
+		const out: NamedWalk[] = [];
+		const seen = new Set<string>();
+		for (const w of src.walks) {
+			if (w.steps.length < 2) continue;
+			const key = `${w.sample}#${w.hapIndex}#${w.seqId}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push({
+				key,
+				sample: w.sample,
+				hapIndex: w.hapIndex,
+				seqId: w.seqId,
+				span: w.end - w.start,
+				steps: w.steps
+			});
+		}
+		return out;
+	});
+	// The haplotype the user has pinned (clicked in the list): disco spotlights just
+	// this one, paused, instead of cycling. Cleared on a new graph and when cycling
+	// disco starts.
+	let pinnedKey = $state<string | null>(null);
+	let haploFilter = $state('');
+	const filteredNamedWalks = $derived.by(() => {
+		const q = haploFilter.trim().toLowerCase();
+		if (!q) return namedWalks;
+		return namedWalks.filter((w) => `${w.sample} ${w.seqId} hap ${w.hapIndex}`.toLowerCase().includes(q));
+	});
+	const pinnedWalk = $derived(pinnedKey ? (namedWalks.find((w) => w.key === pinnedKey) ?? null) : null);
+
+	function togglePin(key: string) {
+		if (pinnedKey === key) {
+			pinnedKey = null;
+			return;
+		}
+		pinnedKey = key;
+		// Pinning a single haplotype and auto-cycling are mutually exclusive modes.
+		disco = false;
+		pendingDisco = false;
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'haplotype_trace' });
+	}
+
 	let disco = $state(false);
 	let pendingDisco = $state(false);
 	let discoIndex = $state(0);
@@ -246,6 +314,8 @@
 			disco = false;
 			return;
 		}
+		// Cycling and a pinned single-haplotype trace are mutually exclusive.
+		pinnedKey = null;
 		if (canDiscoNow) {
 			discoIndex = 0;
 			disco = true;
@@ -290,14 +360,18 @@
 		return () => clearInterval(timer);
 	});
 
+	// The walk currently spotlit: a pinned named haplotype takes precedence (a paused
+	// trace); otherwise the auto-cycling disco walk, if running.
 	const currentDiscoWalk = $derived(
 		disco && discoWalks.length > 0 ? discoWalks[discoIndex % discoWalks.length] : null
 	);
-	// Project the current walk onto the displayed segments: map each step through
+	const activeWalk = $derived<DiscoWalk | null>(pinnedWalk ?? currentDiscoWalk);
+	const traceActive = $derived(disco || pinnedWalk != null);
+	// Project the active walk onto the displayed segments: map each step through
 	// origToDisplayed, drop steps with no representative here (popped), and collapse
 	// a run of steps that all landed in the same displayed segment into one.
 	const discoPath = $derived.by(() => {
-		const w = currentDiscoWalk;
+		const w = activeWalk;
 		if (!w) return null;
 		const out: { id: string; orient: '+' | '-' }[] = [];
 		let lastId: string | null = null;
@@ -310,8 +384,16 @@
 		return out.length > 0 ? out : null;
 	});
 	// Spin the hue with the cycle so each walk gets its own disco color; darker on
-	// the light theme so it reads against white.
-	const discoColor = $derived(`hsl(${(discoIndex * 47) % 360}, 95%, ${lightMode ? 45 : 62}%)`);
+	// the light theme so it reads against white. A pinned haplotype uses a stable hue
+	// keyed to its position in the list, so its trace colour doesn't change.
+	const colorSeed = $derived.by(() => {
+		if (pinnedKey) {
+			const i = namedWalks.findIndex((w) => w.key === pinnedKey);
+			return i >= 0 ? i : 0;
+		}
+		return discoIndex;
+	});
+	const discoColor = $derived(`hsl(${(colorSeed * 47) % 360}, 95%, ${lightMode ? 45 : 62}%)`);
 	// Show the button whenever disco is either already possible or loadable.
 	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
 
@@ -598,6 +680,45 @@
 				{/if}
 			</section>
 
+			<!-- Named haplotypes (general GFA / the /gfa page): pick one to trace its
+			     path through the graph — a paused disco spotlight on a single walk. -->
+			{#if showHaplotypes && namedWalks.length > 0}
+				<section class="group haplo">
+					<div class="haplo-head">
+						<span class="switch-label">Haplotypes</span>
+						<span class="switch-sub">{namedWalks.length} named walks · click to trace</span>
+					</div>
+					{#if namedWalks.length > 8}
+						<input class="haplo-filter" placeholder="filter…" bind:value={haploFilter} />
+					{/if}
+					<ul class="haplo-list">
+						{#each filteredNamedWalks as w (w.key)}
+							<li>
+								<button
+									class="haplo-item"
+									class:active={w.key === pinnedKey}
+									onclick={() => togglePin(w.key)}
+									title={`${w.sample} · hap ${w.hapIndex} · ${w.seqId}`}
+								>
+									{#if w.key === pinnedKey}
+										<span class="hl-dot" style="background:{discoColor}"></span>
+									{/if}
+									<span class="hl-name">{w.sample}</span>
+									<span class="hl-hap">hap {w.hapIndex}</span>
+									<span class="hl-span">{w.span > 0 ? `${w.span.toLocaleString()} bp` : ''}</span>
+								</button>
+							</li>
+						{/each}
+						{#if filteredNamedWalks.length === 0}
+							<li class="haplo-empty">no haplotype matches “{haploFilter}”</li>
+						{/if}
+					</ul>
+					{#if pinnedKey}
+						<button class="haplo-clear" onclick={() => (pinnedKey = null)}>clear trace</button>
+					{/if}
+				</section>
+			{/if}
+
 			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
 			<nav class="ctl-tabs">
 				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
@@ -687,7 +808,7 @@
 						{lightMode}
 						{nodeTooltip}
 						{showExits}
-						discoActive={disco}
+						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
 						onSelectSegment={(id) => {
 							selected = id;
@@ -721,6 +842,17 @@
 					     still signal that the new layout is being computed. -->
 					<div class="busy-badge">
 						<span class="spinner"></span> computing layout…
+					</div>
+				{/if}
+
+				<!-- Which named haplotype is being traced, over the graph. -->
+				{#if pinnedWalk}
+					<div class="trace-badge">
+						<span class="tb-dot" style="background:{discoColor}"></span>
+						tracing <b>{pinnedWalk.sample} · hap {pinnedWalk.hapIndex}</b>
+						<button class="tb-close" onclick={() => (pinnedKey = null)} aria-label="Clear trace"
+							>×</button
+						>
 					</div>
 				{/if}
 
@@ -1051,6 +1183,143 @@
 	}
 	.switch-sub.note {
 		color: #b45309;
+	}
+
+	/* Named-haplotype panel (the /gfa page). */
+	.haplo {
+		gap: 0.4rem;
+	}
+	.haplo-head {
+		display: flex;
+		flex-direction: column;
+		line-height: 1.25;
+	}
+	.haplo-filter {
+		font: inherit;
+		font-size: 0.78rem;
+		padding: 0.25rem 0.4rem;
+		border: 1px solid #d3d6dd;
+		border-radius: 6px;
+		background: #fff;
+		color: #333;
+	}
+	.haplo-filter:focus {
+		outline: 2px solid #2563eb;
+		outline-offset: -1px;
+		border-color: #2563eb;
+	}
+	.haplo-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		max-height: 260px;
+		overflow-y: auto;
+	}
+	.haplo-item {
+		display: flex;
+		align-items: baseline;
+		gap: 0.4rem;
+		width: 100%;
+		font: inherit;
+		font-size: 0.78rem;
+		text-align: left;
+		cursor: pointer;
+		background: #fff;
+		border: 1px solid #eee;
+		border-radius: 6px;
+		padding: 0.25rem 0.45rem;
+		color: #333;
+	}
+	.haplo-item:hover {
+		border-color: #c7b8ec;
+		background: #faf7ff;
+	}
+	.haplo-item.active {
+		border-color: #7c3aed;
+		background: #f3ecff;
+		box-shadow: inset 0 0 0 1px rgba(124, 58, 237, 0.35);
+	}
+	.hl-dot {
+		flex: 0 0 auto;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		align-self: center;
+	}
+	.hl-name {
+		font-weight: 600;
+		color: #1f2430;
+	}
+	.hl-hap {
+		color: #9aa0aa;
+		font-size: 0.7rem;
+	}
+	.hl-span {
+		margin-left: auto;
+		color: #9aa0aa;
+		font-size: 0.7rem;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		white-space: nowrap;
+	}
+	.haplo-empty {
+		list-style: none;
+		font-size: 0.74rem;
+		color: #9aa0aa;
+		padding: 0.3rem 0.2rem;
+	}
+	.haplo-clear {
+		font: inherit;
+		font-size: 0.76rem;
+		cursor: pointer;
+		border: 1px solid #d3d6dd;
+		background: #fff;
+		color: #5b21b6;
+		padding: 0.25rem 0.5rem;
+		border-radius: 6px;
+	}
+	.haplo-clear:hover {
+		background: #f6f2ff;
+		border-color: #c7b8ec;
+	}
+	/* Floating "tracing X" badge over the graph while a haplotype is pinned. */
+	.trace-badge {
+		position: absolute;
+		top: 10px;
+		right: 10px;
+		z-index: 6;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.25rem 0.5rem 0.25rem 0.6rem;
+		border-radius: 999px;
+		background: rgba(11, 13, 18, 0.82);
+		border: 1px solid rgba(154, 163, 178, 0.35);
+		color: #e6e9ef;
+		font-size: 0.76rem;
+	}
+	.trace-badge b {
+		font-weight: 600;
+		color: #fff;
+	}
+	.tb-dot {
+		width: 9px;
+		height: 9px;
+		border-radius: 50%;
+	}
+	.tb-close {
+		background: none;
+		border: none;
+		color: #cbd3e0;
+		font-size: 1rem;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0 0.1rem;
+	}
+	.tb-close:hover {
+		color: #fff;
 	}
 
 	.disco {
