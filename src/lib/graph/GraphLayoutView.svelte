@@ -9,12 +9,13 @@
 	import { gfaStats, type Gfa } from '../gfa';
 	import { gfaToGraph } from './gfaToGraph';
 	import type { GfaGraph } from './types';
-	import type { LayoutResult } from './forceLayout';
+	import type { LayoutResult, SimNode, SegmentChain } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
 	import GraphCanvas from './GraphCanvas.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
+	import { computeNonRefNodes, NET_COLORS, NET_LABELS, type NonRefEvent } from '../nonRefNodes';
 	import type { RefKey } from '../genes';
 
 	let {
@@ -89,6 +90,14 @@
 	// as random dangles. Off for a clean figure.
 	let showExits = $state(true);
 
+	// The two optional tracks drawn in bands under the backbone, inside the graph
+	// canvas: variant arcs (just below the reference axis) above the gene track. Both
+	// on by default; each can be switched off from the side panel. The arc threshold
+	// hides variants below a given size (the reduce already pops most small ones).
+	let showVariantArcs = $state(true);
+	let showGeneTrack = $state(true);
+	let arcMinLen = $state(50);
+
 	// The two most-used controls (Simplify + disco) stay pinned; everything else
 	// lives behind these sidebar tabs so the panel stays short as options grow.
 	let ctlTab = $state<'layout' | 'nodes' | 'view'>('layout');
@@ -109,8 +118,8 @@
 	let selected = $state<string | null>(null);
 
 	// A clicked gene/exon in the track below the graph, shown in the same floating
-	// inspector as a node. Node and feature are mutually exclusive: GraphCanvas
-	// emits both callbacks on every click, so selecting one clears the other.
+	// inspector as a node. The click callbacks below are mutually exclusive:
+	// GraphCanvas emits them all on every click, so selecting one clears the rest.
 	interface SelectedFeature {
 		symbol: string;
 		name: string;
@@ -122,9 +131,23 @@
 	}
 	let selectedFeature = $state<SelectedFeature | null>(null);
 
+	// A clicked variant arc, shown in the inspector — the quantitative lens on the
+	// track: what the node replaces, its net length change, and how many walks carry
+	// it. Genomic coords are absolute (already offset by the reference start).
+	interface SelectedArc {
+		id: string;
+		len: number;
+		skipped: number;
+		net: number;
+		cov: number;
+		contig: string;
+		gLeft: number;
+		gRight: number;
+	}
+	let selectedArc = $state<SelectedArc | null>(null);
+
 	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), shown in
-	// the same inspector. Mutually exclusive with node/feature by the same trick:
-	// every click emits all three, so selecting one nulls the others.
+	// the same inspector.
 	interface SelectedExit {
 		segId: string;
 		side: 'left' | 'right';
@@ -135,6 +158,7 @@
 		gfa;
 		selected = null;
 		selectedFeature = null;
+		selectedArc = null;
 		selectedExit = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
@@ -357,14 +381,14 @@
 		return contig && Number.isFinite(start) ? { contig, start, end } : null;
 	});
 
-	// Gene models for the track under the backbone, fetched from UCSC bigBed (same
-	// source as the arc view). Best-effort: on any failure the track just stays
-	// empty and the graph is unaffected.
+	// Gene models for the track under the backbone, fetched from UCSC bigBed. Best-
+	// effort: on any failure (or when the track is switched off) it stays empty and
+	// the graph is unaffected.
 	let genes = $state<Transcript[]>([]);
 	$effect(() => {
 		const win = locusWindow;
 		const key = refKey;
-		if (!win || !key) {
+		if (!win || !key || !showGeneTrack) {
 			genes = [];
 			return;
 		}
@@ -380,6 +404,31 @@
 			cancelled = true;
 		};
 	});
+
+	// Variant arcs for the band just below the reference axis: non-reference nodes
+	// placed on the reference coordinate system, weighted by how many haplotypes
+	// carry each (the "quantitative lens"). Computed straight from the reduced Gfa —
+	// no layout needed — and handed to the canvas as absolute genomic coordinates so
+	// it can position them through the same reference anchors the gene track uses.
+	const arcModel = $derived(showVariantArcs ? computeNonRefNodes(gfa, referenceSample, arcMinLen) : null);
+	interface ArcEvent extends NonRefEvent {
+		contig: string;
+		/** Absolute genomic coordinates of the event's anchors. */
+		gLeft: number;
+		gRight: number;
+	}
+	const arcs = $derived.by((): ArcEvent[] => {
+		const m = arcModel;
+		if (!m) return [];
+		return m.events.map((ev) => ({
+			...ev,
+			contig: m.contig,
+			gLeft: m.genomicStart + ev.leftBp,
+			gRight: m.genomicStart + ev.rightBp
+		}));
+	});
+	const arcTotalNonRef = $derived(arcModel?.totalNonRef ?? 0);
+	const arcMaxLen = $derived(arcModel?.maxLen ?? 1);
 
 	// Past this node count the full-quality layout takes minutes, so switch to a
 	// rough one automatically rather than making people wait. Below it, quality is
@@ -425,6 +474,67 @@
 	// (same graph, just new knobs) — so a toggle updates in place instead of blanking
 	// the view behind the "computing" overlay.
 	let recomputeKeepsCanvas = $state(false);
+
+	// A provisional, backbone-only layout built straight from the reference
+	// coordinates — no force simulation, so it's ready the instant the query returns.
+	// It lays the reference segments out along a horizontal line by cumulative bp,
+	// which is all GraphCanvas needs to draw the reference axis and place the variant
+	// and gene tracks. We show it while the real (bubble-relaxing) layout is still
+	// computing, so on a big, slow locus the quantitative tracks appear right away and
+	// the graph strands fill in when they're ready. The provisional backbone carries
+	// no bubbles or coverage, so the graph area reads as "still forming".
+	const provisionalLayout = $derived.by((): LayoutResult | null => {
+		if (refCoords.size === 0) return null;
+		// Reference segments in genomic order — monotone along the backbone, the same
+		// assumption the coordinate axis relies on.
+		const segs = [...refCoords.entries()].sort((a, b) => a[1].start - b[1].start);
+		const nodesById = new Map<string, SimNode>();
+		const chains: SegmentChain[] = [];
+		const backboneSegIds = new Set<string>();
+		const segmentLengths = new Map<string, number>();
+		let x = 0;
+		for (const [segId, c] of segs) {
+			const len = Math.max(1, c.end - c.start);
+			const startId = `${segId}#s`;
+			const endId = `${segId}#e`;
+			// Two nodes per segment (start + end) so the chain has real on-screen width
+			// for the bp→x mapping; y is a flat baseline the fit will center.
+			const mk = (id: string, posIndex: number, nx: number): SimNode => ({
+				id,
+				segId,
+				posIndex,
+				isChainEnd: true,
+				x: nx,
+				y: 0,
+				componentBaselineY: 0
+			});
+			nodesById.set(startId, mk(startId, 0, x));
+			nodesById.set(endId, mk(endId, 1, x + len));
+			chains.push({ segId, nodeIds: [startId, endId] });
+			backboneSegIds.add(segId);
+			segmentLengths.set(segId, len);
+			x += len;
+		}
+		return {
+			nodesById,
+			chains,
+			structuralLinkPaths: [],
+			backbones: [],
+			backboneSegIds,
+			segmentLengths,
+			pathCoverage: new Map(),
+			maxPathCoverage: 0
+		};
+	});
+
+	// The real layout only stands in for the current graph once it's been built *for*
+	// it — during a fresh query the previous graph's layout is still in `layout`, so
+	// we fall back to the provisional backbone for the new locus rather than showing
+	// the stale graph. `usingProvisional` drives the lighter "still computing" badge
+	// (instead of the full blanking overlay) so the preview stays visible.
+	const layoutIsCurrent = $derived(layout != null && layoutGfa === gfa);
+	const displayLayout = $derived(layoutIsCurrent ? layout : (provisionalLayout ?? layout));
+	const usingProvisional = $derived(displayLayout != null && displayLayout === provisionalLayout);
 
 	// The layout-shaping options the user controls — anything here changes the
 	// computed layout, so it's the worker's options.
@@ -598,6 +708,35 @@
 				{/if}
 			</section>
 
+			<!-- Tracks drawn in bands under the backbone (inside the canvas). Pinned
+			     (not tabbed) since they toggle what's shown rather than shaping the
+			     layout: variant arcs just below the reference axis, genes below them. -->
+			<section class="group tracks-group">
+				<span class="group-title">Tracks under graph</span>
+				<label class="switch" title="Draw the variant arcs on the reference axis: non-reference nodes as arcs (reach ∝ event size), insertions arcing up and deletions down. Click one for its coverage and net length.">
+					<input type="checkbox" bind:checked={showVariantArcs} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Variant arcs</span>
+						<span class="switch-sub">insertions up, deletions down</span>
+					</span>
+				</label>
+				{#if showVariantArcs}
+					<label class="thresh" title="Hide variants smaller than this. The reduce already pops most small ones; the survivors failed a safety check.">
+						hide variants under
+						<input type="number" min="1" max="1000" step="1" bind:value={arcMinLen} /> bp
+					</label>
+				{/if}
+				<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the variant arcs, on the same reference axis.">
+					<input type="checkbox" bind:checked={showGeneTrack} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Genes</span>
+						<span class="switch-sub">annotated transcripts</span>
+					</span>
+				</label>
+			</section>
+
 			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
 			<nav class="ctl-tabs">
 				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
@@ -677,11 +816,16 @@
 
 	<div class="stage-col">
 			<div class="stage">
-				{#if layout}
+				{#if displayLayout}
 					<GraphCanvas
-						{layout}
+						layout={displayLayout}
 						{refCoords}
 						{genes}
+						{arcs}
+						totalNonRef={arcTotalNonRef}
+						maxArcLen={arcMaxLen}
+						showArcs={showVariantArcs}
+						showGenes={showGeneTrack}
 						{discoPath}
 						{discoColor}
 						{lightMode}
@@ -697,13 +841,17 @@
 							selectedFeature = f;
 							if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
 						}}
+						onSelectArc={(a) => {
+							selectedArc = a;
+							if (a) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_arc' });
+						}}
 						onSelectExit={(e) => {
 							selectedExit = e;
 							if (e) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
 						}}
 					/>
 				{/if}
-				{#if computing && !recomputeKeepsCanvas}
+				{#if computing && !recomputeKeepsCanvas && !usingProvisional}
 					<div class="overlay">
 						<span>
 							computing layout…
@@ -716,9 +864,20 @@
 							{/if}
 						</span>
 					</div>
+					<!-- Provisional preview up (the reference axis + tracks are already drawn) or
+					     an in-place recompute: keep the canvas visible and just badge it, rather
+					     than blanking it behind the overlay above. -->
+				{:else if computing && usingProvisional}
+					<div class="busy-badge">
+						<span class="spinner"></span> laying out the graph…
+					</div>
+					{#if showSlowLayoutWarning}
+						<div class="preview-note">
+							{adapted.keptSegments.toLocaleString()} nodes — the graph can take a few minutes on a large or
+							repetitive locus. The variant&nbsp;arcs and gene track below are ready now.
+						</div>
+					{/if}
 				{:else if computing}
-					<!-- In-place recompute (a knob change): keep the current graph visible but
-					     still signal that the new layout is being computed. -->
 					<div class="busy-badge">
 						<span class="spinner"></span> computing layout…
 					</div>
@@ -831,6 +990,47 @@
 							>
 						</div>
 					</div>
+				{:else if selectedArc}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">
+								{#if selectedArc.len === 0 && selectedArc.skipped > 0}Deletion{:else}Variant <code
+										>{selectedArc.id}</code
+									>{/if}
+							</span>
+							<button class="insp-close" onclick={() => (selectedArc = null)} aria-label="Close"
+								>×</button
+							>
+						</div>
+						<div class="ni-fields">
+							<span class="ni-field"
+								><span class="ni-key">coords</span>
+								<span class="coord"
+									>{selectedArc.contig}:{selectedArc.gLeft.toLocaleString()}{selectedArc.gLeft !==
+									selectedArc.gRight
+										? '–' + selectedArc.gRight.toLocaleString()
+										: ''}</span
+								></span
+							>
+							{#if !(selectedArc.len === 0 && selectedArc.skipped > 0)}
+								<span class="ni-field"
+									><span class="ni-key">alt length</span> {selectedArc.len.toLocaleString()} bp</span
+								>
+							{/if}
+							<span class="ni-field"
+								><span class="ni-key">replaces</span> {selectedArc.skipped.toLocaleString()} bp of
+								reference</span
+							>
+							<span class="ni-field"
+								><span class="ni-key">net</span> {selectedArc.net > 0 ? '+' : ''}{selectedArc.net.toLocaleString()}
+								bp</span
+							>
+							<span class="ni-field"
+								><span class="ni-key">walks</span>
+								<b>{selectedArc.cov.toLocaleString()}</b> of {arcTotalNonRef.toLocaleString()} non-reference</span
+							>
+						</div>
+					</div>
 				{:else if selectedExit}
 					<div class="inspector">
 						<div class="insp-head">
@@ -860,6 +1060,14 @@
 		<div class="foot">
 			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 			<span class="spacer"></span>
+			{#if showVariantArcs && arcs.length > 0}
+				<span class="legend arc-legend" title="Variant arcs, colored by how the alternate allele's length compares to the reference it replaces">
+					<span class="al"><span class="asw" style="background:{NET_COLORS.insertion}"></span>{NET_LABELS.insertion}</span>
+					<span class="al"><span class="asw" style="background:{NET_COLORS.expansion}"></span>{NET_LABELS.expansion}</span>
+					<span class="al"><span class="asw" style="background:{NET_COLORS.contraction}"></span>{NET_LABELS.contraction}</span>
+					<span class="al"><span class="asw" style="background:{NET_COLORS.substitution}"></span>{NET_LABELS.substitution}</span>
+				</span>
+			{/if}
 			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
 			<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 		</div>
@@ -937,6 +1145,33 @@
 		font-size: 0.7rem;
 		color: #9aa0aa;
 		margin-top: -0.2rem;
+	}
+	.group-title {
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: #9aa0aa;
+	}
+	.tracks-group {
+		background: #fff;
+	}
+	/* Threshold input under the Variant arcs switch. */
+	.thresh {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.72rem;
+		color: #6b7280;
+		margin-left: 0.15rem;
+	}
+	.thresh input {
+		width: 3.6rem;
+		font: inherit;
+		font-size: 0.75rem;
+		padding: 0.12rem 0.3rem;
+		border: 1px solid #d3d6dd;
+		border-radius: 5px;
 	}
 
 	/* Pinned primary controls sit a touch brighter than the tabbed panel below. */
@@ -1143,6 +1378,24 @@
 		color: #cbd3e0;
 		font-size: 0.76rem;
 	}
+	/* Note under the badge while the provisional preview is up on a slow locus,
+	   explaining that the tracks are ready and the graph is still forming. */
+	.preview-note {
+		position: absolute;
+		top: 42px;
+		left: 50%;
+		transform: translateX(-50%);
+		max-width: min(90%, 30rem);
+		pointer-events: none;
+		text-align: center;
+		padding: 0.3rem 0.7rem;
+		border-radius: 8px;
+		background: rgba(11, 13, 18, 0.7);
+		border: 1px solid rgba(154, 163, 178, 0.25);
+		color: #cbd3e0;
+		font-size: 0.74rem;
+		line-height: 1.45;
+	}
 	.spinner {
 		width: 12px;
 		height: 12px;
@@ -1182,6 +1435,22 @@
 	.sw.grad {
 		width: 60px;
 		background: linear-gradient(90deg, rgb(255, 214, 10), rgb(214, 30, 30));
+	}
+	.arc-legend {
+		gap: 0.55rem;
+		flex-wrap: wrap;
+	}
+	.arc-legend .al {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		color: #6b7280;
+	}
+	.asw {
+		display: inline-block;
+		width: 14px;
+		height: 3px;
+		border-radius: 2px;
 	}
 	.muted {
 		color: #888;

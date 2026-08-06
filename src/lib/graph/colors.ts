@@ -43,6 +43,14 @@ export interface GraphTheme {
 	geneExonCoding: string;
 	geneExonUtr: string;
 	geneLabel: string;
+	// Variant-arc track (drawn in the band just under the reference axis). The four
+	// arc colors follow the net-length class of each event; the baseline is the
+	// local reference line the arcs hang from.
+	arcBaseline: string;
+	arcInsertion: string; // pure insertion (no reference replaced)
+	arcExpansion: string; // net insertion that also replaces some reference
+	arcContraction: string; // net deletion (alt shorter than replaced reference)
+	arcSubstitution: string; // same length
 	discoCore: string; // the bright center line down a spotlit walk
 	discoLightness: number; // HSL lightness % for the cycling disco hue
 	exitCue: string; // dashed "haplotype leaves the locus" cue, solid end
@@ -65,6 +73,13 @@ export const darkTheme: GraphTheme = {
 	geneExonCoding: '#6f9dff',
 	geneExonUtr: 'rgba(111, 157, 255, 0.5)',
 	geneLabel: 'rgba(214, 224, 245, 0.92)',
+	// Brightened from the light-background arc-view palette so the arcs stay legible
+	// on the dark canvas.
+	arcBaseline: 'rgba(210, 220, 240, 0.55)',
+	arcInsertion: '#3b82f6',
+	arcExpansion: '#93c5fd',
+	arcContraction: '#f87171',
+	arcSubstitution: '#9aa3b2',
 	discoCore: 'rgba(255, 255, 255, 0.95)',
 	discoLightness: 62,
 	exitCue: 'rgba(154, 163, 178, 0.7)',
@@ -88,6 +103,12 @@ export const lightTheme: GraphTheme = {
 	geneExonCoding: '#2563eb',
 	geneExonUtr: 'rgba(37, 99, 235, 0.5)',
 	geneLabel: 'rgba(30, 41, 59, 0.95)',
+	// The original arc-view palette, which was designed against a white background.
+	arcBaseline: '#475569',
+	arcInsertion: '#1d4ed8',
+	arcExpansion: '#60a5fa',
+	arcContraction: '#dc2626',
+	arcSubstitution: '#6b7280',
 	discoCore: 'rgba(17, 24, 39, 0.6)',
 	discoLightness: 45,
 	exitCue: 'rgba(100, 116, 139, 0.65)',
