@@ -56,19 +56,13 @@
 	// overlay is open. UI-only, so plain local state.
 	let view = $state<'graph' | 'arcs' | 'data'>('graph');
 	let aboutOpen = $state(false);
-	// Layout status reported up by GraphLayoutView, shown in the graph tab bar.
-	let layoutStatus = $state<{
-		nodes: number;
-		ms: number;
-		computing: boolean;
-		recomputing: boolean;
-	} | null>(null);
-	// The "This locus" details popover in the top bar (freeing the workspace for
-	// the graph). Closed by clicking its trigger again, outside it, or Escape.
-	let statsOpen = $state(false);
-	// The query-options popover: reference graph + context, tucked behind one
-	// trigger so the search box reads as the only thing you need to get started.
-	let optsOpen = $state(false);
+	// The query popover, opened from the header pill: reference graph, locus/gene,
+	// examples, and context — everything needed to compose or change a query. The
+	// graph stays visible behind a dim scrim. Closed by the pill, the scrim, Escape,
+	// or running a query.
+	let queryOpen = $state(false);
+	// The locus field inside that popover, focused + selected when it opens.
+	let queryInputEl = $state<HTMLInputElement | null>(null);
 	// One-line explanation of each hosted graph, shown in that popover so the
 	// choice isn't just two opaque labels.
 	const GRAPH_BLURB: Record<GraphId, string> = {
@@ -200,11 +194,21 @@
 		return () => client?.terminate();
 	});
 
+	// Focus + select the locus field whenever the query popover opens, so the user
+	// can immediately overtype what they're replacing.
+	$effect(() => {
+		if (queryOpen && queryInputEl) {
+			queryInputEl.focus();
+			queryInputEl.select();
+		}
+	});
+
 	async function run(sourceKind: 'coords' | 'gene' | 'example' = 'coords') {
 		error = null;
 		oversized = null;
 		queriedGene = null;
 		showSuggest = false;
+		queryOpen = false;
 		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
 		const raw = locusText.trim();
@@ -289,7 +293,6 @@
 
 
 	function selectGraph(id: GraphId) {
-		optsOpen = false;
 		if (id === graphId) return;
 		graphId = id;
 		locusText = DEFAULT_GENE;
@@ -475,13 +478,8 @@
 	onkeydown={(e) => {
 		if (e.key === 'Escape') {
 			aboutOpen = false;
-			statsOpen = false;
-			optsOpen = false;
+			queryOpen = false;
 		}
-	}}
-	onclick={(e) => {
-		if (statsOpen && e.target instanceof Element && !e.target.closest('.locus-stats')) statsOpen = false;
-		if (optsOpen && e.target instanceof Element && !e.target.closest('.query-opts')) optsOpen = false;
 	}}
 />
 
@@ -491,6 +489,111 @@
 			<h1>Graphoscope</h1>
 			<span class="tagline">HPRC pangenome graphs, queried by locus</span>
 		</div>
+
+		<div class="querypill-wrap">
+			<button
+				class="querypill"
+				class:open={queryOpen}
+				onclick={() => (queryOpen = !queryOpen)}
+				title="Change the query: reference graph, locus/gene, and context"
+			>
+				<span class="qp-ref">{graph.referenceSample}</span>
+				<span class="qp-slash">/</span>
+				<span class="qp-main">{queriedGene ?? locusText}</span>
+				{#if queriedGene}<span class="qp-coord">{locusText}</span>{/if}
+				<span class="qp-caret" aria-hidden="true">▾</span>
+			</button>
+
+			{#if queryOpen}
+				<div class="query-pop" role="dialog" aria-label="Query">
+					<div class="qp-block">
+						<span class="qp-head">Reference graph</span>
+						<div class="qp-graphs" role="group" aria-label="Choose pangenome graph">
+							{#each GRAPHS as g (g.id)}
+								<button
+									class="qp-graph"
+									class:active={g.id === graphId}
+									onclick={() => selectGraph(g.id)}
+									disabled={running}
+								>
+									<b>{g.label}</b>
+									<span class="qp-desc">{GRAPH_BLURB[g.id]}</span>
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<div class="qp-block">
+						<span class="qp-head">Locus or gene</span>
+						<div class="qp-locus-row">
+							<div class="locus-input">
+								<input
+									bind:this={queryInputEl}
+									type="text"
+									bind:value={locusText}
+									oninput={onLocusInput}
+									onkeydown={onLocusKey}
+									onblur={() => setTimeout(() => (showSuggest = false), 120)}
+									onfocus={onLocusInput}
+									placeholder="chr6:31972046-32055647 or HLA-A"
+									autocomplete="off"
+								/>
+								{#if showSuggest && suggestions.length > 0}
+									<ul class="suggest" role="listbox">
+										{#each suggestions as s, i (s.name)}
+											<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+											<li
+												role="option"
+												aria-selected={i === activeSuggest}
+												class:active={i === activeSuggest}
+												onmousedown={(e) => {
+													e.preventDefault();
+													pickGene(s);
+												}}
+											>
+												<b>{s.name}</b>
+												<span class="scoord"
+													>{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span
+												>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+							<button class="go" onclick={() => run()} disabled={running}>
+								{running ? 'Querying…' : 'Query'}
+							</button>
+						</div>
+						<div class="qp-examples">
+							<span class="ex-lbl">e.g.</span>
+							{#each EXAMPLE_GENES as gene (gene)}
+								<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
+									{gene}
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<div class="qp-block">
+						<span class="qp-head">Context <span class="qp-unit">bp</span></span>
+						<div class="qp-ctx-row">
+							<input
+								class="qp-ctx-input"
+								type="number"
+								min="0"
+								step="50"
+								bind:value={contextBp}
+								onkeydown={(e) => e.key === 'Enter' && run()}
+							/>
+							<span class="qp-ctx-help"
+								>bp past the locus each haplotype is followed before it is cut off</span
+							>
+						</div>
+					</div>
+				</div>
+			{/if}
+		</div>
+
 		<div class="appbar-links">
 			<a
 				class="link-btn"
@@ -504,219 +607,10 @@
 		</div>
 	</header>
 
-	<div class="querybar">
-		<div class="query-opts">
-			<button
-				class="opts-trigger"
-				class:open={optsOpen}
-				onclick={() => (optsOpen = !optsOpen)}
-				title="Reference graph & context — the query's advanced options"
-			>
-				<span class="ot-graph">{graph.label}</span>
-				{#if contextBp !== DEFAULT_CONTEXT_BP}
-					<span class="ot-ctx">±{contextBp.toLocaleString()} bp</span>
-				{/if}
-				<span class="caret" aria-hidden="true">▾</span>
-			</button>
-			{#if optsOpen}
-				<div class="opts-popover">
-					<div class="opt-block">
-						<span class="opt-head">Reference graph</span>
-						<p class="opt-help">
-							The coordinate system every locus is queried in. Gene names and coordinates resolve
-							against whichever you pick.
-						</p>
-						<div class="opt-graphs" role="group" aria-label="Choose pangenome graph">
-							{#each GRAPHS as g (g.id)}
-								<button
-									class="opt-graph"
-									class:active={g.id === graphId}
-									onclick={() => selectGraph(g.id)}
-									disabled={running}
-								>
-									<b>{g.label}</b>
-									<span class="opt-desc">{GRAPH_BLURB[g.id]}</span>
-								</button>
-							{/each}
-						</div>
-					</div>
-					<div class="opt-block">
-						<span class="opt-head">Context <span class="opt-unit">bp</span></span>
-						<p class="opt-help">
-							How far past your locus the query follows each haplotype into the graph before cutting
-							it off. Higher reveals more of where haplotypes go — fewer dashed “off-locus exits” —
-							but a bigger, denser subgraph. Applied on the next query.
-						</p>
-						<div class="opt-ctx-row">
-							<input
-								class="opt-ctx-input"
-								type="number"
-								min="0"
-								step="50"
-								bind:value={contextBp}
-								onkeydown={(e) => e.key === 'Enter' && (optsOpen = false)}
-							/>
-							<button
-								class="opt-apply"
-								onclick={() => {
-									optsOpen = false;
-									run();
-								}}
-								disabled={running}>Apply &amp; query</button
-							>
-						</div>
-					</div>
-				</div>
-			{/if}
-		</div>
-
-		<div class="query">
-			<label class="locus-field">
-				<span class="lbl">Locus or gene</span>
-				<div class="locus-input">
-					<input
-						type="text"
-						bind:value={locusText}
-						oninput={onLocusInput}
-						onkeydown={onLocusKey}
-						onblur={() => setTimeout(() => (showSuggest = false), 120)}
-						onfocus={onLocusInput}
-						placeholder="chr6:31972046-32055647 or HLA-A"
-						autocomplete="off"
-					/>
-					{#if showSuggest && suggestions.length > 0}
-						<ul class="suggest" role="listbox">
-							{#each suggestions as s, i (s.name)}
-								<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-								<li
-									role="option"
-									aria-selected={i === activeSuggest}
-									class:active={i === activeSuggest}
-									onmousedown={(e) => {
-										e.preventDefault();
-										pickGene(s);
-									}}
-								>
-									<b>{s.name}</b>
-									<span class="scoord"
-										>{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span
-									>
-								</li>
-							{/each}
-						</ul>
-					{/if}
-				</div>
-			</label>
-			<button class="go" onclick={() => run()} disabled={running}>
-				{running ? 'Querying…' : 'Query'}
-			</button>
-		</div>
-
-		{#if stats && gfa}
-			<span class="result-arrow" aria-hidden="true">→</span>
-			<div class="locus-stats">
-				<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
-					<span class="statbtn-face">
-						<span class="statbtn-name">{queriedGene ?? locusText}</span>
-						<span class="statbtn-count"><b>{stats.segments.toLocaleString()}</b> nodes</span>
-						<span class="statbtn-count"><b>{stats.links.toLocaleString()}</b> links</span>
-						<span class="statbtn-count"><b>{stats.walks.toLocaleString()}</b> walks</span>
-						{#if stats.referencePathBp != null}
-							<span class="statbtn-span">{stats.referencePathBp.toLocaleString()} bp</span>
-						{/if}
-						{#if layoutStatus?.computing}
-							<span class="statbtn-busy">laying out…</span>
-						{/if}
-					</span>
-					<span class="caret" aria-hidden="true">▾</span>
-				</button>
-				{#if statsOpen}
-					<div class="stats-popover">
-						<div class="card-head">
-							<h3 class="card-title">This locus</h3>
-							<span class="card-sub">after simplification · <em>of as-stored</em></span>
-						</div>
-						<div class="statgrid">
-							<div class="srow">
-								<span class="k">nodes</span>
-								<span class="v"
-									><b>{stats.segments.toLocaleString()}</b>
-									<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
-								>
-							</div>
-							<div class="srow">
-								<span class="k">links</span>
-								<span class="v"
-									><b>{stats.links.toLocaleString()}</b>
-									<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
-								>
-							</div>
-							<div class="srow">
-								<span class="k">haplotype walks</span>
-								<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
-							</div>
-							{#if gfa.reduced}
-								<div class="srow">
-									<span class="k">sites collapsed</span>
-									<span class="v"
-										><b>{gfa.reduced.sites.toLocaleString()}</b>
-										<em
-											>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
-											bp</em
-										></span
-									>
-								</div>
-								<div class="srow">
-									<span class="k">chains merged</span>
-									<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
-								</div>
-							{/if}
-							{#if stats.referencePathBp != null}
-								<div class="srow">
-									<span class="k">reference span</span>
-									<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
-								</div>
-							{/if}
-							<div class="srow">
-								<span class="k">sequence shown</span>
-								<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
-							</div>
-							{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
-								<div class="srow">
-									<span class="k">traversal fragments</span>
-									<span class="v"
-										><b>{stats.walkRecords.toLocaleString()}</b>
-										<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
-									>
-								</div>
-							{/if}
-						</div>
-						{#if layoutStatus && !layoutStatus.computing}
-							<p class="fetchline muted small">
-								Laid out {layoutStatus.nodes.toLocaleString()} nodes in {layoutStatus.ms.toLocaleString()}
-								ms
-							</p>
-						{/if}
-						{#if fetchInfo}
-							<p class="fetchline muted small">
-								Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
-								from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
-							</p>
-						{/if}
-					</div>
-				{/if}
-			</div>
-		{/if}
-
-		<div class="examples">
-			<span class="ex-lbl">e.g.</span>
-			{#each EXAMPLE_GENES as gene (gene)}
-				<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
-					{gene}
-				</button>
-			{/each}
-		</div>
-	</div>
+	{#if queryOpen}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="query-scrim" role="presentation" onclick={() => (queryOpen = false)}></div>
+	{/if}
 
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
@@ -752,7 +646,9 @@
 							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
 							onToggleSimplify={toggleUnsimplified}
 							onRequestMoreContext={requestMoreContext}
-							onStatus={(s) => (layoutStatus = s)}
+							locusLabel={queriedGene ?? locusText}
+							{fetchInfo}
+							querying={running}
 						/>
 					{:else if view === 'arcs'}
 						<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
@@ -907,6 +803,10 @@
 
 	/* ---- top bar: a thin identity strip over a distinct query banner ---- */
 	.appbar {
+		/* Above the query scrim, so the strip (and its popover) stay bright while
+		   the rest of the page dims behind them. */
+		position: relative;
+		z-index: 100;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -930,17 +830,6 @@
 	.appbar .link-btn:hover {
 		color: #fff;
 	}
-	.querybar {
-		display: flex;
-		align-items: flex-end;
-		gap: 0.7rem 1.1rem;
-		flex-wrap: wrap;
-		padding: 0.6rem 1rem;
-		background: #f9fafc;
-		border-bottom: 1px solid #e3e7ee;
-		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-		flex: 0 0 auto;
-	}
 	.brand {
 		display: flex;
 		flex-direction: column;
@@ -957,87 +846,114 @@
 		font-size: 0.72rem;
 	}
 
-	/* ---- query options (reference graph + context) behind one trigger ---- */
-	.query-opts {
+	/* ---- query pill in the header + its popover ---- */
+	.querypill-wrap {
 		position: relative;
+		display: flex;
+		justify-content: center;
 	}
-	.opts-trigger {
+	.querypill {
 		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		background: #f0f2f6;
-		border: 1px solid #e3e7ee;
-		border-radius: 8px;
-		padding: 0.3rem 0.55rem;
+		align-items: baseline;
+		gap: 0.45rem;
+		max-width: 46vw;
+		padding: 0.3rem 0.85rem;
+		border-radius: 999px;
+		border: 1px solid rgba(255, 255, 255, 0.25);
+		background: rgba(255, 255, 255, 0.12);
+		color: #fff;
 		font: inherit;
-		font-size: 0.82rem;
-		color: #3a424e;
 		cursor: pointer;
 		white-space: nowrap;
+		overflow: hidden;
 	}
-	.opts-trigger:hover {
-		background: #e6e9ef;
+	.querypill:hover {
+		background: rgba(255, 255, 255, 0.2);
+		border-color: rgba(255, 255, 255, 0.4);
 	}
-	.opts-trigger.open {
-		border-color: #2563eb;
-		box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.25);
+	.querypill.open {
+		background: #fff;
+		border-color: #fff;
+		color: #2e1065;
 	}
-	.ot-graph {
-		font-weight: 600;
+	.qp-ref {
+		font-size: 0.82rem;
+		opacity: 0.75;
 	}
-	.ot-ctx {
+	.qp-slash {
+		opacity: 0.5;
+	}
+	.qp-main {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.85rem;
+		font-weight: 700;
+	}
+	.qp-coord {
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.72rem;
-		color: #6b7280;
-		background: #e3e7ee;
-		border-radius: 5px;
-		padding: 0.05rem 0.3rem;
-		font-variant-numeric: tabular-nums;
+		opacity: 0.65;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
-	.opts-popover {
+	.qp-caret {
+		font-size: 0.6rem;
+		opacity: 0.8;
+	}
+
+	/* Dim scrim over the page — under the header (z 100), so the strip and its
+	   popover stay bright while everything below dims. */
+	.query-scrim {
+		position: fixed;
+		inset: 0;
+		z-index: 90;
+		background: rgba(16, 24, 40, 0.4);
+	}
+	.query-pop {
 		position: absolute;
-		top: calc(100% + 6px);
-		left: 0;
-		z-index: 40;
-		width: 300px;
+		top: calc(100% + 10px);
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 101;
+		width: min(540px, 90vw);
+		display: flex;
+		flex-direction: column;
+		gap: 0.9rem;
 		background: #fff;
 		border: 1px solid #e3e7ee;
-		border-radius: 10px;
-		padding: 0.9rem 1rem;
-		box-shadow: 0 12px 32px rgba(16, 24, 40, 0.16);
+		border-radius: 12px;
+		padding: 1rem 1.1rem;
+		box-shadow: 0 18px 44px rgba(16, 24, 40, 0.28);
+		color: #1f2430;
+		text-align: left;
+	}
+	.qp-block {
 		display: flex;
 		flex-direction: column;
-		gap: 1rem;
+		gap: 0.5rem;
 	}
-	.opt-block {
-		display: flex;
-		flex-direction: column;
-		gap: 0.45rem;
+	.qp-block + .qp-block {
+		border-top: 1px solid #f0f2f5;
+		padding-top: 0.9rem;
 	}
-	.opt-head {
-		font-size: 0.7rem;
+	.qp-head {
+		font-size: 0.68rem;
 		font-weight: 700;
 		letter-spacing: 0.05em;
 		text-transform: uppercase;
 		color: #6b7280;
 	}
-	.opt-unit {
+	.qp-unit {
 		font-weight: 500;
 		letter-spacing: 0;
 		text-transform: none;
 		color: #b0b6c0;
 	}
-	.opt-help {
-		margin: 0;
-		font-size: 0.76rem;
-		line-height: 1.45;
-		color: #6b7280;
+	.qp-graphs {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
 	}
-	.opt-graphs {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
-	.opt-graph {
+	.qp-graph {
 		display: flex;
 		flex-direction: column;
 		gap: 0.15rem;
@@ -1045,110 +961,91 @@
 		font: inherit;
 		background: #f7f8fa;
 		border: 1px solid #e3e7ee;
-		border-radius: 8px;
-		padding: 0.45rem 0.55rem;
+		border-radius: 9px;
+		padding: 0.5rem 0.6rem;
 		cursor: pointer;
 	}
-	.opt-graph:hover:not(:disabled) {
+	.qp-graph:hover:not(:disabled) {
 		background: #eef2ff;
 		border-color: #c7d2fe;
 	}
-	.opt-graph.active {
-		background: #eef4ff;
-		border-color: #2563eb;
-		box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.35);
+	.qp-graph.active {
+		background: #f5f0ff;
+		border-color: #9333ea;
+		box-shadow: inset 0 0 0 1px rgba(147, 51, 234, 0.35);
 	}
-	.opt-graph b {
+	.qp-graph b {
 		font-size: 0.85rem;
 		color: #1f2430;
 	}
-	.opt-graph.active b {
-		color: #1d4ed8;
+	.qp-graph.active b {
+		color: #6d28d9;
 	}
-	.opt-desc {
+	.qp-desc {
 		font-size: 0.72rem;
 		line-height: 1.35;
 		color: #7a828f;
 	}
-	.opt-graph:disabled {
+	.qp-graph:disabled {
 		opacity: 0.6;
 		cursor: default;
 	}
-	.opt-ctx-row {
+	.qp-locus-row {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.qp-locus-row .locus-input {
+		flex: 1;
+	}
+	.qp-locus-row input[type='text'] {
+		width: 100%;
+		font: inherit;
+		font-size: 0.95rem;
+		padding: 0.45rem 0.6rem;
+		border: 1px solid #d3d9e2;
+		border-radius: 8px;
+		background: #eef4ff;
+		color: #1f2430;
+	}
+	.qp-locus-row input[type='text']:focus {
+		outline: 2px solid #2563eb;
+		outline-offset: -1px;
+		border-color: #2563eb;
+		background: #fff;
+	}
+	.qp-examples {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.3rem;
+		flex-wrap: wrap;
 	}
-	.opt-ctx-input {
-		width: 6rem;
+	.qp-ctx-row {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+	}
+	.qp-ctx-input {
+		width: 5rem;
 		font: inherit;
 		font-size: 0.9rem;
-		padding: 0.35rem 0.5rem;
+		padding: 0.4rem 0.5rem;
 		border: 1px solid #d3d9e2;
-		border-radius: 7px;
+		border-radius: 8px;
 		background: #fff;
 		color: #1f2430;
 	}
-	.opt-ctx-input:focus {
+	.qp-ctx-input:focus {
 		outline: 2px solid #2563eb;
 		outline-offset: -1px;
 		border-color: #2563eb;
 	}
-	.opt-apply {
-		font: inherit;
-		font-size: 0.82rem;
-		font-weight: 600;
-		padding: 0.38rem 0.6rem;
-		border: none;
-		border-radius: 7px;
-		background: #2563eb;
-		color: #fff;
-		cursor: pointer;
-	}
-	.opt-apply:hover:not(:disabled) {
-		background: #1d4ed8;
-	}
-	.opt-apply:disabled {
-		background: #9db8ef;
-		cursor: default;
-	}
-
-	.query {
-		display: flex;
-		align-items: flex-end;
-		gap: 0.5rem;
-	}
-	.locus-field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-	}
-	.lbl {
-		font-size: 0.62rem;
-		font-weight: 600;
-		letter-spacing: 0.04em;
-		text-transform: uppercase;
-		color: #98a0ac;
+	.qp-ctx-help {
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: #6b7280;
 	}
 	.locus-input {
 		position: relative;
-	}
-	.query input {
-		font: inherit;
-		font-size: 0.9rem;
-		padding: 0.4rem 0.55rem;
-		border: 1px solid #d3d9e2;
-		border-radius: 7px;
-		background: #fff;
-		color: #1f2430;
-	}
-	.query input:focus {
-		outline: 2px solid #2563eb;
-		outline-offset: -1px;
-		border-color: #2563eb;
-	}
-	.locus-input input {
-		width: 15rem;
 	}
 	.go {
 		font: inherit;
@@ -1169,14 +1066,6 @@
 		cursor: default;
 	}
 
-	.examples {
-		/* Full-width so it always wraps to its own row beneath the query controls. */
-		flex-basis: 100%;
-		display: flex;
-		align-items: center;
-		gap: 0.3rem;
-		flex-wrap: wrap;
-	}
 	.ex-lbl {
 		font-size: 0.72rem;
 		color: #98a0ac;
@@ -1337,148 +1226,6 @@
 	}
 
 	/* Arrow linking the query controls to their result box on the right. */
-	.result-arrow {
-		margin-left: auto;
-		align-self: flex-end;
-		padding-bottom: 0.4rem;
-		font-size: 1.15rem;
-		font-weight: 700;
-		color: #9333ea;
-	}
-
-	/* ---- "This locus" result: a trigger in the query banner + a dropdown popover ---- */
-	.locus-stats {
-		position: relative;
-	}
-	.statbtn {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		background: #fff;
-		border: 1px solid #e3e7ee;
-		border-radius: 8px;
-		padding: 0.32rem 0.65rem;
-		cursor: pointer;
-		font: inherit;
-		color: #1f2430;
-		white-space: nowrap;
-	}
-	.statbtn:hover {
-		border-color: #c4b5fd;
-		background: #faf5ff;
-	}
-	.statbtn.open {
-		border-color: #9333ea;
-		box-shadow: 0 0 0 1px rgba(147, 51, 234, 0.25);
-	}
-	.statbtn-face {
-		display: flex;
-		align-items: baseline;
-		gap: 0.55rem;
-	}
-	.statbtn-name {
-		font-size: 0.9rem;
-		font-weight: 700;
-		letter-spacing: -0.01em;
-	}
-	.statbtn-count {
-		font-size: 0.78rem;
-		color: #6b7280;
-		font-variant-numeric: tabular-nums;
-	}
-	.statbtn-count b {
-		color: #1f2430;
-		font-weight: 700;
-	}
-	.statbtn-span {
-		font-size: 0.72rem;
-		font-variant-numeric: tabular-nums;
-		color: #7c3aed;
-		background: #f3e8ff;
-		border-radius: 5px;
-		padding: 0.05rem 0.35rem;
-	}
-	.statbtn-busy {
-		font-size: 0.76rem;
-		color: #9333ea;
-		font-style: italic;
-	}
-	.caret {
-		font-size: 0.6rem;
-		color: #98a0ac;
-	}
-	.stats-popover {
-		position: absolute;
-		top: calc(100% + 6px);
-		right: 0;
-		z-index: 40;
-		width: 300px;
-		background: #fff;
-		border: 1px solid #e3e7ee;
-		border-radius: 10px;
-		padding: 0.9rem 1rem;
-		box-shadow: 0 12px 32px rgba(16, 24, 40, 0.16);
-	}
-	.card-head {
-		display: flex;
-		flex-direction: column;
-		gap: 0.1rem;
-		margin-bottom: 0.55rem;
-	}
-	.card-title {
-		margin: 0;
-		font-size: 0.7rem;
-		font-weight: 700;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		color: #6b7280;
-		white-space: nowrap;
-	}
-	.card-sub {
-		font-size: 0.66rem;
-		color: #b0b6c0;
-	}
-	.card-sub em {
-		font-style: normal;
-	}
-
-	.statgrid {
-		display: flex;
-		flex-direction: column;
-	}
-	.srow {
-		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.6rem;
-		padding: 0.34rem 0;
-		border-bottom: 1px solid #f0f2f5;
-		font-size: 0.82rem;
-	}
-	.srow:last-child {
-		border-bottom: none;
-	}
-	.srow .k {
-		color: #6b7280;
-		white-space: nowrap;
-	}
-	.srow .v {
-		text-align: right;
-		font-variant-numeric: tabular-nums;
-		color: #1f2430;
-	}
-	.srow .v b {
-		font-weight: 600;
-	}
-	.srow .v em {
-		font-style: normal;
-		color: #a7adb8;
-		font-size: 0.92em;
-	}
-	.fetchline {
-		margin: 0.7rem 0 0;
-		line-height: 1.5;
-	}
 
 	/* ---- placeholder (empty / loading / oversized) ---- */
 	.placeholder {

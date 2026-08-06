@@ -6,12 +6,13 @@
 	// dense subgraph never freezes the tab. Graph simplification happens upstream,
 	// so this component just lays out and draws whatever graph it's given.
 	import { onDestroy, untrack } from 'svelte';
-	import type { Gfa } from '../gfa';
+	import { gfaStats, type Gfa } from '../gfa';
 	import { gfaToGraph } from './gfaToGraph';
 	import type { GfaGraph } from './types';
 	import type { LayoutResult } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
 	import GraphCanvas from './GraphCanvas.svelte';
+	import QueryReport from './QueryReport.svelte';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
@@ -29,11 +30,25 @@
 		allNodesTooMany = false,
 		onToggleSimplify,
 		onRequestMoreContext,
-		onStatus
+		locusLabel = '',
+		fetchInfo = null,
+		querying = false
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
 		refKey?: RefKey;
+		/** Label for the query report at the top of the options panel: the gene
+		 * symbol the user searched, or the coordinate string. */
+		locusLabel?: string;
+		/** Fetch stats from the query round-trip, shown in the report. */
+		fetchInfo?: {
+			requestCount: number;
+			bytesFetched: number;
+			dbSize: number;
+			elapsedMs: number;
+		} | null;
+		/** A query round-trip is in flight (report shows the fetching phase). */
+		querying?: boolean;
 		/** Whether the parent can supply the full (unsimplified) graph — the one that
 		 * still carries every haplotype walk — so disco-walks has anything to trace. */
 		discoAvailable?: boolean;
@@ -56,9 +71,6 @@
 		/** Raise the query context and re-run — offered when an off-locus exit is
 		 * selected, to follow chopped haplotypes further past the locus. */
 		onRequestMoreContext?: () => void;
-		/** Report layout status (node count + timing) up so the shell can show it in
-		 * the tab bar rather than the sidebar. */
-		onStatus?: (s: { nodes: number; ms: number; computing: boolean; recomputing: boolean }) => void;
 	} = $props();
 
 	// Keep all non-reference bubbles on one side (above the reference line). This
@@ -477,15 +489,12 @@
 
 	onDestroy(() => worker?.terminate());
 
-	// Surface node count + layout timing to the shell (shown in the tab bar).
-	$effect(() => {
-		onStatus?.({
-			nodes: adapted.keptSegments,
-			ms,
-			computing,
-			recomputing: recomputeKeepsCanvas
-		});
-	});
+	// Feed the query report at the top of the options panel. `reportComputing`
+	// excludes quick in-place recomputes (knob toggles) — those get the canvas
+	// busy-badge, not a full report takeover. `reportBusy` also dims the controls.
+	const reportStats = $derived(gfaStats(gfa, referenceSample));
+	const reportComputing = $derived(computing && !recomputeKeepsCanvas);
+	const reportBusy = $derived(querying || reportComputing);
 
 	const selectedLen = $derived(selected ? (gfa.segments.get(selected)?.length ?? null) : null);
 	const selectedCoord = $derived(selected ? (refCoords.get(selected) ?? null) : null);
@@ -525,6 +534,18 @@
 <div class="wrap">
 	<div class="body">
 		<aside class="sidebar">
+			<!-- Query report: progressive while a query/layout runs, then a one-liner. -->
+			<QueryReport
+				{locusLabel}
+				stats={reportStats}
+				reduced={gfa.reduced ?? null}
+				{fetchInfo}
+				{querying}
+				computing={reportComputing}
+				layoutMs={ms}
+			/>
+
+			<div class="ctl-wrap" class:dimmed={reportBusy}>
 			<!-- Pinned primary controls: the two most-reached-for switches. -->
 			<section class="group primary">
 				{#if discoAvailable || showingAllNodes}
@@ -651,6 +672,7 @@
 					</button>
 				{/if}
 			</section>
+			</div>
 		</aside>
 
 		<div class="stage">
@@ -874,13 +896,23 @@
 		min-height: 0;
 	}
 	.sidebar {
-		flex: 0 0 186px;
+		flex: 0 0 200px;
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
 		font-size: 0.8rem;
 		overflow-y: auto;
 		padding-right: 0.15rem;
+	}
+	.ctl-wrap {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		transition: opacity 0.15s ease;
+	}
+	.ctl-wrap.dimmed {
+		opacity: 0.4;
+		pointer-events: none;
 	}
 	.group {
 		display: flex;
