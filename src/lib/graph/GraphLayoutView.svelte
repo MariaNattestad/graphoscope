@@ -593,7 +593,7 @@
 						{/if}
 					</button>
 					{#if disco}
-						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} walks</span>
+						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} unique walks</span>
 					{/if}
 				{/if}
 			</section>
