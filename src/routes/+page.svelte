@@ -896,18 +896,28 @@
 		color: #2e1065;
 	}
 	.qp-ref {
+		flex: 0 0 auto;
 		font-size: 0.82rem;
 		opacity: 0.75;
 	}
 	.qp-slash {
+		flex: 0 0 auto;
 		opacity: 0.5;
 	}
+	/* The user's input can be a long coordinate; let it ellipsize so the caret
+	   (and reference) stay visible rather than being pushed out of the pill. */
 	.qp-main {
+		flex: 0 1 auto;
+		min-width: 2.5rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.85rem;
 		font-weight: 700;
 	}
 	.qp-coord {
+		flex: 0 1 auto;
+		min-width: 0;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.72rem;
 		opacity: 0.65;
@@ -915,6 +925,7 @@
 		text-overflow: ellipsis;
 	}
 	.qp-caret {
+		flex: 0 0 auto;
 		font-size: 0.6rem;
 		opacity: 0.8;
 	}

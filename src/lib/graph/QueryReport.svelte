@@ -83,34 +83,48 @@
 			</div>
 
 			<div class="rep-grid">
-				<span></span>
-				<span class="col-h">simplified</span>
-				<span class="col-h">raw</span>
-				<span></span>
+				<!-- The simplified/raw split only exists on a reduced graph; with Simplify
+				     off the graph is the full one, so show plain single counts instead. -->
+				{#if reduced}
+					<span></span>
+					<span class="col-h">simplified</span>
+					<span class="col-h">raw</span>
+					<span></span>
+				{/if}
 
 				<span class="rk">fetched</span>
 				<span class="rv span2">{pending || !fetchInfo
 						? ''
 						: `${fmtBytes(fetchInfo.bytesFetched)} · ${fetchInfo.requestCount} blk`}</span>
-				<span class="rc" class:on={resolved && fetchInfo}>✓</span>
+				<span class="rc" class:on={resolved && !!fetchInfo}>✓</span>
 
 				<span class="rk">nodes</span>
-				<span class="pv">{pending || !stats ? '' : num(stats.segments)}</span>
-				<span class="pv raw">{pending || !reduced ? '' : num(reduced.segmentsBefore)}</span>
+				{#if reduced}
+					<span class="pv">{pending || !stats ? '' : num(stats.segments)}</span>
+					<span class="pv raw">{pending ? '' : num(reduced.segmentsBefore)}</span>
+				{:else}
+					<span class="rv span2">{pending || !stats ? '' : num(stats.segments)}</span>
+				{/if}
 				<span class="rc" class:on={resolved}>✓</span>
 
 				<span class="rk">links</span>
-				<span class="pv">{pending || !stats ? '' : num(stats.links)}</span>
-				<span class="pv raw">{pending || !reduced ? '' : num(reduced.linksBefore)}</span>
+				{#if reduced}
+					<span class="pv">{pending || !stats ? '' : num(stats.links)}</span>
+					<span class="pv raw">{pending ? '' : num(reduced.linksBefore)}</span>
+				{:else}
+					<span class="rv span2">{pending || !stats ? '' : num(stats.links)}</span>
+				{/if}
 				<span class="rc" class:on={resolved}>✓</span>
 
 				<span class="rk">haplotype walks</span>
 				<span class="rv span2">{pending || !stats ? '' : num(stats.walks)}</span>
 				<span class="rc" class:on={resolved}>✓</span>
 
-				<span class="rk">sites collapsed</span>
-				<span class="rv span2">{pending || !reduced ? '' : num(reduced.sites)}</span>
-				<span class="rc" class:on={resolved && reduced}>✓</span>
+				{#if reduced}
+					<span class="rk">sites collapsed</span>
+					<span class="rv span2">{pending ? '' : num(reduced.sites)}</span>
+					<span class="rc" class:on={resolved}>✓</span>
+				{/if}
 
 				<span class="rk">reference span</span>
 				<span class="rv span2"
@@ -181,7 +195,8 @@
 	.rep-line {
 		display: flex;
 		align-items: baseline;
-		gap: 0.45rem;
+		flex-wrap: wrap;
+		gap: 0.2rem 0.45rem;
 		width: 100%;
 		font: inherit;
 		text-align: left;
@@ -191,12 +206,12 @@
 		padding: 0.4rem 0.55rem;
 		border-radius: 8px;
 		color: inherit;
-		white-space: nowrap;
 	}
 	.rep-line:hover {
 		background: #faf5ff;
 	}
 	.rep-mini {
+		flex: 0 0 auto;
 		color: #6b7280;
 		font-variant-numeric: tabular-nums;
 	}
@@ -226,6 +241,14 @@
 		font-size: 0.9rem;
 		letter-spacing: -0.01em;
 		color: #1f2430;
+		/* A raw coordinate is one long unbreakable token — let it wrap within the
+		   panel instead of overflowing it. */
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.rep-line .rep-name,
+	.rep-head .rep-name {
+		flex: 1 1 auto;
 	}
 	.rep-collapse {
 		margin-left: auto;
