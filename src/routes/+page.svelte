@@ -465,6 +465,7 @@
 				<span class="tagline">HPRC pangenome graphs, queried by locus</span>
 			</div>
 
+			<span class="switch-lbl">Graph</span>
 			<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
 			{#each GRAPHS as g (g.id)}
 				<button
@@ -629,7 +630,6 @@
 				</div>
 			{/if}
 			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
-			<a class="pg-link" href="{base}/playground">Playground →</a>
 		</div>
 	</header>
 
@@ -747,6 +747,10 @@
 				Crucially, instead of keeping every walk it just <b>counts</b> how many pass through each node
 				and edge — that count is what the yellow&#8202;→&#8202;red colouring shows. The effect on
 				memory is large: a locus like LPA drops from hundreds of megabytes of parsed graph to a few.
+				A standalone <a href="{base}/playground" target="_blank" rel="noopener"
+					>simplification playground</a
+				> (a testing sandbox) lets you tweak the collapse threshold and compare the original and
+				simplified graphs side by side.
 			</p>
 			<p>
 				Currently showing: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus
@@ -842,6 +846,12 @@
 		font-size: 0.72rem;
 	}
 
+	.switch-lbl {
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: #98a0ac;
+		margin-right: -0.4rem;
+	}
 	.graph-switch {
 		display: inline-flex;
 		gap: 2px;
@@ -993,17 +1003,6 @@
 	.link-btn:hover {
 		text-decoration: underline;
 	}
-	.pg-link {
-		color: #2563eb;
-		font-size: 0.85rem;
-		font-weight: 600;
-		text-decoration: none;
-		white-space: nowrap;
-	}
-	.pg-link:hover {
-		text-decoration: underline;
-	}
-
 	/* suggest dropdown */
 	.suggest {
 		position: absolute;
