@@ -6,12 +6,13 @@
 	// dense subgraph never freezes the tab. Graph simplification happens upstream,
 	// so this component just lays out and draws whatever graph it's given.
 	import { onDestroy, untrack } from 'svelte';
-	import type { Gfa } from '../gfa';
+	import { gfaStats, type Gfa } from '../gfa';
 	import { gfaToGraph } from './gfaToGraph';
 	import type { GfaGraph } from './types';
 	import type { LayoutResult } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
 	import GraphCanvas from './GraphCanvas.svelte';
+	import QueryReport from './QueryReport.svelte';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
@@ -27,11 +28,27 @@
 		showingAllNodes = false,
 		allNodesCount = 0,
 		allNodesTooMany = false,
-		onToggleSimplify
+		onToggleSimplify,
+		onRequestMoreContext,
+		locusLabel = '',
+		fetchInfo = null,
+		querying = false
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
 		refKey?: RefKey;
+		/** Label for the query report at the top of the options panel: the gene
+		 * symbol the user searched, or the coordinate string. */
+		locusLabel?: string;
+		/** Fetch stats from the query round-trip, shown in the report. */
+		fetchInfo?: {
+			requestCount: number;
+			bytesFetched: number;
+			dbSize: number;
+			elapsedMs: number;
+		} | null;
+		/** A query round-trip is in flight (report shows the fetching phase). */
+		querying?: boolean;
 		/** Whether the parent can supply the full (unsimplified) graph — the one that
 		 * still carries every haplotype walk — so disco-walks has anything to trace. */
 		discoAvailable?: boolean;
@@ -51,6 +68,9 @@
 		allNodesTooMany?: boolean;
 		/** Toggle between the simplified and full graph (parent owns the fetch/swap). */
 		onToggleSimplify?: () => void;
+		/** Raise the query context and re-run — offered when an off-locus exit is
+		 * selected, to follow chopped haplotypes further past the locus. */
+		onRequestMoreContext?: () => void;
 	} = $props();
 
 	// Keep all non-reference bubbles on one side (above the reference line). This
@@ -69,6 +89,10 @@
 	// as random dangles. Off for a clean figure.
 	let showExits = $state(true);
 
+	// The two most-used controls (Simplify + disco) stay pinned; everything else
+	// lives behind these sidebar tabs so the panel stays short as options grow.
+	let ctlTab = $state<'layout' | 'nodes' | 'view'>('layout');
+
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
 	let lightMode = $state(false);
@@ -84,9 +108,34 @@
 
 	let selected = $state<string | null>(null);
 
+	// A clicked gene/exon in the track below the graph, shown in the same floating
+	// inspector as a node. Node and feature are mutually exclusive: GraphCanvas
+	// emits both callbacks on every click, so selecting one clears the other.
+	interface SelectedFeature {
+		symbol: string;
+		name: string;
+		exonNum: number;
+		nExons: number;
+		contig: string;
+		start: number;
+		end: number;
+	}
+	let selectedFeature = $state<SelectedFeature | null>(null);
+
+	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), shown in
+	// the same inspector. Mutually exclusive with node/feature by the same trick:
+	// every click emits all three, so selecting one nulls the others.
+	interface SelectedExit {
+		segId: string;
+		side: 'left' | 'right';
+	}
+	let selectedExit = $state<SelectedExit | null>(null);
+
 	$effect(() => {
 		gfa;
 		selected = null;
+		selectedFeature = null;
+		selectedExit = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
 	});
@@ -120,8 +169,6 @@
 		return out;
 	}
 	const endpoints = $derived(selected ? walkEndpointsAt(selected) : []);
-	const starts = $derived(endpoints.filter((e) => e.role === 'start' || e.role === 'both'));
-	const ends = $derived(endpoints.filter((e) => e.role === 'end' || e.role === 'both'));
 	// Reduced mode: counts from the `WS`/`WE` tags on the selected segment.
 	const endpointCounts = $derived.by(() => {
 		if (!gfa.reduced || !selected) return null;
@@ -442,6 +489,13 @@
 
 	onDestroy(() => worker?.terminate());
 
+	// Feed the query report at the top of the options panel. `reportComputing`
+	// excludes quick in-place recomputes (knob toggles) — those get the canvas
+	// busy-badge, not a full report takeover. `reportBusy` also dims the controls.
+	const reportStats = $derived(gfaStats(gfa, referenceSample));
+	const reportComputing = $derived(computing && !recomputeKeepsCanvas);
+	const reportBusy = $derived(querying || reportComputing);
+
 	const selectedLen = $derived(selected ? (gfa.segments.get(selected)?.length ?? null) : null);
 	const selectedCoord = $derived(selected ? (refCoords.get(selected) ?? null) : null);
 	function fmtCoord(c: RefCoord): string {
@@ -480,117 +534,49 @@
 <div class="wrap">
 	<div class="body">
 		<aside class="sidebar">
-			<section class="group">
-				<h4 class="group-title">Layout</h4>
-				<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
-					<input type="checkbox" bind:checked={bubblesAbove} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">One-sided</span>
-						<span class="switch-sub">bubbles above the line</span>
-					</span>
-				</label>
-				<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
-					<input type="checkbox" bind:checked={anchorToReference} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Anchor to reference</span>
-						<span class="switch-sub">stack bubbles over their ref nodes</span>
-					</span>
-				</label>
-				<label
-					class="switch"
-					title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
-				>
-					<input
-						type="checkbox"
-						checked={!effectiveRough}
-						onchange={() => (roughOverride = !effectiveRough)}
-					/>
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Bendy nodes</span>
-						<span class="switch-sub">
-							{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
-								? ' · auto'
-								: ''}
-						</span>
-					</span>
-				</label>
-				<label
-					class="switch"
-					title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
-				>
-					<input type="checkbox" bind:checked={showExits} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Off-locus exits</span>
-						<span class="switch-sub">cue chopped-off haplotypes</span>
-					</span>
-				</label>
-			</section>
+			<!-- Query report: progressive while a query/layout runs, then a one-liner. -->
+			<QueryReport
+				{locusLabel}
+				stats={reportStats}
+				reduced={gfa.reduced ?? null}
+				{fetchInfo}
+				{querying}
+				computing={reportComputing}
+				layoutMs={ms}
+			/>
 
-			<section class="group">
-				<h4 class="group-title">View</h4>
-				<label class="switch" title="Render on a white background for figures and publication screenshots">
-					<input type="checkbox" bind:checked={lightMode} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Light mode</span>
-						<span class="switch-sub">white background for figures</span>
-					</span>
-				</label>
-				<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
-					⬇ Export PNG
-				</button>
-			</section>
-
-			<section class="group">
-				<h4 class="group-title">Node info</h4>
-				<span class="group-hint">shown on hover, and under the graph when clicked</span>
-				<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
-				<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
-				<label class="check"><input type="checkbox" bind:checked={showCoords} /> Coordinates</label>
-				<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
-			</section>
-
-			{#if discoAvailable || showingAllNodes || allNodesTooMany}
-				<section class="group">
-					<h4 class="group-title">Detail</h4>
-					{#if discoAvailable || showingAllNodes}
-						<label
-							class="switch"
-							title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
-						>
-							<input
-								type="checkbox"
-								checked={!showingAllNodes}
-								disabled={discoLoading}
-								onchange={() => onToggleSimplify?.()}
-							/>
-							<span class="track"><span class="thumb"></span></span>
-							<span class="switch-text">
-								<span class="switch-label">Simplify</span>
-								<span class="switch-sub">
-									{#if discoLoading}
-										loading…
-									{:else if showingAllNodes}
-										all {allNodesCount.toLocaleString()} nodes shown
-									{:else}
-										small variants collapsed
-									{/if}
-								</span>
+			<div class="ctl-wrap" class:dimmed={reportBusy}>
+			<!-- Pinned primary controls: the two most-reached-for switches. -->
+			<section class="group primary">
+				{#if discoAvailable || showingAllNodes}
+					<label
+						class="switch"
+						title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
+					>
+						<input
+							type="checkbox"
+							checked={!showingAllNodes}
+							disabled={discoLoading}
+							onchange={() => onToggleSimplify?.()}
+						/>
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Simplify</span>
+							<span class="switch-sub">
+								{#if discoLoading}
+									loading…
+								{:else if showingAllNodes}
+									all {allNodesCount.toLocaleString()} nodes shown
+								{:else}
+									small variants collapsed
+								{/if}
 							</span>
-						</label>
-					{:else if allNodesTooMany}
-						<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
-					{/if}
-				</section>
-			{/if}
-
-			{#if showDiscoButton}
-				<section class="group">
-					<h4 class="group-title">Walks</h4>
+						</span>
+					</label>
+				{:else if allNodesTooMany}
+					<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
+				{/if}
+				{#if showDiscoButton}
 					<button
 						class="disco"
 						class:on={disco}
@@ -607,159 +593,278 @@
 						{/if}
 					</button>
 					{#if disco}
-						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} walks</span>
-					{:else}
-						<span class="switch-sub">trace every walk through the graph</span>
+						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} unique walks</span>
 					{/if}
-				</section>
-			{/if}
-
-			<section class="group status">
-				<div class="stat"><b>{adapted.keptSegments.toLocaleString()}</b> nodes</div>
-				{#if computing}
-					<div class="computing">{recomputeKeepsCanvas ? 'updating…' : 'computing…'}</div>
-				{:else if layout}
-					<div class="muted">laid out in {ms} ms</div>
 				{/if}
 			</section>
+
+			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
+			<nav class="ctl-tabs">
+				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
+				<button class:active={ctlTab === 'nodes'} onclick={() => (ctlTab = 'nodes')}>Nodes</button>
+				<button class:active={ctlTab === 'view'} onclick={() => (ctlTab = 'view')}>View</button>
+			</nav>
+			<section class="group ctl-panel">
+				{#if ctlTab === 'layout'}
+					<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
+						<input type="checkbox" bind:checked={bubblesAbove} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">One-sided</span>
+							<span class="switch-sub">bubbles above the line</span>
+						</span>
+					</label>
+					<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
+						<input type="checkbox" bind:checked={anchorToReference} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Anchor to reference</span>
+							<span class="switch-sub">stack bubbles over their ref nodes</span>
+						</span>
+					</label>
+					<label
+						class="switch"
+						title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
+					>
+						<input
+							type="checkbox"
+							checked={!effectiveRough}
+							onchange={() => (roughOverride = !effectiveRough)}
+						/>
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Bendy nodes</span>
+							<span class="switch-sub">
+								{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
+									? ' · auto'
+									: ''}
+							</span>
+						</span>
+					</label>
+					<label
+						class="switch"
+						title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
+					>
+						<input type="checkbox" bind:checked={showExits} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Off-locus exits</span>
+							<span class="switch-sub">cue chopped-off haplotypes</span>
+						</span>
+					</label>
+				{:else if ctlTab === 'nodes'}
+					<span class="group-hint">shown on hover, and under the graph when clicked</span>
+					<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
+					<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
+					<label class="check"><input type="checkbox" bind:checked={showCoords} /> Coordinates</label>
+					<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
+				{:else if ctlTab === 'view'}
+					<label class="switch" title="Render on a white background for figures and publication screenshots">
+						<input type="checkbox" bind:checked={lightMode} />
+						<span class="track"><span class="thumb"></span></span>
+						<span class="switch-text">
+							<span class="switch-label">Light mode</span>
+							<span class="switch-sub">white background for figures</span>
+						</span>
+					</label>
+					<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
+						⬇ Export PNG
+					</button>
+				{/if}
+			</section>
+			</div>
 		</aside>
 
-		<div class="stage">
-			{#if layout}
-				<GraphCanvas
-					{layout}
-					{refCoords}
-					{genes}
-					{discoPath}
-					{discoColor}
-					{lightMode}
-					{nodeTooltip}
-					{showExits}
-					discoActive={disco}
-					onReady={(api) => (canvasApi = api)}
-					onSelectSegment={(id) => {
-						selected = id;
-						if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
-					}}
-				/>
-			{/if}
-			{#if computing && !recomputeKeepsCanvas}
-				<div class="overlay">
-					<span>
-						computing layout…
-						{#if showSlowLayoutWarning}
-							<br />
-							<span class="overlay-warning">
-								{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
-								a large or repetitive locus. Still working, not stuck.
+	<div class="stage-col">
+			<div class="stage">
+				{#if layout}
+					<GraphCanvas
+						{layout}
+						{refCoords}
+						{genes}
+						{discoPath}
+						{discoColor}
+						{lightMode}
+						{nodeTooltip}
+						{showExits}
+						discoActive={disco}
+						onReady={(api) => (canvasApi = api)}
+						onSelectSegment={(id) => {
+							selected = id;
+							if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
+						}}
+						onSelectFeature={(f) => {
+							selectedFeature = f;
+							if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
+						}}
+						onSelectExit={(e) => {
+							selectedExit = e;
+							if (e) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
+						}}
+					/>
+				{/if}
+				{#if computing && !recomputeKeepsCanvas}
+					<div class="overlay">
+						<span>
+							computing layout…
+							{#if showSlowLayoutWarning}
+								<br />
+								<span class="overlay-warning">
+									{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
+									a large or repetitive locus. Still working, not stuck.
+								</span>
+							{/if}
+						</span>
+					</div>
+				{:else if computing}
+					<!-- In-place recompute (a knob change): keep the current graph visible but
+					     still signal that the new layout is being computed. -->
+					<div class="busy-badge">
+						<span class="spinner"></span> computing layout…
+					</div>
+				{/if}
+
+				<!-- Floating node inspector: only present while a node is selected, so it
+				     never reserves layout space (click empty graph or × to dismiss). -->
+				{#if selected}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">
+								{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
 							</span>
+							<button class="insp-close" onclick={() => (selected = null)} aria-label="Close">×</button>
+						</div>
+
+						{#if showLength || showCoords}
+							<div class="ni-fields">
+								{#if showLength}
+									<span class="ni-field"
+										><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
+									>
+								{/if}
+								{#if showCoords}
+									<span class="ni-field"
+										><span class="ni-key">coords</span>
+										{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span
+												class="muted">—</span
+											>{/if}</span
+									>
+								{/if}
+							</div>
 						{/if}
-					</span>
-				</div>
-			{:else if computing}
-				<!-- In-place recompute (a knob change): keep the current graph visible but
-				     still signal that the new layout is being computed. -->
-				<div class="busy-badge">
-					<span class="spinner"></span> computing layout…
-				</div>
-			{/if}
-		</div>
-	</div>
 
-	<div class="foot">
-		<span class="muted">click a strand to select · plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
-		<span class="spacer"></span>
-		<span class="legend"><span class="sw backbone"></span> reference backbone (coords shown)</span>
-		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
-	</div>
+						{#if showSequence}
+							<div class="ni-seq">
+								<div class="ni-seq-head">
+									<span class="ni-key">sequence</span>
+									{#if selectedSeq}
+										<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
+										<button class="copy" onclick={copySelectedSeq}>copy</button>
+									{/if}
+								</div>
+								{#if selectedSeq}
+									<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
+										>{selectedSeq}</textarea
+									>
+								{:else}
+									<span class="muted">no sequence stored for this node</span>
+								{/if}
+							</div>
+						{/if}
 
-	{#if selected && (showNodeId || showLength || showCoords || showSequence)}
-		<div class="node-info">
-			<div class="ni-fields">
-				{#if showNodeId}
-					<span class="ni-field"><span class="ni-key">node</span> <code>{selected}</code></span>
-				{/if}
-				{#if showLength}
-					<span class="ni-field"
-						><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
-					>
-				{/if}
-				{#if showCoords}
-					<span class="ni-field"
-						><span class="ni-key">coords</span>
-						{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span class="muted">—</span>{/if}</span
-					>
-				{/if}
-			</div>
-			{#if showSequence}
-				<div class="ni-seq">
-					<div class="ni-seq-head">
-						<span class="ni-key">sequence</span>
-						{#if selectedSeq}
-							<span class="muted">{selectedSeq.length.toLocaleString()} bp</span>
-							<button class="copy" onclick={copySelectedSeq}>copy</button>
+						{#if endpointCounts}
+							{@const total = endpointCounts.starts + endpointCounts.ends}
+							<div class="endpoints">
+								<span class="hint muted">
+									a walk dead-ending here usually indicates a haplotype connects to another locus and
+									got chopped off this subgraph
+								</span>
+								<span class="etag"
+									>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
+								>
+							</div>
+						{:else if endpoints.length > 0}
+							<div class="endpoints">
+								<span class="hint muted">
+									a walk dead-ending here usually indicates a haplotype connects to another locus and
+									got chopped off this subgraph
+								</span>
+								<div class="erow">
+									<span class="etag"
+										>{endpoints.length} walk{endpoints.length === 1
+											? ' starts/ends'
+											: 's start/end'} here</span
+									>
+									{#each endpoints.slice(0, 6) as e (e.label)}
+										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
+									{/each}
+									{#if endpoints.length > 6}<span class="muted">+{endpoints.length - 6}</span>{/if}
+								</div>
+							</div>
 						{/if}
 					</div>
-					{#if selectedSeq}
-						<textarea class="seq-box" readonly rows="3" onclick={(e) => e.currentTarget.select()}
-							>{selectedSeq}</textarea
-						>
-					{:else}
-						<span class="muted">no sequence stored for this node</span>
-					{/if}
-				</div>
-			{/if}
+				{:else if selectedFeature}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">Gene <code>{selectedFeature.symbol}</code></span>
+							<button class="insp-close" onclick={() => (selectedFeature = null)} aria-label="Close"
+								>×</button
+							>
+						</div>
+						<div class="ni-fields">
+							{#if selectedFeature.name && selectedFeature.name !== selectedFeature.symbol}
+								<span class="ni-field"><span class="ni-key">name</span> {selectedFeature.name}</span>
+							{/if}
+							<span class="ni-field"
+								><span class="ni-key">exon</span> {selectedFeature.exonNum} of
+								{selectedFeature.nExons}</span
+							>
+							<span class="ni-field"
+								><span class="ni-key">coords</span>
+								<span class="coord"
+									>{selectedFeature.contig}:{selectedFeature.start.toLocaleString()}–{selectedFeature.end.toLocaleString()}</span
+								></span
+							>
+							<span class="ni-field"
+								><span class="ni-key">length</span>
+								{(selectedFeature.end - selectedFeature.start).toLocaleString()} bp</span
+							>
+						</div>
+					</div>
+				{:else if selectedExit}
+					<div class="inspector">
+						<div class="insp-head">
+							<span class="insp-title">Off-locus exit</span>
+							<button class="insp-close" onclick={() => (selectedExit = null)} aria-label="Close"
+								>×</button
+							>
+						</div>
+						<p class="exit-note">
+							A haplotype leaves the queried window here and continues into the graph
+							<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
+							is outside this subgraph — so it's drawn as a dashed cue toward the
+							{selectedExit.side} edge, the direction it exits.
+						</p>
+						{#if onRequestMoreContext}
+							<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
+								Increase context &amp; re-query
+							</button>
+							<span class="exit-hint">
+								Widens the window past the locus so the query follows these haplotypes further — fewer
+								dangling exits, more nodes shown.
+							</span>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		<div class="foot">
+			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
+			<span class="spacer"></span>
+			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
+			<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 		</div>
-	{/if}
-
-	{#if endpointCounts}
-		<div class="endpoints">
-			<span class="hint muted">
-				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) usually
-				indicates a haplotype connects to another locus and got chopped off this subgraph
-			</span>
-			{#if endpointCounts.starts > 0}
-				<div class="erow">
-					<span class="etag start"
-						>{endpointCounts.starts.toLocaleString()} walk{endpointCounts.starts === 1 ? '' : 's'} start
-						here</span
-					>
-				</div>
-			{/if}
-			{#if endpointCounts.ends > 0}
-				<div class="erow">
-					<span class="etag end"
-						>{endpointCounts.ends.toLocaleString()} walk{endpointCounts.ends === 1 ? '' : 's'} end here</span
-					>
-				</div>
-			{/if}
-		</div>
-	{:else if selected && endpoints.length > 0}
-		<div class="endpoints">
-			<span class="hint muted">
-				a walk dead-ending here (not reaching a bubble's far side or the subgraph edge) usually
-				indicates a haplotype connects to another locus and got chopped off this subgraph
-			</span>
-			{#if starts.length > 0}
-				<div class="erow">
-					<span class="etag start">{starts.length} walk{starts.length === 1 ? '' : 's'} start here</span>
-					{#each starts.slice(0, 8) as e (e.label)}
-						<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-					{/each}
-					{#if starts.length > 8}<span class="muted">+{starts.length - 8} more</span>{/if}
-				</div>
-			{/if}
-			{#if ends.length > 0}
-				<div class="erow">
-					<span class="etag end">{ends.length} walk{ends.length === 1 ? '' : 's'} end here</span>
-					{#each ends.slice(0, 8) as e (e.label)}
-						<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-					{/each}
-					{#if ends.length > 8}<span class="muted">+{ends.length - 8} more</span>{/if}
-				</div>
-			{/if}
-		</div>
-	{/if}
+	</div>
+	</div>
 </div>
 
 <style>
@@ -767,6 +872,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		min-height: 0;
+		height: 100%;
+		padding: 0.6rem;
 	}
 	.foot {
 		display: flex;
@@ -779,40 +887,95 @@
 		flex: 1;
 	}
 
-	/* Body: a controls sidebar beside the canvas. */
+	/* Body: a controls sidebar beside the canvas. Grows to fill the wrap so the
+	   canvas gets the whole available height. */
 	.body {
 		display: flex;
 		gap: 0.75rem;
 		align-items: stretch;
+		flex: 1;
+		min-height: 0;
 	}
-	.sidebar {
-		flex: 0 0 186px;
+	/* The graph column: canvas above its own footer, so the scroll/zoom hint and
+	   legend sit under the graph rather than spanning under the sidebar too. */
+	.stage-col {
+		flex: 1 1 auto;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.75rem;
+		gap: 0.5rem;
+	}
+	.sidebar {
+		flex: 0 0 224px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
 		font-size: 0.8rem;
+		overflow-y: auto;
+		padding-right: 0.15rem;
+	}
+	.ctl-wrap {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		transition: opacity 0.15s ease;
+	}
+	.ctl-wrap.dimmed {
+		opacity: 0.4;
+		pointer-events: none;
 	}
 	.group {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
-		padding: 0.6rem 0.7rem;
+		gap: 0.45rem;
+		padding: 0.5rem 0.6rem;
 		background: #fafafa;
 		border: 1px solid #eee;
 		border-radius: 8px;
-	}
-	.group-title {
-		margin: 0;
-		font-size: 0.66rem;
-		font-weight: 600;
-		letter-spacing: 0.06em;
-		text-transform: uppercase;
-		color: #9aa0aa;
 	}
 	.group-hint {
 		font-size: 0.7rem;
 		color: #9aa0aa;
 		margin-top: -0.2rem;
+	}
+
+	/* Pinned primary controls sit a touch brighter than the tabbed panel below. */
+	.primary {
+		background: #fff;
+		gap: 0.5rem;
+	}
+
+	/* Sidebar control tabs (Layout / Nodes / View). */
+	.ctl-tabs {
+		display: flex;
+		gap: 2px;
+		background: #eef0f4;
+		border: 1px solid #e6e8ec;
+		border-radius: 8px;
+		padding: 2px;
+	}
+	.ctl-tabs button {
+		flex: 1;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: transparent;
+		border: none;
+		color: #6b7280;
+		padding: 0.3rem 0.2rem;
+		border-radius: 6px;
+	}
+	.ctl-tabs button:hover {
+		color: #333;
+	}
+	.ctl-tabs button.active {
+		background: #fff;
+		color: #2563eb;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1);
+	}
+	.ctl-panel {
+		gap: 0.6rem;
 	}
 
 	/* Compact checkbox rows (node-info field picker). */
@@ -890,20 +1053,6 @@
 		color: #b45309;
 	}
 
-	.status {
-		gap: 0.25rem;
-		margin-top: auto;
-	}
-	.stat {
-		color: #555;
-	}
-	.stat b {
-		color: #222;
-	}
-	.computing {
-		color: #2563eb;
-	}
-
 	.disco {
 		font: inherit;
 		font-size: 0.82rem;
@@ -947,8 +1096,8 @@
 	.stage {
 		flex: 1 1 auto;
 		min-width: 0;
+		min-height: 300px;
 		position: relative;
-		height: 460px;
 		border: 1px solid #eee;
 		border-radius: 8px;
 		overflow: hidden;
@@ -1040,27 +1189,65 @@
 	.coord {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		color: #2563eb;
+		white-space: nowrap;
 	}
 	code {
 		background: #f0f0f0;
 		padding: 0 4px;
 		border-radius: 4px;
 	}
-	.node-info {
+	/* Floating node inspector, overlaid on the graph while a node is selected. */
+	.inspector {
+		position: absolute;
+		top: 10px;
+		left: 10px;
+		z-index: 5;
+		width: 272px;
+		max-width: calc(100% - 20px);
+		max-height: calc(100% - 20px);
+		overflow: auto;
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
+		gap: 0.55rem;
 		font-size: 0.82rem;
-		background: #f8fafc;
-		border: 1px solid #e5e7eb;
-		border-radius: 6px;
+		background: #fff;
+		border: 1px solid #d7dbe2;
+		border-radius: 8px;
 		padding: 0.55rem 0.7rem;
+		box-shadow: 0 10px 28px rgba(16, 24, 40, 0.22);
+	}
+	.insp-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+	.insp-title {
+		font-weight: 600;
+		color: #1f2430;
+	}
+	.insp-title code {
+		background: #eef1f5;
+		padding: 0 4px;
+		border-radius: 4px;
+	}
+	.insp-close {
+		flex: 0 0 auto;
+		background: none;
+		border: none;
+		font-size: 1.2rem;
+		line-height: 1;
+		color: #98a0ac;
+		cursor: pointer;
+		padding: 0 0.15rem;
+	}
+	.insp-close:hover {
+		color: #1f2430;
 	}
 	.ni-fields {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem 1.1rem;
-		align-items: baseline;
+		flex-direction: column;
+		gap: 0.25rem;
 	}
 	.ni-key {
 		color: #9aa0aa;
@@ -1132,14 +1319,9 @@
 		padding: 0.05rem 0.4rem;
 		border-radius: 4px;
 		white-space: nowrap;
-	}
-	.etag.start {
-		background: #dcfce7;
-		color: #166534;
-	}
-	.etag.end {
-		background: #fee2e2;
-		color: #991b1b;
+		background: #fef3c7;
+		color: #92400e;
+		align-self: flex-start;
 	}
 	.chip {
 		background: #fff;
@@ -1148,5 +1330,32 @@
 		padding: 0.05rem 0.4rem;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.74rem;
+	}
+	.exit-note {
+		margin: 0;
+		font-size: 0.8rem;
+		line-height: 1.45;
+		color: #4b5563;
+	}
+	.exit-more {
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		border: 1px solid #bfdbfe;
+		background: #eff6ff;
+		color: #1d4ed8;
+		padding: 0.35rem 0.5rem;
+		border-radius: 7px;
+		text-align: center;
+	}
+	.exit-more:hover {
+		background: #dbeafe;
+		border-color: #93c5fd;
+	}
+	.exit-hint {
+		font-size: 0.72rem;
+		line-height: 1.4;
+		color: #9aa0aa;
 	}
 </style>

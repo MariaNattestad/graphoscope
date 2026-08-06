@@ -97,7 +97,7 @@
 			<code>query.wasm</code> the locus browser uses — not a separate demo implementation. The
 			constructed graphs each isolate one thing the algorithm has to get right, and the numbers below
 			are pinned in <code>crates/reduce/src/tests.rs</code>.
-			<a href="{base}/">← back to the browser</a>
+			<a href="{base}/" data-sveltekit-reload>← back to the browser</a>
 		</p>
 	</header>
 

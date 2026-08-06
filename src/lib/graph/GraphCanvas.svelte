@@ -18,12 +18,32 @@
 		orient: '+' | '-';
 	}
 
+	// A clicked gene-track feature (an exon), surfaced to the inspector.
+	export interface SelectedFeature {
+		symbol: string;
+		name: string;
+		exonNum: number;
+		nExons: number;
+		contig: string;
+		start: number;
+		end: number;
+	}
+
+	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), surfaced
+	// to the inspector so we can explain it and offer more context.
+	export interface SelectedExit {
+		segId: string;
+		side: 'left' | 'right';
+	}
+
 	let {
 		layout,
 		refCoords,
 		genes = [],
 		strokeWidth = 3,
 		onSelectSegment,
+		onSelectFeature,
+		onSelectExit,
 		discoPath = null,
 		discoColor = '#ff3ce0',
 		discoActive = false,
@@ -37,6 +57,10 @@
 		genes?: Transcript[];
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
+		/** A gene-track exon was clicked (or cleared); shown in the inspector. */
+		onSelectFeature?: (feature: SelectedFeature | null) => void;
+		/** An off-locus exit cue was clicked (or cleared); shown in the inspector. */
+		onSelectExit?: (exit: SelectedExit | null) => void;
 		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
 		 * Falls back to a default line when not supplied. */
 		nodeTooltip?: (segId: string) => string;
@@ -139,8 +163,21 @@
 		yTop: number;
 		yBot: number;
 		label: string;
+		feature: SelectedFeature;
 	}
 	let exonHits: ExonHit[] = [];
+
+	// Screen-space hit regions for the off-locus exit cues (the dashed lines), so a
+	// click near one can resolve which chopped strand it belongs to. Rebuilt each
+	// draw by drawExitCues, alongside the geometry it strokes.
+	interface ExitHit {
+		x0: number;
+		x1: number;
+		yTop: number;
+		yBot: number;
+		exit: SelectedExit;
+	}
+	let exitHits: ExitHit[] = [];
 	// Flip the tooltip above the cursor near the bottom of the stage (the gene
 	// track lives there, and a tooltip below would clip against the frame).
 	const tooltipAbove = $derived(hoverPos.y > 360);
@@ -587,7 +624,16 @@
 							label:
 								`${g.symbol} · exon ${exNum}/${nExons} · ` +
 								`${contig}:${ex.start.toLocaleString()}–${ex.end.toLocaleString()} · ` +
-								`${(ex.end - ex.start).toLocaleString()} bp · ${g.name}`
+								`${(ex.end - ex.start).toLocaleString()} bp · ${g.name}`,
+							feature: {
+								symbol: g.symbol,
+								name: g.name,
+								exonNum: exNum,
+								nExons,
+								contig,
+								start: ex.start,
+								end: ex.end
+							}
 						});
 					}
 				}
@@ -684,11 +730,16 @@
 	// haplotype exits the locus. We can't know *which* node it reconnects to (it's
 	// outside the subgraph), only that it leaves this way.
 	function drawExitCues(ctx: CanvasRenderingContext2D, width: number) {
+		exitHits = [];
 		if (!showExits) return;
 		ctx.save();
 		ctx.setLineDash([4, 4]);
 		ctx.lineWidth = 1.5;
 		ctx.lineCap = 'butt';
+		// Clickable band around each dashed line: a few px tall, and only the near
+		// stretch (the cue fades out well before the frame edge anyway).
+		const HIT_TOL = 5;
+		const HIT_LEN = 90;
 		for (const chain of layout.chains) {
 			if (layout.backboneSegIds.has(chain.segId)) continue; // the reference axis marks its own ends
 			const ids = chain.nodeIds;
@@ -700,7 +751,8 @@
 				if (!n) continue;
 				const ex = toScreenX(n.x);
 				const ey = toScreenY(n.y);
-				const edgeX = ex < width / 2 ? 0 : width;
+				const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
+				const edgeX = side === 'left' ? 0 : width;
 				const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
 				grad.addColorStop(0, theme.exitCue);
 				grad.addColorStop(1, theme.exitCueFade);
@@ -709,6 +761,14 @@
 				ctx.moveTo(ex, ey);
 				ctx.lineTo(edgeX, ey);
 				ctx.stroke();
+				const nearX = side === 'left' ? Math.max(edgeX, ex - HIT_LEN) : Math.min(edgeX, ex + HIT_LEN);
+				exitHits.push({
+					x0: Math.min(ex, nearX),
+					x1: Math.max(ex, nearX),
+					yTop: ey - HIT_TOL,
+					yBot: ey + HIT_TOL,
+					exit: { segId: chain.segId, side }
+				});
 			}
 		}
 		ctx.setLineDash([]);
@@ -755,6 +815,20 @@
 	function findExonAt(px: number, py: number): string | null {
 		for (const h of exonHits) {
 			if (px >= h.x0 && px <= h.x1 && py >= h.yTop && py <= h.yBot) return h.label;
+		}
+		return null;
+	}
+
+	function findFeatureAt(px: number, py: number): SelectedFeature | null {
+		for (const h of exonHits) {
+			if (px >= h.x0 && px <= h.x1 && py >= h.yTop && py <= h.yBot) return h.feature;
+		}
+		return null;
+	}
+
+	function findExitAt(px: number, py: number): SelectedExit | null {
+		for (const h of exitHits) {
+			if (px >= h.x0 && px <= h.x1 && py >= h.yTop && py <= h.yBot) return h.exit;
 		}
 		return null;
 	}
@@ -852,8 +926,17 @@
 			clickStart = null;
 			if (moved > 4) return;
 			const rect = canvasEl!.getBoundingClientRect();
-			const segId = findSegmentAt(e.clientX - rect.left, e.clientY - rect.top);
+			const px = e.clientX - rect.left;
+			const py = e.clientY - rect.top;
+			// Priority: a gene-track exon (bottom band), then a strand, then an
+			// off-locus exit cue (the dashed tail past a chopped strand end). All three
+			// are emitted — with null for the misses — so selecting one clears the rest.
+			const feature = findFeatureAt(px, py);
+			const segId = feature ? null : findSegmentAt(px, py);
+			const exit = feature || segId ? null : findExitAt(px, py);
+			onSelectFeature?.(feature);
 			onSelectSegment?.(segId);
+			onSelectExit?.(exit);
 		}
 		function onPointerMove(e: PointerEvent) {
 			const rect = canvasEl!.getBoundingClientRect();
@@ -876,12 +959,14 @@
 			const segId = findSegmentAt(px, py);
 			if (segId !== hoveredSegment) {
 				setHovered(segId);
-				canvasEl!.style.cursor = segId ? 'pointer' : 'grab';
 				draw();
-			} else if (hoveredSegment === null && hoverLabel !== null) {
-				// moved off an exon into empty space — clear the lingering label
-				hoverLabel = null;
-				canvasEl!.style.cursor = 'grab';
+			}
+			if (segId) {
+				canvasEl!.style.cursor = 'pointer';
+			} else {
+				// Empty space, or the dashed tail of an off-locus exit (also clickable).
+				if (hoverLabel !== null) hoverLabel = null;
+				canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
 			}
 		}
 		function onPointerLeave() {

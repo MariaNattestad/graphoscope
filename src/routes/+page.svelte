@@ -5,6 +5,7 @@
 	import RefArcView from '$lib/RefArcView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
+	import QueryReport from '$lib/graph/QueryReport.svelte';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
 	import { searchGenes, resolveGene, geneToLocus, type GeneEntry } from '$lib/genes';
 	import { GRAPHS, DEFAULT_GENE, MAX_GFA_BYTES, type GraphId } from '$lib/graphs';
@@ -52,6 +53,23 @@
 	// State
 	let running = $state(false);
 	let error = $state<string | null>(null);
+	// Which visualization fills the main workspace, and whether the About/docs
+	// overlay is open. UI-only, so plain local state.
+	let view = $state<'graph' | 'arcs' | 'data'>('graph');
+	let aboutOpen = $state(false);
+	// The query popover, opened from the header pill: reference graph, locus/gene,
+	// examples, and context — everything needed to compose or change a query. The
+	// graph stays visible behind a dim scrim. Closed by the pill, the scrim, Escape,
+	// or running a query.
+	let queryOpen = $state(false);
+	// The locus field inside that popover, focused + selected when it opens.
+	let queryInputEl = $state<HTMLInputElement | null>(null);
+	// One-line explanation of each hosted graph, shown in that popover so the
+	// choice isn't just two opaque labels.
+	const GRAPH_BLURB: Record<GraphId, string> = {
+		grch38: 'The standard human reference. Coordinates most tools and papers use.',
+		chm13: 'The T2T complete assembly — gapless, including centromeres and other regions GRCh38 leaves out.'
+	};
 	// The graph the widgets see. It arrives already simplified + walk-counted from
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
 	// per-node/edge coverage tags), so the browser never parses the full,
@@ -177,11 +195,21 @@
 		return () => client?.terminate();
 	});
 
+	// Focus + select the locus field whenever the query popover opens, so the user
+	// can immediately overtype what they're replacing.
+	$effect(() => {
+		if (queryOpen && queryInputEl) {
+			queryInputEl.focus();
+			queryInputEl.select();
+		}
+	});
+
 	async function run(sourceKind: 'coords' | 'gene' | 'example' = 'coords') {
 		error = null;
 		oversized = null;
 		queriedGene = null;
 		showSuggest = false;
+		queryOpen = false;
 		const qsource: QuerySource = { kind: 'url', url: graph.dbUrl };
 		let locus;
 		const raw = locusText.trim();
@@ -278,6 +306,15 @@
 	function runExampleGene(gene: string) {
 		locusText = gene;
 		run('example');
+	}
+
+	// Widen the context and re-query the current locus. Offered from the off-locus
+	// exit inspector in the graph, where "there's more past the edge" is the whole
+	// point; doubling is a meaningful jump without a fiddly guess (100 → 200 → 400).
+	function requestMoreContext() {
+		contextBp = contextBp > 0 ? contextBp * 2 : 200;
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'increase_context' });
+		run();
 	}
 
 	// ---- Break-glass: view the unsimplified graph -------------------------------
@@ -438,222 +475,244 @@
 	}
 </script>
 
-<main>
-	<header class="topbar">
-		<h1>Graphoscope</h1>
-		<span class="tagline">HPRC human pangenome graphs, queried by locus</span>
-		<span class="spacer"></span>
-		<div class="graph-switch" role="group" aria-label="Choose pangenome graph">
-			{#each GRAPHS as g (g.id)}
-				<button
-					class="gbtn"
-					class:active={g.id === graphId}
-					onclick={() => selectGraph(g.id)}
-					disabled={running}
-					title="reference: {g.referenceSample}"
-				>
-					{g.label}
-				</button>
-			{/each}
+<svelte:window
+	onkeydown={(e) => {
+		if (e.key === 'Escape') {
+			aboutOpen = false;
+			queryOpen = false;
+		}
+	}}
+/>
+
+<div class="app">
+	<header class="appbar">
+		<div class="brand">
+			<h1>Graphoscope</h1>
+			<span class="tagline">HPRC pangenome graphs, queried by locus</span>
 		</div>
-		<a class="pg-link" href="{base}/playground">Playground →</a>
+
+		<div class="querypill-wrap">
+			<button
+				class="querypill"
+				class:open={queryOpen}
+				onclick={() => (queryOpen = !queryOpen)}
+				title="Change the query: reference graph, locus/gene, and context"
+			>
+				<span class="qp-ref">{graph.referenceSample}</span>
+				<span class="qp-slash">/</span>
+				<span class="qp-main">{queriedGene ?? locusText}</span>
+				{#if queriedGene}<span class="qp-coord">{locusText}</span>{/if}
+				<span class="qp-caret" aria-hidden="true">▾</span>
+			</button>
+
+			{#if queryOpen}
+				<div class="query-pop" role="dialog" aria-label="Query">
+					<div class="qp-block">
+						<span class="qp-head">Reference graph</span>
+						<div class="qp-graphs" role="group" aria-label="Choose pangenome graph">
+							{#each GRAPHS as g (g.id)}
+								<button
+									class="qp-graph"
+									class:active={g.id === graphId}
+									onclick={() => selectGraph(g.id)}
+									disabled={running}
+								>
+									<b>{g.label}</b>
+									<span class="qp-desc">{GRAPH_BLURB[g.id]}</span>
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<div class="qp-block">
+						<span class="qp-head">Locus or gene</span>
+						<div class="qp-locus-row">
+							<div class="locus-input">
+								<input
+									bind:this={queryInputEl}
+									type="text"
+									bind:value={locusText}
+									oninput={onLocusInput}
+									onkeydown={onLocusKey}
+									onblur={() => setTimeout(() => (showSuggest = false), 120)}
+									onfocus={onLocusInput}
+									placeholder="chr6:31972046-32055647 or HLA-A"
+									autocomplete="off"
+								/>
+								{#if showSuggest && suggestions.length > 0}
+									<ul class="suggest" role="listbox">
+										{#each suggestions as s, i (s.name)}
+											<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
+											<li
+												role="option"
+												aria-selected={i === activeSuggest}
+												class:active={i === activeSuggest}
+												onmousedown={(e) => {
+													e.preventDefault();
+													pickGene(s);
+												}}
+											>
+												<b>{s.name}</b>
+												<span class="scoord"
+													>{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span
+												>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+							<button class="go" onclick={() => run()} disabled={running}>
+								{running ? 'Querying…' : 'Query'}
+							</button>
+						</div>
+						<div class="qp-examples">
+							<span class="ex-lbl">e.g.</span>
+							{#each EXAMPLE_GENES as gene (gene)}
+								<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
+									{gene}
+								</button>
+							{/each}
+						</div>
+					</div>
+
+					<div class="qp-block">
+						<span class="qp-head">Context <span class="qp-unit">bp</span></span>
+						<div class="qp-ctx-row">
+							<input
+								class="qp-ctx-input"
+								type="number"
+								min="0"
+								step="50"
+								bind:value={contextBp}
+								onkeydown={(e) => e.key === 'Enter' && run()}
+							/>
+							<span class="qp-ctx-help"
+								>bp past the locus each haplotype is followed before it is cut off</span
+							>
+						</div>
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<div class="appbar-links">
+			<a
+				class="link-btn"
+				href="https://github.com/MariaNattestad/graphoscope"
+				target="_blank"
+				rel="noopener"
+			>
+				GitHub ↗
+			</a>
+			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
+		</div>
 	</header>
 
-	<section class="toolbar">
-		<label class="locus-field">
-			<span class="lbl">Locus or gene</span>
-			<div class="locus-input">
-				<input
-					type="text"
-					bind:value={locusText}
-					oninput={onLocusInput}
-					onkeydown={onLocusKey}
-					onblur={() => setTimeout(() => (showSuggest = false), 120)}
-					onfocus={onLocusInput}
-					placeholder="chr6:31972046-32055647 or HLA-A"
-					autocomplete="off"
-					size="26"
-				/>
-				{#if showSuggest && suggestions.length > 0}
-					<ul class="suggest" role="listbox">
-						{#each suggestions as s, i (s.name)}
-							<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-							<li
-								role="option"
-								aria-selected={i === activeSuggest}
-								class:active={i === activeSuggest}
-								onmousedown={(e) => {
-									e.preventDefault();
-									pickGene(s);
-								}}
-							>
-								<b>{s.name}</b>
-								<span class="scoord">{s.contig}:{s.start.toLocaleString()}-{s.end.toLocaleString()}</span>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</div>
-		</label>
-		<label
-			class="context-field"
-			title="How far past the locus (bp) the query follows haplotypes into the graph before cutting them off. Larger reveals more of where they go (fewer dangling dead-ends), at the cost of a bigger, denser subgraph. Applied on the next Query."
-		>
-			<span class="lbl">Context (bp)</span>
-			<input
-				class="ctx-input"
-				type="number"
-				min="0"
-				step="50"
-				bind:value={contextBp}
-				onkeydown={(e) => e.key === 'Enter' && run()}
-			/>
-		</label>
-		<button class="go" onclick={() => run()} disabled={running}>
-			{running ? 'Querying…' : 'Query'}
-		</button>
-		<span class="examples">
-			{#each EXAMPLE_GENES as gene (gene)}
-				<button class="chip" onclick={() => runExampleGene(gene)} disabled={running}>
-					{gene}
-				</button>
-			{/each}
-		</span>
-	</section>
+	{#if queryOpen}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="query-scrim" role="presentation" onclick={() => (queryOpen = false)}></div>
+	{/if}
 
 	{#if error}
-		<pre class="error">{error}</pre>
+		<div class="error-banner"><pre>{error}</pre></div>
 	{/if}
 
-	{#if oversized}
-		<section class="panel">
-			<p class="oversized">
-				<b>This region's graph is too tangled to render.</b> Even after simplification it came back at
-				~{fmtBytes(oversized.bytes)}, which is far past anything we've seen from a normal locus — try
-				a smaller window or a specific gene.
-			</p>
-		</section>
-	{/if}
+	<div class="workspace">
+		{#if stats && gfa}
+			<section class="mainview">
+				<nav class="tabs">
+					<button class="tab" class:active={view === 'graph'} onclick={() => (view = 'graph')}
+						>Graph layout</button
+					>
+					<button class="tab" class:active={view === 'arcs'} onclick={() => (view = 'arcs')}
+						>Variant arcs</button
+					>
+					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
+						>Raw data</button
+					>
+				</nav>
 
-	{#if stats && gfa}
-		<section class="panel graph-panel">
-			<div class="title-row">
-				<h2 class="panel-title">
-					Reference-anchored graph layout
-					{#if queriedGene}<span class="muted small">· {queriedGene} · <code>{locusText}</code></span
-						>{/if}
-				</h2>
+				<div class="tabbody" class:pad={view !== 'graph'}>
+					{#if view === 'graph' && displayGfa}
+						<GraphLayoutView
+							gfa={displayGfa}
+							referenceSample={graph.referenceSample}
+							refKey={graph.refKey}
+							discoAvailable={canShowUnsimplified}
+							discoLoading={loadingUnsimplified}
+							onRequestDiscoGraph={requestDiscoGraph}
+							discoWalksGfa={unsimplified}
+							showingAllNodes={showUnsimplified}
+							allNodesCount={unsimplifiedNodes}
+							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+							onToggleSimplify={toggleUnsimplified}
+							onRequestMoreContext={requestMoreContext}
+							locusLabel={queriedGene ?? locusText}
+							{fetchInfo}
+							querying={running}
+						/>
+					{:else if view === 'arcs'}
+						<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
+					{:else if view === 'data'}
+						<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
+					{/if}
+				</div>
+			</section>
+		{:else}
+			<!-- Before the first graph exists, still show the whole shell (tabs, options
+			     panel with the live report, canvas frame) rather than a bare message. -->
+			<section class="mainview">
+				<nav class="tabs">
+					<button class="tab active">Graph layout</button>
+					<button class="tab" disabled>Variant arcs</button>
+					<button class="tab" disabled>Raw data</button>
+				</nav>
+				<div class="tabbody">
+					<div class="shell">
+						<aside class="shell-side">
+							<QueryReport locusLabel={queriedGene ?? locusText} querying={running} />
+						</aside>
+						<div class="shell-stage">
+							{#if running}
+								<div class="ph-inner light">
+									<span class="ph-spinner"></span> Querying <code>{locusText}</code>…
+								</div>
+							{:else if oversized}
+								<div class="ph-inner warn">
+									<b>This region's graph is too tangled to render.</b> Even after simplification it came
+									back at ~{fmtBytes(oversized.bytes)}, far past anything we've seen from a normal locus —
+									try a smaller window or a specific gene.
+								</div>
+							{:else}
+								<div class="ph-inner light">Open the query menu at the top to choose a locus.</div>
+							{/if}
+						</div>
+					</div>
+				</div>
+			</section>
+		{/if}
+	</div>
+</div>
+
+{#if aboutOpen}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div class="modal-backdrop" role="presentation" onclick={() => (aboutOpen = false)}>
+		<!-- svelte-ignore a11y_click_events_have_key_events -->
+		<div
+			class="modal"
+			role="dialog"
+			tabindex="-1"
+			aria-modal="true"
+			aria-label="About Graphoscope"
+			onclick={(e) => e.stopPropagation()}
+		>
+			<div class="modal-head">
+				<h2>About Graphoscope</h2>
+				<button class="modal-close" onclick={() => (aboutOpen = false)} aria-label="Close">×</button>
 			</div>
-			{#if displayGfa}
-				<GraphLayoutView
-					gfa={displayGfa}
-					referenceSample={graph.referenceSample}
-					refKey={graph.refKey}
-					discoAvailable={canShowUnsimplified}
-					discoLoading={loadingUnsimplified}
-					onRequestDiscoGraph={requestDiscoGraph}
-					discoWalksGfa={unsimplified}
-					showingAllNodes={showUnsimplified}
-					allNodesCount={unsimplifiedNodes}
-					allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
-					onToggleSimplify={toggleUnsimplified}
-				/>
-			{/if}
-		</section>
-
-		<section class="panel">
-			<h2 class="panel-title">This locus</h2>
-			<table class="statstable">
-				<thead>
-					<tr>
-						<th></th>
-						<th>as stored</th>
-						<th>after simplification</th>
-					</tr>
-				</thead>
-				<tbody>
-					<tr>
-						<th>nodes</th>
-						<td>{(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</td>
-						<td><b>{stats.segments.toLocaleString()}</b></td>
-					</tr>
-					<tr>
-						<th>links</th>
-						<td>{(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</td>
-						<td><b>{stats.links.toLocaleString()}</b></td>
-					</tr>
-					<tr>
-						<th>haplotype walks</th>
-						<td>{stats.walks.toLocaleString()}</td>
-						<td class="muted">counted per node, not stored</td>
-					</tr>
-					{#if gfa.reduced}
-						<tr>
-							<th>sites collapsed</th>
-							<td class="muted">—</td>
-							<td
-								>{gfa.reduced.sites.toLocaleString()}
-								<span class="muted"
-									>({gfa.reduced.snpCount.toLocaleString()} SNPs, {gfa.reduced.basesRemoved.toLocaleString()}
-									alt bp)</span
-								></td
-							>
-						</tr>
-						<tr>
-							<th>chains merged</th>
-							<td class="muted">—</td>
-							<td>{gfa.reduced.unchopMerges.toLocaleString()}</td>
-						</tr>
-					{/if}
-					{#if stats.referencePathBp != null}
-						<tr>
-							<th>reference span</th>
-							<td colspan="2">{stats.referencePathBp.toLocaleString()} bp</td>
-						</tr>
-					{/if}
-					<tr>
-						<th>sequence shown</th>
-						<td colspan="2">{stats.totalSequenceBp.toLocaleString()} bp</td>
-					</tr>
-					{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
-						<!-- Only worth showing where it differs: at a repetitive locus one
-						     haplotype is broken into many traversal fragments, and that gap
-						     is itself the interesting fact about the locus. -->
-						<tr>
-							<th>traversal fragments</th>
-							<td colspan="2"
-								>{stats.walkRecords.toLocaleString()}
-								<span class="muted"
-									>({(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× per haplotype —
-									repetitive locus)</span
-								></td
-							>
-						</tr>
-					{/if}
-				</tbody>
-			</table>
-			{#if fetchInfo}
-				<p class="muted small">
-					Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads from
-					a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
-				</p>
-			{/if}
-		</section>
-
-		<section class="panel">
-			<h2 class="panel-title">Large non-reference nodes</h2>
-			<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
-		</section>
-
-		<section class="panel">
-			<h2 class="panel-title">Simplified graph data</h2>
-			<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
-		</section>
-	{/if}
-
-	<section class="panel">
-		<h2 class="panel-title">How the on-demand querying works</h2>
-		<div class="how-body">
+			<div class="modal-body">
+				<h3>How the on-demand querying works</h3>
+				<div class="how-body">
 			<p>
 				The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
 				the Human Pangenome Reference Consortium. Each is distributed as a
@@ -690,6 +749,10 @@
 				Crucially, instead of keeping every walk it just <b>counts</b> how many pass through each node
 				and edge — that count is what the yellow&#8202;→&#8202;red colouring shows. The effect on
 				memory is large: a locus like LPA drops from hundreds of megabytes of parsed graph to a few.
+				A standalone <a href="{base}/playground" target="_blank" rel="noopener"
+					>simplification playground</a
+				> (a testing sandbox) lets you tweak the collapse threshold and compare the original and
+				simplified graphs side by side.
 			</p>
 			<p>
 				Currently showing: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus
@@ -697,14 +760,9 @@
 				for coordinate range queries.
 			</p>
 		</div>
-	</section>
 
-	<section class="panel ack">
-		<h2 class="panel-title">Acknowledgements</h2>
-		<p class="muted small">
-			Big thanks to:
-		</p>
-		<ul class="ack-list">
+			<h3>Acknowledgements</h3>
+			<ul class="ack-list">
 			<li>
 				<b>The Human Pangenome Reference Consortium (HPRC)</b> and the
 				<b>Minigraph-Cactus</b> team for building and openly releasing the pangenome graphs shown
@@ -730,236 +788,360 @@
 				<b>42basepairs</b> for the range-request idea that this is modelled on.
 			</li>
 			<li>Gene coordinates from <b>GENCODE</b> (GRCh38) and the <b>T2T-CHM13v2.0</b> annotation.</li>
-		</ul>
-	</section>
-
-	<footer class="muted small">
-		GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
-	</footer>
-</main>
+			</ul>
+			</div>
+			<footer class="modal-foot muted small">
+				GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
+			</footer>
+		</div>
+	</div>
+{/if}
 
 <style>
+	:global(html),
 	:global(body) {
+		height: 100%;
 		margin: 0;
 		font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-		color: #1a1a1a;
-		background: #fff;
+		color: #1f2430;
+		background: #eef1f5;
 	}
-	main {
-		max-width: 1100px;
-		margin: 0 auto;
-		padding: 2rem 1.5rem 4rem;
+	:global(*),
+	:global(*::before),
+	:global(*::after) {
+		box-sizing: border-box;
 	}
-	h1 {
-		margin: 0 0 0.2rem;
-		font-size: 1.5rem;
-	}
-	.how-body {
-		margin-top: 0.5rem;
-		font-size: 0.85rem;
-		padding: 0.6rem 0.9rem;
-		border-left: 3px solid #dbeafe;
-		background: #f8faff;
-		border-radius: 0 8px 8px 0;
-		color: #444;
-	}
-	.how-body p {
-		margin: 0 0 0.6rem;
-	}
-	.how-body p:last-child {
-		margin-bottom: 0;
-	}
-	.topbar {
+
+	.app {
+		height: 100vh;
 		display: flex;
-		align-items: baseline;
-		gap: 0.75rem;
-		flex-wrap: wrap;
-		padding: 0 0 0.75rem;
-		border-bottom: 1px solid #ececec;
-		margin-bottom: 0.75rem;
+		flex-direction: column;
+		overflow: hidden;
+		background: #eef1f5;
 	}
-	.topbar h1 {
+
+	/* ---- top bar: a thin identity strip over a distinct query banner ---- */
+	.appbar {
+		/* Above the query scrim, so the strip (and its popover) stay bright while
+		   the rest of the page dims behind them. */
+		position: relative;
+		z-index: 100;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.4rem 1rem;
+		/* A sleek purple strip, nodding to the disco-walks button's gradient. */
+		background: linear-gradient(90deg, #2e1065 0%, #6d28d9 58%, #9333ea 100%);
+		border-bottom: 1px solid #4c1d95;
+		box-shadow: 0 1px 3px rgba(76, 29, 149, 0.25);
+		flex: 0 0 auto;
+	}
+	.appbar .brand h1 {
+		color: #fff;
+	}
+	.appbar .tagline {
+		color: #d6bcfa;
+	}
+	.appbar .link-btn {
+		color: #ede9fe;
+	}
+	.appbar .link-btn:hover {
+		color: #fff;
+	}
+	.brand {
+		display: flex;
+		flex-direction: column;
+		line-height: 1.15;
+	}
+	.brand h1 {
 		margin: 0;
 		font-size: 1.15rem;
+		font-weight: 700;
+		letter-spacing: -0.01em;
 	}
-	.topbar .tagline {
-		color: #777;
-		font-size: 0.82rem;
-	}
-	.topbar .spacer {
-		flex: 1;
-	}
-	.toolbar {
-		display: flex;
-		align-items: flex-end;
-		gap: 0.6rem;
-		flex-wrap: wrap;
-		margin-bottom: 0.75rem;
-	}
-	.toolbar .lbl {
-		display: block;
+	.tagline {
+		color: #7a828f;
 		font-size: 0.72rem;
-		color: #777;
-		margin-bottom: 0.15rem;
-	}
-	.toolbar .examples {
-		display: flex;
-		gap: 0.3rem;
-		flex-wrap: wrap;
-		align-items: center;
-	}
-	.toolbar .go {
-		padding: 0.4rem 1rem;
-	}
-	.graph-panel {
-		margin-bottom: 0.75rem;
-	}
-	.statstable {
-		border-collapse: collapse;
-		font-size: 0.85rem;
-		min-width: min(520px, 100%);
-	}
-	.statstable th,
-	.statstable td {
-		text-align: left;
-		padding: 0.3rem 1rem 0.3rem 0;
-		border-bottom: 1px solid #f0f0f0;
-		white-space: nowrap;
-	}
-	.statstable thead th {
-		font-size: 0.72rem;
-		font-weight: 500;
-		color: #888;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-	}
-	.statstable tbody th {
-		font-weight: 400;
-		color: #555;
-	}
-	.statstable td {
-		font-variant-numeric: tabular-nums;
 	}
 
-	.panel {
-		border: 1px solid #e6e6e6;
-		border-radius: 10px;
-		padding: 1rem;
-		margin-bottom: 1rem;
-		background: #fff;
-	}
-	.panel-title {
-		margin: 0 0 0.8rem;
-		font-size: 0.95rem;
-		font-weight: 600;
-		color: #444;
-	}
-	.title-row {
+	/* ---- query pill in the header + its popover ---- */
+	.querypill-wrap {
+		position: relative;
 		display: flex;
+		justify-content: center;
+	}
+	.querypill {
+		display: inline-flex;
 		align-items: baseline;
-		justify-content: space-between;
-		gap: 0.8rem;
-		flex-wrap: wrap;
-	}
-	.title-row .panel-title {
-		margin: 0 0 0.8rem;
-	}
-	label {
-		font-size: 0.9rem;
-	}
-	input[type='text'] {
-		font: inherit;
-		padding: 0.35rem 0.5rem;
-		border: 1px solid #ccc;
-		border-radius: 6px;
-	}
-	button {
-		font: inherit;
-		font-weight: 600;
-		padding: 0.4rem 1.1rem;
-		border: none;
-		border-radius: 6px;
-		background: #2563eb;
+		gap: 0.45rem;
+		max-width: 46vw;
+		padding: 0.3rem 0.85rem;
+		border-radius: 999px;
+		border: 1px solid rgba(255, 255, 255, 0.25);
+		background: rgba(255, 255, 255, 0.12);
 		color: #fff;
+		font: inherit;
+		cursor: pointer;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.querypill:hover {
+		background: rgba(255, 255, 255, 0.2);
+		border-color: rgba(255, 255, 255, 0.4);
+	}
+	.querypill.open {
+		background: #fff;
+		border-color: #fff;
+		color: #2e1065;
+	}
+	.qp-ref {
+		flex: 0 0 auto;
+		font-size: 0.82rem;
+		opacity: 0.75;
+	}
+	.qp-slash {
+		flex: 0 0 auto;
+		opacity: 0.5;
+	}
+	/* The user's input can be a long coordinate; let it ellipsize so the caret
+	   (and reference) stay visible rather than being pushed out of the pill. */
+	.qp-main {
+		flex: 0 1 auto;
+		min-width: 2.5rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.85rem;
+		font-weight: 700;
+	}
+	.qp-coord {
+		flex: 0 1 auto;
+		min-width: 0;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.72rem;
+		opacity: 0.65;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.qp-caret {
+		flex: 0 0 auto;
+		font-size: 0.6rem;
+		opacity: 0.8;
+	}
+
+	/* Dim scrim over the page — under the header (z 100), so the strip and its
+	   popover stay bright while everything below dims. */
+	.query-scrim {
+		position: fixed;
+		inset: 0;
+		z-index: 90;
+		background: rgba(16, 24, 40, 0.4);
+	}
+	.query-pop {
+		position: absolute;
+		top: calc(100% + 10px);
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 101;
+		width: min(540px, 90vw);
+		display: flex;
+		flex-direction: column;
+		gap: 0.9rem;
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 12px;
+		padding: 1rem 1.1rem;
+		box-shadow: 0 18px 44px rgba(16, 24, 40, 0.28);
+		color: #1f2430;
+		text-align: left;
+	}
+	.qp-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.qp-block + .qp-block {
+		border-top: 1px solid #f0f2f5;
+		padding-top: 0.9rem;
+	}
+	.qp-head {
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: #6b7280;
+	}
+	.qp-unit {
+		font-weight: 500;
+		letter-spacing: 0;
+		text-transform: none;
+		color: #b0b6c0;
+	}
+	.qp-graphs {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
+	}
+	.qp-graph {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		text-align: left;
+		font: inherit;
+		background: #f7f8fa;
+		border: 1px solid #e3e7ee;
+		border-radius: 9px;
+		padding: 0.5rem 0.6rem;
 		cursor: pointer;
 	}
-	button:disabled {
-		background: #9db8ef;
+	.qp-graph:hover:not(:disabled) {
+		background: #eef2ff;
+		border-color: #c7d2fe;
+	}
+	.qp-graph.active {
+		background: #f5f0ff;
+		border-color: #9333ea;
+		box-shadow: inset 0 0 0 1px rgba(147, 51, 234, 0.35);
+	}
+	.qp-graph b {
+		font-size: 0.85rem;
+		color: #1f2430;
+	}
+	.qp-graph.active b {
+		color: #6d28d9;
+	}
+	.qp-desc {
+		font-size: 0.72rem;
+		line-height: 1.35;
+		color: #7a828f;
+	}
+	.qp-graph:disabled {
+		opacity: 0.6;
 		cursor: default;
 	}
-	button.chip {
-		background: #eef2ff;
-		color: #3730a3;
-		font-weight: 500;
-		padding: 0.25rem 0.7rem;
-		font-size: 0.82rem;
+	.qp-locus-row {
+		display: flex;
+		gap: 0.5rem;
 	}
-	button.chip:disabled {
-		background: #f3f4f6;
-		color: #9ca3af;
+	.qp-locus-row .locus-input {
+		flex: 1;
 	}
-
-	/* --- graph switch --- */
-	.graph-switch {
+	.qp-locus-row input[type='text'] {
+		width: 100%;
+		font: inherit;
+		font-size: 0.95rem;
+		padding: 0.45rem 0.6rem;
+		border: 1px solid #d3d9e2;
+		border-radius: 8px;
+		background: #eef4ff;
+		color: #1f2430;
+	}
+	.qp-locus-row input[type='text']:focus {
+		outline: 2px solid #2563eb;
+		outline-offset: -1px;
+		border-color: #2563eb;
+		background: #fff;
+	}
+	.qp-examples {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		flex-wrap: wrap;
+	}
+	.qp-ctx-row {
 		display: flex;
 		align-items: center;
 		gap: 0.6rem;
-		flex-wrap: wrap;
-		margin-bottom: 0.9rem;
 	}
-	.pg-link {
-		color: #2563eb;
-		font-size: 0.85rem;
-		text-decoration: none;
-		white-space: nowrap;
-	}
-	.pg-link:hover {
-		text-decoration: underline;
-	}
-	.gbtn {
-		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 0.1rem;
-		background: #f3f4f6;
-		color: #1f2937;
-		border: 1px solid #d1d5db;
-		padding: 0.45rem 0.9rem;
-		line-height: 1.2;
-	}
-	.gbtn:hover:not(:disabled) {
-		background: #e5e7eb;
-	}
-	.gbtn.active {
-		background: #2563eb;
-		border-color: #2563eb;
-		color: #fff;
-	}
-
-	/* --- locus field + gene autocomplete --- */
-	.locus-field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.context-field {
-		display: flex;
-		flex-direction: column;
-		gap: 0.25rem;
-	}
-	.ctx-input {
-		width: 5.5rem;
-		padding: 0.4rem 0.5rem;
+	.qp-ctx-input {
+		width: 5rem;
 		font: inherit;
-		border: 1px solid #ccc;
-		border-radius: 6px;
+		font-size: 0.9rem;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid #d3d9e2;
+		border-radius: 8px;
+		background: #fff;
+		color: #1f2430;
+	}
+	.qp-ctx-input:focus {
+		outline: 2px solid #2563eb;
+		outline-offset: -1px;
+		border-color: #2563eb;
+	}
+	.qp-ctx-help {
+		font-size: 0.76rem;
+		line-height: 1.4;
+		color: #6b7280;
 	}
 	.locus-input {
 		position: relative;
 	}
+	.go {
+		font: inherit;
+		font-weight: 600;
+		font-size: 0.9rem;
+		padding: 0.42rem 1.1rem;
+		border: none;
+		border-radius: 7px;
+		background: #2563eb;
+		color: #fff;
+		cursor: pointer;
+	}
+	.go:hover:not(:disabled) {
+		background: #1d4ed8;
+	}
+	.go:disabled {
+		background: #9db8ef;
+		cursor: default;
+	}
+
+	.ex-lbl {
+		font-size: 0.72rem;
+		color: #98a0ac;
+	}
+	.chip {
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: #eef2ff;
+		color: #3730a3;
+		border: 1px solid #e0e7ff;
+		border-radius: 999px;
+		padding: 0.2rem 0.6rem;
+	}
+	.chip:hover:not(:disabled) {
+		background: #e0e7ff;
+	}
+	.chip:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	.appbar-links {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+	}
+	.link-btn {
+		background: none;
+		border: none;
+		color: #2563eb;
+		font: inherit;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		padding: 0.2rem 0.3rem;
+		text-decoration: none;
+	}
+	.link-btn:hover {
+		text-decoration: underline;
+	}
+	/* suggest dropdown */
 	.suggest {
 		position: absolute;
-		top: calc(100% + 2px);
+		top: calc(100% + 3px);
 		left: 0;
 		right: 0;
 		z-index: 30;
@@ -969,8 +1151,8 @@
 		background: #fff;
 		border: 1px solid #e2e5ea;
 		border-radius: 8px;
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-		max-height: 260px;
+		box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
+		max-height: 300px;
 		overflow-y: auto;
 	}
 	.suggest li {
@@ -994,19 +1176,213 @@
 		white-space: nowrap;
 	}
 
-	.error {
+	/* ---- error banner ---- */
+	.error-banner {
+		flex: 0 0 auto;
+		margin: 0.6rem 1rem 0;
+	}
+	.error-banner pre {
+		margin: 0;
 		background: #fef2f2;
 		border: 1px solid #fca5a5;
 		color: #991b1b;
-		padding: 0.8rem;
+		padding: 0.7rem 0.9rem;
 		border-radius: 8px;
 		white-space: pre-wrap;
+		font-size: 0.82rem;
 	}
-	.oversized {
-		margin: 0 0 0.4rem;
-		color: #92400e;
-		font-size: 0.9rem;
+
+	/* ---- workspace ---- */
+	.workspace {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		gap: 0.75rem;
+		padding: 0.75rem 1rem 1rem;
+		overflow: hidden;
+	}
+
+	.mainview {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 10px;
+		overflow: hidden;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+	}
+	.tabs {
+		display: flex;
+		align-items: center;
+		gap: 0.15rem;
+		padding: 0.3rem 0.5rem 0;
+		border-bottom: 1px solid #e3e7ee;
+		background: #fafbfc;
+	}
+	.tab {
+		font: inherit;
+		font-size: 0.85rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: none;
+		border: none;
+		color: #6b7280;
+		padding: 0.5rem 0.8rem;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -1px;
+		border-radius: 6px 6px 0 0;
+	}
+	.tab:hover {
+		color: #1f2430;
+		background: #f0f2f6;
+	}
+	.tab.active {
+		color: #2563eb;
+		border-bottom-color: #2563eb;
+	}
+	.tabbody {
+		flex: 1;
+		min-height: 0;
+		overflow: auto;
+	}
+	.tabbody.pad {
+		padding: 0.9rem;
+	}
+	/* the graph view fills the whole tab body */
+	.tabbody :global(.wrap) {
+		height: 100%;
+	}
+
+	/* Arrow linking the query controls to their result box on the right. */
+
+	/* ---- placeholder (empty / loading / oversized) ---- */
+	/* Pre-first-query shell: the options panel beside an empty canvas frame. */
+	.shell {
+		display: flex;
+		gap: 0.75rem;
+		height: 100%;
+		padding: 0.6rem;
+	}
+	.shell-side {
+		flex: 0 0 224px;
+	}
+	.shell-stage {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px solid #eee;
+		border-radius: 8px;
+		background: #0b0d12;
+	}
+	.ph-inner {
+		color: #7a828f;
+		font-size: 0.95rem;
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		max-width: 34rem;
+		padding: 1.5rem;
+		text-align: center;
 		line-height: 1.5;
+	}
+	.ph-inner.light {
+		color: #9aa3b2;
+	}
+	.ph-inner.warn {
+		color: #fbbf6b;
+	}
+	.ph-spinner {
+		flex: 0 0 auto;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		border: 2px solid #d3d9e2;
+		border-top-color: #2563eb;
+		animation: spin 0.7s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	/* ---- about modal ---- */
+	.modal-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(16, 24, 40, 0.45);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 2rem;
+		z-index: 100;
+	}
+	.modal {
+		background: #fff;
+		border-radius: 12px;
+		width: min(760px, 100%);
+		max-height: 85vh;
+		display: flex;
+		flex-direction: column;
+		box-shadow: 0 20px 60px rgba(16, 24, 40, 0.3);
+		overflow: hidden;
+	}
+	.modal-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 1rem 1.3rem;
+		border-bottom: 1px solid #e3e7ee;
+	}
+	.modal-head h2 {
+		margin: 0;
+		font-size: 1.05rem;
+	}
+	.modal-close {
+		background: none;
+		border: none;
+		font-size: 1.5rem;
+		line-height: 1;
+		color: #98a0ac;
+		cursor: pointer;
+		padding: 0 0.3rem;
+	}
+	.modal-close:hover {
+		color: #1f2430;
+	}
+	.modal-body {
+		padding: 1.1rem 1.3rem;
+		overflow-y: auto;
+	}
+	.modal-body h3 {
+		margin: 1.3rem 0 0.5rem;
+		font-size: 0.9rem;
+	}
+	.modal-body h3:first-child {
+		margin-top: 0;
+	}
+	.modal-foot {
+		padding: 0.7rem 1.3rem;
+		border-top: 1px solid #e3e7ee;
+	}
+
+	.how-body {
+		font-size: 0.85rem;
+		padding: 0.6rem 0.9rem;
+		border-left: 3px solid #dbeafe;
+		background: #f8faff;
+		border-radius: 0 8px 8px 0;
+		color: #444;
+	}
+	.how-body p {
+		margin: 0 0 0.6rem;
+	}
+	.how-body p:last-child {
+		margin-bottom: 0;
 	}
 	.ack-list {
 		margin: 0.4rem 0 0;
@@ -1015,6 +1391,7 @@
 		color: #555;
 		line-height: 1.6;
 	}
+
 	.muted {
 		color: #888;
 	}
@@ -1022,11 +1399,15 @@
 		font-size: 0.8rem;
 	}
 	code {
-		background: #f0f0f0;
+		background: #eef1f5;
 		padding: 0 4px;
 		border-radius: 4px;
+		font-size: 0.9em;
 	}
-	footer {
-		margin-top: 2rem;
+
+	@media (max-width: 860px) {
+		.locus-input input {
+			width: 11rem;
+		}
 	}
 </style>
