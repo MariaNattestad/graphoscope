@@ -486,80 +486,90 @@
 />
 
 <div class="app">
-	<header class="topbar">
-		<div class="tb-left">
-			<div class="brand">
-				<h1>Graphoscope</h1>
-				<span class="tagline">HPRC pangenome graphs, queried by locus</span>
-			</div>
+	<header class="appbar">
+		<div class="brand">
+			<h1>Graphoscope</h1>
+			<span class="tagline">HPRC pangenome graphs, queried by locus</span>
+		</div>
+		<div class="appbar-links">
+			<a
+				class="link-btn"
+				href="https://github.com/MariaNattestad/graphoscope"
+				target="_blank"
+				rel="noopener"
+			>
+				GitHub ↗
+			</a>
+			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
+		</div>
+	</header>
 
-			<div class="query-opts">
-				<button
-					class="opts-trigger"
-					class:open={optsOpen}
-					onclick={() => (optsOpen = !optsOpen)}
-					title="Reference graph & context — the query's advanced options"
-				>
-					<span class="ot-graph">{graph.label}</span>
-					{#if contextBp !== DEFAULT_CONTEXT_BP}
-						<span class="ot-ctx">±{contextBp.toLocaleString()} bp</span>
-					{/if}
-					<span class="caret" aria-hidden="true">▾</span>
-				</button>
-				{#if optsOpen}
-					<div class="opts-popover">
-						<div class="opt-block">
-							<span class="opt-head">Reference graph</span>
-							<p class="opt-help">
-								The coordinate system every locus is queried in. Gene names and coordinates resolve
-								against whichever you pick.
-							</p>
-							<div class="opt-graphs" role="group" aria-label="Choose pangenome graph">
-								{#each GRAPHS as g (g.id)}
-									<button
-										class="opt-graph"
-										class:active={g.id === graphId}
-										onclick={() => selectGraph(g.id)}
-										disabled={running}
-									>
-										<b>{g.label}</b>
-										<span class="opt-desc">{GRAPH_BLURB[g.id]}</span>
-									</button>
-								{/each}
-							</div>
-						</div>
-						<div class="opt-block">
-							<span class="opt-head">Context <span class="opt-unit">bp</span></span>
-							<p class="opt-help">
-								How far past your locus the query follows each haplotype into the graph before cutting
-								it off. Higher reveals more of where haplotypes go — fewer dashed “off-locus exits” —
-								but a bigger, denser subgraph. Applied on the next query.
-							</p>
-							<div class="opt-ctx-row">
-								<input
-									class="opt-ctx-input"
-									type="number"
-									min="0"
-									step="50"
-									bind:value={contextBp}
-									onkeydown={(e) => e.key === 'Enter' && (optsOpen = false)}
-								/>
+	<div class="querybar">
+		<div class="query-opts">
+			<button
+				class="opts-trigger"
+				class:open={optsOpen}
+				onclick={() => (optsOpen = !optsOpen)}
+				title="Reference graph & context — the query's advanced options"
+			>
+				<span class="ot-graph">{graph.label}</span>
+				{#if contextBp !== DEFAULT_CONTEXT_BP}
+					<span class="ot-ctx">±{contextBp.toLocaleString()} bp</span>
+				{/if}
+				<span class="caret" aria-hidden="true">▾</span>
+			</button>
+			{#if optsOpen}
+				<div class="opts-popover">
+					<div class="opt-block">
+						<span class="opt-head">Reference graph</span>
+						<p class="opt-help">
+							The coordinate system every locus is queried in. Gene names and coordinates resolve
+							against whichever you pick.
+						</p>
+						<div class="opt-graphs" role="group" aria-label="Choose pangenome graph">
+							{#each GRAPHS as g (g.id)}
 								<button
-									class="opt-apply"
-									onclick={() => {
-										optsOpen = false;
-										run();
-									}}
-									disabled={running}>Apply &amp; query</button
+									class="opt-graph"
+									class:active={g.id === graphId}
+									onclick={() => selectGraph(g.id)}
+									disabled={running}
 								>
-							</div>
+									<b>{g.label}</b>
+									<span class="opt-desc">{GRAPH_BLURB[g.id]}</span>
+								</button>
+							{/each}
 						</div>
 					</div>
-				{/if}
-			</div>
+					<div class="opt-block">
+						<span class="opt-head">Context <span class="opt-unit">bp</span></span>
+						<p class="opt-help">
+							How far past your locus the query follows each haplotype into the graph before cutting
+							it off. Higher reveals more of where haplotypes go — fewer dashed “off-locus exits” —
+							but a bigger, denser subgraph. Applied on the next query.
+						</p>
+						<div class="opt-ctx-row">
+							<input
+								class="opt-ctx-input"
+								type="number"
+								min="0"
+								step="50"
+								bind:value={contextBp}
+								onkeydown={(e) => e.key === 'Enter' && (optsOpen = false)}
+							/>
+							<button
+								class="opt-apply"
+								onclick={() => {
+									optsOpen = false;
+									run();
+								}}
+								disabled={running}>Apply &amp; query</button
+							>
+						</div>
+					</div>
+				</div>
+			{/if}
 		</div>
 
-		<div class="searchgroup">
 		<div class="query">
 			<label class="locus-field">
 				<span class="lbl">Locus or gene</span>
@@ -610,92 +620,88 @@
 				</button>
 			{/each}
 		</div>
-		</div>
 
-		<div class="tb-right">
-			{#if stats && gfa}
-				<div class="locus-stats">
-					<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
-						<span class="statbtn-main"><b>{queriedGene ?? locusText}</b></span>
-						<span class="statbtn-sub"
-							>{stats.segments.toLocaleString()} nodes · {stats.walks.toLocaleString()} walks</span
-						>
-						<span class="caret" aria-hidden="true">▾</span>
-					</button>
-					{#if statsOpen}
-						<div class="stats-popover">
-							<div class="card-head">
-								<h3 class="card-title">This locus</h3>
-								<span class="card-sub">after simplification · <em>of as-stored</em></span>
+		{#if stats && gfa}
+			<div class="locus-stats">
+				<button class="statbtn" class:open={statsOpen} onclick={() => (statsOpen = !statsOpen)}>
+					<span class="statbtn-main"><b>{queriedGene ?? locusText}</b></span>
+					<span class="statbtn-sub"
+						>{stats.segments.toLocaleString()} nodes · {stats.walks.toLocaleString()} walks</span
+					>
+					<span class="caret" aria-hidden="true">▾</span>
+				</button>
+				{#if statsOpen}
+					<div class="stats-popover">
+						<div class="card-head">
+							<h3 class="card-title">This locus</h3>
+							<span class="card-sub">after simplification · <em>of as-stored</em></span>
+						</div>
+						<div class="statgrid">
+							<div class="srow">
+								<span class="k">nodes</span>
+								<span class="v"
+									><b>{stats.segments.toLocaleString()}</b>
+									<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
+								>
 							</div>
-							<div class="statgrid">
+							<div class="srow">
+								<span class="k">links</span>
+								<span class="v"
+									><b>{stats.links.toLocaleString()}</b>
+									<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
+								>
+							</div>
+							<div class="srow">
+								<span class="k">haplotype walks</span>
+								<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
+							</div>
+							{#if gfa.reduced}
 								<div class="srow">
-									<span class="k">nodes</span>
+									<span class="k">sites collapsed</span>
 									<span class="v"
-										><b>{stats.segments.toLocaleString()}</b>
-										<em>of {(gfa.reduced?.segmentsBefore ?? stats.segments).toLocaleString()}</em></span
+										><b>{gfa.reduced.sites.toLocaleString()}</b>
+										<em
+											>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
+											bp</em
+										></span
 									>
 								</div>
 								<div class="srow">
-									<span class="k">links</span>
+									<span class="k">chains merged</span>
+									<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
+								</div>
+							{/if}
+							{#if stats.referencePathBp != null}
+								<div class="srow">
+									<span class="k">reference span</span>
+									<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
+								</div>
+							{/if}
+							<div class="srow">
+								<span class="k">sequence shown</span>
+								<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
+							</div>
+							{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
+								<div class="srow">
+									<span class="k">traversal fragments</span>
 									<span class="v"
-										><b>{stats.links.toLocaleString()}</b>
-										<em>of {(gfa.reduced?.linksBefore ?? stats.links).toLocaleString()}</em></span
+										><b>{stats.walkRecords.toLocaleString()}</b>
+										<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
 									>
 								</div>
-								<div class="srow">
-									<span class="k">haplotype walks</span>
-									<span class="v"><b>{stats.walks.toLocaleString()}</b></span>
-								</div>
-								{#if gfa.reduced}
-									<div class="srow">
-										<span class="k">sites collapsed</span>
-										<span class="v"
-											><b>{gfa.reduced.sites.toLocaleString()}</b>
-											<em
-												>{gfa.reduced.snpCount.toLocaleString()} SNP · {gfa.reduced.basesRemoved.toLocaleString()}
-												bp</em
-											></span
-										>
-									</div>
-									<div class="srow">
-										<span class="k">chains merged</span>
-										<span class="v"><b>{gfa.reduced.unchopMerges.toLocaleString()}</b></span>
-									</div>
-								{/if}
-								{#if stats.referencePathBp != null}
-									<div class="srow">
-										<span class="k">reference span</span>
-										<span class="v"><b>{stats.referencePathBp.toLocaleString()}</b> bp</span>
-									</div>
-								{/if}
-								<div class="srow">
-									<span class="k">sequence shown</span>
-									<span class="v"><b>{stats.totalSequenceBp.toLocaleString()}</b> bp</span>
-								</div>
-								{#if stats.walkRecords !== null && stats.walkRecords > stats.walks}
-									<div class="srow">
-										<span class="k">traversal fragments</span>
-										<span class="v"
-											><b>{stats.walkRecords.toLocaleString()}</b>
-											<em>{(stats.walkRecords / Math.max(stats.walks, 1)).toFixed(1)}× / hap</em></span
-										>
-									</div>
-								{/if}
-							</div>
-							{#if fetchInfo}
-								<p class="fetchline muted small">
-									Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
-									from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
-								</p>
 							{/if}
 						</div>
-					{/if}
-				</div>
-			{/if}
-			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
+						{#if fetchInfo}
+							<p class="fetchline muted small">
+								Fetched <b>{fmtBytes(fetchInfo.bytesFetched)}</b> in {fetchInfo.requestCount} block reads
+								from a {fmtBytes(fetchInfo.dbSize)} database · {fetchInfo.elapsedMs} ms
+							</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		{/if}
 		</div>
-	</header>
 
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
@@ -894,14 +900,24 @@
 		background: #eef1f5;
 	}
 
-	/* ---- top bar ---- */
-	.topbar {
+	/* ---- top bar: a thin identity strip over a distinct query banner ---- */
+	.appbar {
 		display: flex;
 		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.4rem 1rem;
+		background: #fff;
+		border-bottom: 1px solid #eef1f5;
+		flex: 0 0 auto;
+	}
+	.querybar {
+		display: flex;
+		align-items: flex-end;
 		gap: 0.7rem 1.1rem;
 		flex-wrap: wrap;
-		padding: 0.55rem 1rem;
-		background: #fff;
+		padding: 0.6rem 1rem;
+		background: #f9fafc;
 		border-bottom: 1px solid #e3e7ee;
 		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
 		flex: 0 0 auto;
@@ -1078,11 +1094,6 @@
 		cursor: default;
 	}
 
-	.searchgroup {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
 	.query {
 		display: flex;
 		align-items: flex-end;
@@ -1168,17 +1179,10 @@
 		cursor: default;
 	}
 
-	.tb-left {
+	.appbar-links {
 		display: flex;
 		align-items: center;
-		gap: 0.9rem;
-	}
-	.tb-right {
-		display: flex;
-		align-items: center;
-		gap: 0.9rem;
-		white-space: nowrap;
-		margin-left: auto;
+		gap: 0.3rem;
 	}
 	.link-btn {
 		background: none;
@@ -1189,6 +1193,7 @@
 		font-weight: 600;
 		cursor: pointer;
 		padding: 0.2rem 0.3rem;
+		text-decoration: none;
 	}
 	.link-btn:hover {
 		text-decoration: underline;
@@ -1325,9 +1330,10 @@
 		height: 100%;
 	}
 
-	/* ---- "This locus" details: a trigger in the top bar + a dropdown popover ---- */
+	/* ---- "This locus" details: a trigger in the query banner + a dropdown popover ---- */
 	.locus-stats {
 		position: relative;
+		margin-left: auto;
 	}
 	.statbtn {
 		display: flex;
