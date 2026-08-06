@@ -319,6 +319,13 @@
 		showHaplotypes && selected ? namedWalks.filter((w) => walkThroughNode(w.steps, selected!)).length : 0
 	);
 	const pinnedWalk = $derived(pinnedKey ? (namedWalks.find((w) => w.key === pinnedKey) ?? null) : null);
+	// Transient hover preview: pointing at a haplotype row traces it without pinning,
+	// so you can skim the list and see each path light up. Takes visual precedence
+	// over a pin/cycle while the pointer is on the row; clears on leave.
+	let hoverKey = $state<string | null>(null);
+	const hoverWalk = $derived(hoverKey ? (namedWalks.find((w) => w.key === hoverKey) ?? null) : null);
+	// The named walk driving the on-graph badge (hover preview wins over a pin).
+	const activeNamedWalk = $derived(hoverWalk ?? pinnedWalk);
 
 	function togglePin(key: string) {
 		if (pinnedKey === key) {
@@ -392,8 +399,8 @@
 	const currentDiscoWalk = $derived(
 		disco && discoWalks.length > 0 ? discoWalks[discoIndex % discoWalks.length] : null
 	);
-	const activeWalk = $derived<DiscoWalk | null>(pinnedWalk ?? currentDiscoWalk);
-	const traceActive = $derived(disco || pinnedWalk != null);
+	const activeWalk = $derived<DiscoWalk | null>(hoverWalk ?? pinnedWalk ?? currentDiscoWalk);
+	const traceActive = $derived(disco || pinnedWalk != null || hoverWalk != null);
 	// Project the active walk onto the displayed segments: map each step through
 	// origToDisplayed, drop steps with no representative here (popped), and collapse
 	// a run of steps that all landed in the same displayed segment into one.
@@ -414,8 +421,9 @@
 	// the light theme so it reads against white. A pinned haplotype uses a stable hue
 	// keyed to its position in the list, so its trace colour doesn't change.
 	const colorSeed = $derived.by(() => {
-		if (pinnedKey) {
-			const i = namedWalks.findIndex((w) => w.key === pinnedKey);
+		const key = hoverKey ?? pinnedKey;
+		if (key) {
+			const i = namedWalks.findIndex((w) => w.key === key);
 			return i >= 0 ? i : 0;
 		}
 		return discoIndex;
@@ -741,10 +749,15 @@
 								<button
 									class="haplo-item"
 									class:active={w.key === pinnedKey}
+									class:hovering={w.key === hoverKey && w.key !== pinnedKey}
 									onclick={() => togglePin(w.key)}
+									onmouseenter={() => (hoverKey = w.key)}
+									onmouseleave={() => hoverKey === w.key && (hoverKey = null)}
+									onfocus={() => (hoverKey = w.key)}
+									onblur={() => hoverKey === w.key && (hoverKey = null)}
 									title={`${w.sample} · hap ${w.hapIndex} · ${w.seqId}`}
 								>
-									{#if w.key === pinnedKey}
+									{#if w.key === pinnedKey || w.key === hoverKey}
 										<span class="hl-dot" style="background:{discoColor}"></span>
 									{/if}
 									<span class="hl-name">{w.sample}</span>
@@ -892,14 +905,18 @@
 					</div>
 				{/if}
 
-				<!-- Which named haplotype is being traced, over the graph. -->
-				{#if pinnedWalk}
+				<!-- Which named haplotype is being traced, over the graph (hover preview
+				     takes precedence over a pin). -->
+				{#if activeNamedWalk}
 					<div class="trace-badge">
 						<span class="tb-dot" style="background:{discoColor}"></span>
-						tracing <b>{pinnedWalk.sample} · hap {pinnedWalk.hapIndex}</b>
-						<button class="tb-close" onclick={() => (pinnedKey = null)} aria-label="Clear trace"
-							>×</button
-						>
+						{hoverWalk ? 'preview' : 'tracing'}
+						<b>{activeNamedWalk.sample} · hap {activeNamedWalk.hapIndex}</b>
+						{#if pinnedKey && !hoverWalk}
+							<button class="tb-close" onclick={() => (pinnedKey = null)} aria-label="Clear trace"
+								>×</button
+							>
+						{/if}
 					</div>
 				{/if}
 
@@ -1315,6 +1332,10 @@
 		border-color: #7c3aed;
 		background: #f3ecff;
 		box-shadow: inset 0 0 0 1px rgba(124, 58, 237, 0.35);
+	}
+	.haplo-item.hovering {
+		border-color: #c7b8ec;
+		background: #faf7ff;
 	}
 	.hl-dot {
 		flex: 0 0 auto;
