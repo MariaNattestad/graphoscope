@@ -18,12 +18,24 @@
 		orient: '+' | '-';
 	}
 
+	// A clicked gene-track feature (an exon), surfaced to the inspector.
+	export interface SelectedFeature {
+		symbol: string;
+		name: string;
+		exonNum: number;
+		nExons: number;
+		contig: string;
+		start: number;
+		end: number;
+	}
+
 	let {
 		layout,
 		refCoords,
 		genes = [],
 		strokeWidth = 3,
 		onSelectSegment,
+		onSelectFeature,
 		discoPath = null,
 		discoColor = '#ff3ce0',
 		discoActive = false,
@@ -37,6 +49,8 @@
 		genes?: Transcript[];
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
+		/** A gene-track exon was clicked (or cleared); shown in the inspector. */
+		onSelectFeature?: (feature: SelectedFeature | null) => void;
 		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
 		 * Falls back to a default line when not supplied. */
 		nodeTooltip?: (segId: string) => string;
@@ -139,6 +153,7 @@
 		yTop: number;
 		yBot: number;
 		label: string;
+		feature: SelectedFeature;
 	}
 	let exonHits: ExonHit[] = [];
 	// Flip the tooltip above the cursor near the bottom of the stage (the gene
@@ -587,7 +602,16 @@
 							label:
 								`${g.symbol} · exon ${exNum}/${nExons} · ` +
 								`${contig}:${ex.start.toLocaleString()}–${ex.end.toLocaleString()} · ` +
-								`${(ex.end - ex.start).toLocaleString()} bp · ${g.name}`
+								`${(ex.end - ex.start).toLocaleString()} bp · ${g.name}`,
+							feature: {
+								symbol: g.symbol,
+								name: g.name,
+								exonNum: exNum,
+								nExons,
+								contig,
+								start: ex.start,
+								end: ex.end
+							}
 						});
 					}
 				}
@@ -759,6 +783,13 @@
 		return null;
 	}
 
+	function findFeatureAt(px: number, py: number): SelectedFeature | null {
+		for (const h of exonHits) {
+			if (px >= h.x0 && px <= h.x1 && py >= h.yTop && py <= h.yBot) return h.feature;
+		}
+		return null;
+	}
+
 	$effect(() => {
 		// re-fit and re-draw whenever a new layout is loaded — untrack the body so
 		// that reads of hoveredSegment/transform inside draw()/fitToView() don't
@@ -852,7 +883,13 @@
 			clickStart = null;
 			if (moved > 4) return;
 			const rect = canvasEl!.getBoundingClientRect();
-			const segId = findSegmentAt(e.clientX - rect.left, e.clientY - rect.top);
+			const px = e.clientX - rect.left;
+			const py = e.clientY - rect.top;
+			// A gene-track exon wins over a strand (they never overlap — exons live in
+			// the reserved bottom band). Emit both so selecting one clears the other.
+			const feature = findFeatureAt(px, py);
+			const segId = feature ? null : findSegmentAt(px, py);
+			onSelectFeature?.(feature);
 			onSelectSegment?.(segId);
 		}
 		function onPointerMove(e: PointerEvent) {

@@ -92,9 +92,24 @@
 
 	let selected = $state<string | null>(null);
 
+	// A clicked gene/exon in the track below the graph, shown in the same floating
+	// inspector as a node. Node and feature are mutually exclusive: GraphCanvas
+	// emits both callbacks on every click, so selecting one clears the other.
+	interface SelectedFeature {
+		symbol: string;
+		name: string;
+		exonNum: number;
+		nExons: number;
+		contig: string;
+		start: number;
+		end: number;
+	}
+	let selectedFeature = $state<SelectedFeature | null>(null);
+
 	$effect(() => {
 		gfa;
 		selected = null;
+		selectedFeature = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
 	});
@@ -128,8 +143,6 @@
 		return out;
 	}
 	const endpoints = $derived(selected ? walkEndpointsAt(selected) : []);
-	const starts = $derived(endpoints.filter((e) => e.role === 'start' || e.role === 'both'));
-	const ends = $derived(endpoints.filter((e) => e.role === 'end' || e.role === 'both'));
 	// Reduced mode: counts from the `WS`/`WE` tags on the selected segment.
 	const endpointCounts = $derived.by(() => {
 		if (!gfa.reduced || !selected) return null;
@@ -643,6 +656,10 @@
 						selected = id;
 						if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
 					}}
+					onSelectFeature={(f) => {
+						selectedFeature = f;
+						if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
+					}}
 				/>
 			{/if}
 			{#if computing && !recomputeKeepsCanvas}
@@ -715,25 +732,15 @@
 					{/if}
 
 					{#if endpointCounts}
+						{@const total = endpointCounts.starts + endpointCounts.ends}
 						<div class="endpoints">
 							<span class="hint muted">
 								a walk dead-ending here usually indicates a haplotype connects to another locus and
 								got chopped off this subgraph
 							</span>
-							{#if endpointCounts.starts > 0}
-								<span class="etag start"
-									>{endpointCounts.starts.toLocaleString()} walk{endpointCounts.starts === 1
-										? ''
-										: 's'} start here</span
-								>
-							{/if}
-							{#if endpointCounts.ends > 0}
-								<span class="etag end"
-									>{endpointCounts.ends.toLocaleString()} walk{endpointCounts.ends === 1
-										? ''
-										: 's'} end here</span
-								>
-							{/if}
+							<span class="etag"
+								>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
+							>
 						</div>
 					{:else if endpoints.length > 0}
 						<div class="endpoints">
@@ -741,37 +748,56 @@
 								a walk dead-ending here usually indicates a haplotype connects to another locus and
 								got chopped off this subgraph
 							</span>
-							{#if starts.length > 0}
-								<div class="erow">
-									<span class="etag start"
-										>{starts.length} walk{starts.length === 1 ? '' : 's'} start here</span
-									>
-									{#each starts.slice(0, 6) as e (e.label)}
-										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-									{/each}
-									{#if starts.length > 6}<span class="muted">+{starts.length - 6}</span>{/if}
-								</div>
-							{/if}
-							{#if ends.length > 0}
-								<div class="erow">
-									<span class="etag end">{ends.length} walk{ends.length === 1 ? '' : 's'} end here</span>
-									{#each ends.slice(0, 6) as e (e.label)}
-										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-									{/each}
-									{#if ends.length > 6}<span class="muted">+{ends.length - 6}</span>{/if}
-								</div>
-							{/if}
+							<div class="erow">
+								<span class="etag"
+									>{endpoints.length} walk{endpoints.length === 1
+										? ' starts/ends'
+										: 's start/end'} here</span
+								>
+								{#each endpoints.slice(0, 6) as e (e.label)}
+									<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
+								{/each}
+								{#if endpoints.length > 6}<span class="muted">+{endpoints.length - 6}</span>{/if}
+							</div>
 						</div>
 					{/if}
+				</div>
+			{:else if selectedFeature}
+				<div class="inspector">
+					<div class="insp-head">
+						<span class="insp-title">Gene <code>{selectedFeature.symbol}</code></span>
+						<button class="insp-close" onclick={() => (selectedFeature = null)} aria-label="Close"
+							>×</button
+						>
+					</div>
+					<div class="ni-fields">
+						{#if selectedFeature.name && selectedFeature.name !== selectedFeature.symbol}
+							<span class="ni-field"><span class="ni-key">name</span> {selectedFeature.name}</span>
+						{/if}
+						<span class="ni-field"
+							><span class="ni-key">exon</span> {selectedFeature.exonNum} of
+							{selectedFeature.nExons}</span
+						>
+						<span class="ni-field"
+							><span class="ni-key">coords</span>
+							<span class="coord"
+								>{selectedFeature.contig}:{selectedFeature.start.toLocaleString()}–{selectedFeature.end.toLocaleString()}</span
+							></span
+						>
+						<span class="ni-field"
+							><span class="ni-key">length</span>
+							{(selectedFeature.end - selectedFeature.start).toLocaleString()} bp</span
+						>
+					</div>
 				</div>
 			{/if}
 		</div>
 	</div>
 
 	<div class="foot">
-		<span class="muted">click a strand to select · plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
+		<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 		<span class="spacer"></span>
-		<span class="legend"><span class="sw backbone"></span> reference backbone (coords shown)</span>
+		<span class="legend"><span class="sw backbone"></span> reference backbone</span>
 		<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 	</div>
 </div>
@@ -1079,6 +1105,7 @@
 	.coord {
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		color: #2563eb;
+		white-space: nowrap;
 	}
 	code {
 		background: #f0f0f0;
@@ -1091,10 +1118,10 @@
 		top: 10px;
 		left: 10px;
 		z-index: 5;
-		width: 258px;
+		width: 272px;
 		max-width: calc(100% - 20px);
 		max-height: calc(100% - 20px);
-		overflow-y: auto;
+		overflow: auto;
 		display: flex;
 		flex-direction: column;
 		gap: 0.55rem;
@@ -1135,9 +1162,8 @@
 	}
 	.ni-fields {
 		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem 1.1rem;
-		align-items: baseline;
+		flex-direction: column;
+		gap: 0.25rem;
 	}
 	.ni-key {
 		color: #9aa0aa;
@@ -1209,14 +1235,9 @@
 		padding: 0.05rem 0.4rem;
 		border-radius: 4px;
 		white-space: nowrap;
-	}
-	.etag.start {
-		background: #dcfce7;
-		color: #166534;
-	}
-	.etag.end {
-		background: #fee2e2;
-		color: #991b1b;
+		background: #fef3c7;
+		color: #92400e;
+		align-self: flex-start;
 	}
 	.chip {
 		background: #fff;
