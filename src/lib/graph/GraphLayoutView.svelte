@@ -1015,11 +1015,13 @@
 						</div>
 						{#if arcInfoOpen}
 							<p class="insp-explain">
-								This is a non-reference node placed on the reference path. <b>alt length</b> is the
-								node's own sequence length; <b>replaces</b> is the stretch of reference between the two
-								points it attaches to; <b>net</b> = alt&nbsp;length − replaces, so the arc points up
-								for a net gain and down for a net loss. <b>walks</b> counts how many of the locus's
-								haplotypes pass through this node.
+								Each arc is a <b>single non-reference node</b>, not a whole bubble — a site with
+								several alleles shows one arc per node. Its <b>length</b> is that node's own sequence
+								(after simplification a run of nodes may be merged into one, so it's their combined
+								bp), not a path through the bubble. <b>replaces</b> is the reference span between the
+								two reference nodes it attaches to; <b>net</b> = length − replaces, and the arc points
+								up for a net gain, down for a loss (its reach grows with the larger of the two).
+								<b>walks</b> counts how many of the locus's haplotypes pass through the node.
 							</p>
 						{/if}
 						<div class="ni-fields">
