@@ -3,9 +3,8 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
-	import { heatmapColor, darkTheme, lightTheme, type GraphTheme } from './colors';
+	import { heatmapColor, darkTheme, lightTheme } from './colors';
 	import type { Transcript } from '../geneTrack';
-	import { classify, type NetClass } from '../nonRefNodes';
 	import { trackEvent } from '../analytics';
 
 	interface RefCoord {
@@ -14,19 +13,27 @@
 		end: number;
 	}
 
-	// A variant arc: a non-reference node placed on the reference axis by its two
-	// anchor coordinates (absolute genomic bp), sized by its net-length class and
-	// weighted by how many haplotypes carry it. Positioned through the same
-	// reference anchors as the gene track, so it tracks the backbone under pan/zoom.
-	export interface ArcEvent {
-		id: string;
-		len: number;
-		skipped: number;
-		net: number;
-		cov: number;
+	// A variant arc: a whole bubble the reducer could not collapse, placed on the
+	// reference axis by the two genomic coordinates it spans. Its longest walk gives
+	// the net-insertion height (arc up); its shortest gives the net-deletion (arc
+	// down). Positioned through the same reference anchors as the gene track, so it
+	// tracks the backbone under pan/zoom.
+	export interface SiteArc {
+		reason: string;
 		contig: string;
-		gLeft: number;
-		gRight: number;
+		gStart: number;
+		gEnd: number;
+		refSpan: number;
+		longest: number;
+		shortest: number;
+		insertion: number;
+		deletion: number;
+	}
+
+	/** A clicked variant arc: the whole site plus which side (net-insertion or
+	 * net-deletion arc) was hit. */
+	export interface SelectedArc extends SiteArc {
+		kind: 'insertion' | 'deletion';
 	}
 
 	interface DiscoStep {
@@ -56,7 +63,7 @@
 		layout,
 		refCoords,
 		genes = [],
-		arcs = [],
+		sites = [],
 		showArcs = true,
 		showGenes = true,
 		strokeWidth = 3,
@@ -75,8 +82,9 @@
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
-		/** Variant arcs for the band under the reference axis (empty to hide). */
-		arcs?: ArcEvent[];
+		/** Variant arcs — one per kept bubble — for the band under the reference axis
+		 * (empty to hide). */
+		sites?: SiteArc[];
 		/** Draw the variant-arc band. */
 		showArcs?: boolean;
 		/** Draw the gene track. */
@@ -86,7 +94,7 @@
 		/** A gene-track exon was clicked (or cleared); shown in the inspector. */
 		onSelectFeature?: (feature: SelectedFeature | null) => void;
 		/** A variant arc was clicked (or cleared); shown in the inspector. */
-		onSelectArc?: (arc: ArcEvent | null) => void;
+		onSelectArc?: (arc: SelectedArc | null) => void;
 		/** An off-locus exit cue was clicked (or cleared); shown in the inspector. */
 		onSelectExit?: (exit: SelectedExit | null) => void;
 		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
@@ -134,7 +142,7 @@
 	const GENE_ROW = 15;
 	const GENE_MAX_ROWS = 4;
 	const geneBand = $derived(showGenes && genes.length > 0 ? GENE_BAND : 0);
-	const arcBand = $derived(showArcs && arcs.length > 0 ? ARC_BAND : 0);
+	const arcBand = $derived(showArcs && sites.length > 0 ? ARC_BAND : 0);
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let containerEl: HTMLDivElement | undefined = $state();
@@ -199,19 +207,21 @@
 	let exonHits: ExonHit[] = [];
 
 	// Screen-space hit regions for the variant arcs, rebuilt each draw so a pointer
-	// move/click can resolve which arc it's over. `hoveredArcId` (plain, not state:
+	// move/click can resolve which arc it's over. `hoveredArcKey` (plain, not state:
 	// only the pointer handlers read it, and they call draw() directly) emphasises
-	// the arc under the cursor.
+	// the arc under the cursor — a bubble can have both an insertion and a deletion
+	// arc, so the key is `<site index>:<kind>`.
 	interface ArcHit {
 		x0: number;
 		x1: number;
 		yTop: number;
 		yBot: number;
-		arc: ArcEvent;
+		key: string;
+		sel: SelectedArc;
 		label: string;
 	}
 	let arcHits: ArcHit[] = [];
-	let hoveredArcId: string | null = null;
+	let hoveredArcKey: string | null = null;
 
 	// Screen-space hit regions for the off-locus exit cues (the dashed lines), so a
 	// click near one can resolve which chopped strand it belongs to. Rebuilt each
@@ -582,27 +592,16 @@
 	// packed into rows. Positioned by genomic coordinate through the same anchors
 	// as the axis, so it tracks the backbone under pan/zoom. Display-only — the
 	// arc view is where genes are interactive.
-	// Theme color for an arc, by how its length compares to the reference it replaces.
-	function arcColor(cls: NetClass, t: GraphTheme): string {
-		return cls === 'insertion'
-			? t.arcInsertion
-			: cls === 'expansion'
-				? t.arcExpansion
-				: cls === 'contraction'
-					? t.arcContraction
-					: t.arcSubstitution;
-	}
-
 	// Variant arcs in the band under the reference axis: a local reference baseline
-	// through the middle of the band, with one arc per non-reference node — insertions
-	// (net gain of sequence) arc up, deletions (net loss) arc down, so the direction
-	// alone reads as the sign of the change. Arc reach ∝ event size, color by
-	// net-length class. Positioned by genomic coordinate through the same anchors as
+	// through the middle of the band, and one arc per kept bubble — its net insertion
+	// (longest walk beyond the reference span) arcs up, its net deletion (span beyond
+	// the shortest walk) arcs down, so a bubble can show both. Reach ∝ the net change,
+	// blue up / red down. Positioned by genomic coordinate through the same anchors as
 	// the axis and gene track, so the whole stack (graph, arcs, genes) pans and zooms
 	// together on one reference axis.
 	function drawArcTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		arcHits = [];
-		if (!showArcs || arcs.length === 0) return;
+		if (!showArcs || sites.length === 0) return;
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
 		const gx = (bp: number) => genomicToScreenX(bp, anchors);
@@ -630,49 +629,44 @@
 		ctx.lineTo(width, baseY);
 		ctx.stroke();
 
-		// Scale each side against its own largest event, not a single global max.
-		// Insertions and deletions differ in size by orders of magnitude (a locus can
-		// carry a ~40 kb deletion alongside sub-kb insertions), so one shared
-		// denominator flattens the smaller side to the floor — insertions all looked
-		// the same height. Per-side maxima give each direction its own y-axis limit.
+		// Scale each side against its own largest change, not a single global max, so a
+		// huge deletion doesn't flatten every insertion to the floor. Height is anchored
+		// at 0 (the baseline is 0 bp), so reach is proportional to the absolute change;
+		// sqrt only shapes the curve, and a small floor keeps tiny arcs clickable.
 		let upMax = 1;
 		let downMax = 1;
-		for (const ev of arcs) {
-			const size = Math.max(ev.len, ev.skipped);
-			if (ev.net < 0) downMax = Math.max(downMax, size);
-			else upMax = Math.max(upMax, size);
+		for (const s of sites) {
+			if (s.insertion > 0) upMax = Math.max(upMax, s.insertion);
+			if (s.deletion > 0) downMax = Math.max(downMax, s.deletion);
 		}
-		// Height is anchored at 0 (the baseline is 0 bp, not the smallest event in the
-		// data), so a variant's reach is proportional to its absolute size — sqrt only
-		// shapes the curve. A small floor keeps the tiniest variants clickable/visible.
 		const reach = (size: number, sideMax: number) =>
 			Math.max(4, maxReach * Math.sqrt(size / sideMax));
 
-		for (const ev of arcs) {
-			const x1 = gx(ev.gLeft);
-			const x2 = gx(ev.gRight);
-			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
-			const xm = (x1 + x2) / 2;
-			const size = Math.max(ev.len, ev.skipped);
-			// Net gain (or an equal-length substitution) arcs up; net loss arcs down.
-			const dir = ev.net < 0 ? 1 : -1;
-			const d = reach(size, dir === 1 ? downMax : upMax);
+		const emit = (
+			i: number,
+			s: SiteArc,
+			kind: 'insertion' | 'deletion',
+			x1: number,
+			x2: number,
+			xm: number,
+			d: number,
+			color: string,
+			label: string
+		) => {
+			const dir = kind === 'deletion' ? 1 : -1;
 			const tipY = baseY + dir * d;
-			const cls = classify({ skipped: ev.skipped, net: ev.net });
-			const emph = ev.id === hoveredArcId;
-			const stroke = arcColor(cls, theme);
-
-			ctx.strokeStyle = stroke;
+			const emph = hoveredArcKey === `${i}:${kind}`;
+			ctx.strokeStyle = color;
 			ctx.globalAlpha = emph ? 1 : 0.85;
 			ctx.lineWidth = emph ? 2.4 : 1.4;
 			if (x2 - x1 < 4) {
-				// lollipop: a stick + dot for a variant too narrow to arc
+				// lollipop: a stick + dot for a feature too narrow to arc
 				ctx.beginPath();
 				ctx.moveTo(xm, baseY);
 				ctx.lineTo(xm, tipY);
 				ctx.stroke();
 				ctx.beginPath();
-				ctx.fillStyle = stroke;
+				ctx.fillStyle = color;
 				ctx.arc(xm, tipY, emph ? 4 : 2.6, 0, Math.PI * 2);
 				ctx.fill();
 			} else {
@@ -682,22 +676,29 @@
 				ctx.stroke();
 			}
 			ctx.globalAlpha = 1;
-
-			// Minimal hover label: the kind of event and its net length change, e.g.
-			// "insertion +76 bp". Coordinates and coverage live in the click inspector.
-			const kind = ev.net > 0 ? 'insertion' : ev.net < 0 ? 'deletion' : 'substitution';
-			const sizeStr =
-				ev.net !== 0
-					? `${ev.net > 0 ? '+' : ''}${ev.net.toLocaleString()} bp`
-					: `${ev.len.toLocaleString()} bp`;
 			arcHits.push({
 				x0: Math.min(x1, x2) - 3,
 				x1: Math.max(x1, x2) + 3,
 				yTop: Math.min(baseY, tipY) - 4,
 				yBot: Math.max(baseY, tipY) + 4,
-				arc: ev,
-				label: `${kind} ${sizeStr}`
+				key: `${i}:${kind}`,
+				sel: { ...s, kind },
+				label
 			});
+		};
+
+		for (let i = 0; i < sites.length; i++) {
+			const s = sites[i];
+			const x1 = gx(s.gStart);
+			const x2 = gx(s.gEnd);
+			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
+			const xm = (x1 + x2) / 2;
+			if (s.insertion > 0) {
+				emit(i, s, 'insertion', x1, x2, xm, reach(s.insertion, upMax), theme.arcInsertion, `insertion +${s.insertion.toLocaleString()} bp`);
+			}
+			if (s.deletion > 0) {
+				emit(i, s, 'deletion', x1, x2, xm, reach(s.deletion, downMax), theme.arcContraction, `deletion −${s.deletion.toLocaleString()} bp`);
+			}
 		}
 		ctx.restore();
 	}
@@ -1039,7 +1040,7 @@
 		arcBand;
 		untrack(() => {
 			setHovered(null);
-			hoveredArcId = null;
+			hoveredArcKey = null;
 			fitToView();
 			draw();
 		});
@@ -1055,7 +1056,7 @@
 		discoActive;
 		theme;
 		showExits;
-		arcs;
+		sites;
 		untrack(() => draw());
 	});
 
@@ -1134,7 +1135,7 @@
 			const segId = feature || arcHit ? null : findSegmentAt(px, py);
 			const exit = feature || arcHit || segId ? null : findExitAt(px, py);
 			onSelectFeature?.(feature);
-			onSelectArc?.(arcHit?.arc ?? null);
+			onSelectArc?.(arcHit?.sel ?? null);
 			onSelectSegment?.(segId);
 			onSelectExit?.(exit);
 		}
@@ -1147,9 +1148,9 @@
 			// Exons win: they live in the bottom band, clear of the strands.
 			const exon = findExonAt(px, py);
 			if (exon) {
-				if (hoveredSegment !== null || hoveredArcId !== null) {
+				if (hoveredSegment !== null || hoveredArcKey !== null) {
 					setHovered(null);
-					hoveredArcId = null;
+					hoveredArcKey = null;
 					draw();
 				}
 				hoverLabel = exon;
@@ -1161,16 +1162,16 @@
 			const arcHit = findArcAt(px, py);
 			if (arcHit) {
 				if (hoveredSegment !== null) setHovered(null);
-				if (hoveredArcId !== arcHit.arc.id) {
-					hoveredArcId = arcHit.arc.id;
+				if (hoveredArcKey !== arcHit.key) {
+					hoveredArcKey = arcHit.key;
 					draw();
 				}
 				hoverLabel = arcHit.label;
 				canvasEl!.style.cursor = 'pointer';
 				return;
 			}
-			if (hoveredArcId !== null) {
-				hoveredArcId = null;
+			if (hoveredArcKey !== null) {
+				hoveredArcKey = null;
 				draw();
 			}
 
@@ -1188,9 +1189,9 @@
 			}
 		}
 		function onPointerLeave() {
-			const wasEmph = hoveredSegment !== null || hoveredArcId !== null;
+			const wasEmph = hoveredSegment !== null || hoveredArcKey !== null;
 			setHovered(null); // also clears hoverLabel
-			hoveredArcId = null;
+			hoveredArcKey = null;
 			canvasEl!.style.cursor = 'grab';
 			if (wasEmph) draw();
 		}

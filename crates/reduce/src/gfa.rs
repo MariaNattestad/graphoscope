@@ -229,6 +229,26 @@ impl Iterator for StepIter<'_> {
 //-----------------------------------------------------------------------------
 // Output.
 
+/// A non-reference feature simplification could not fold onto the reference,
+/// emitted on a `Y` line so the viewer can mark it and explain why it remains.
+///
+/// Coordinates are reference-path bp (the space the viewer already maps events
+/// into): `start` is the end of the entry anchor, `end` the start of the exit
+/// anchor, so `end - start` is the reference stretch the bubble spans. `longest`
+/// and `shortest` are the longest and shortest entry→exit path in *alt* bases —
+/// the deepest and shallowest walk through the bubble. A walk longer than the
+/// span is a net insertion; one shorter is a net deletion. For a feature that
+/// isn't a clean DAG (a cycle/inversion, a tangle) the exact walk lengths aren't
+/// recoverable from topology alone, so `longest` is the interior non-ref bp and
+/// `shortest` is set equal to the span (no spurious deletion).
+pub struct SiteRecord {
+    pub start: usize,
+    pub end: usize,
+    pub longest: usize,
+    pub shortest: usize,
+    pub reason: &'static str,
+}
+
 /// Locus-level counts carried on the reduced GFA's `X` line, so the viewer can
 /// report walk/collapse totals without ever seeing the dropped walks.
 #[derive(Default)]
@@ -308,9 +328,11 @@ impl OutSegment {
 /// Writes the reduced GFA: header, `X` stats, segments and links with their
 /// `WC` walk-coverage tags, and only the reference `W` line.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn write_reduced<W: Write>(
     reference_samples: &[String],
     stats: &ReduceStats,
+    kept_sites: &[SiteRecord],
     segments: &[OutSegment],
     links: &[(u32, bool, u32, bool)],
     node_cov: &[u32],
@@ -345,6 +367,17 @@ pub fn write_reduced<W: Write>(
         stats.walk_records,
         stats.total_sequence_bp,
     )?;
+
+    // One `Y` line per non-reference feature that could not be collapsed, in
+    // reference-path bp: SS=span start, SE=span end, LO=longest walk (alt bp),
+    // SH=shortest walk (alt bp), RE=reason. The viewer draws these as arcs.
+    for site in kept_sites {
+        writeln!(
+            out,
+            "Y\tSS:i:{}\tSE:i:{}\tLO:i:{}\tSH:i:{}\tRE:Z:{}",
+            site.start, site.end, site.longest, site.shortest, site.reason,
+        )?;
+    }
 
     for (i, seg) in segments.iter().enumerate() {
         out.write_all(b"S\t")?;

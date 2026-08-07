@@ -15,7 +15,6 @@
 	import QueryReport from './QueryReport.svelte';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
-	import { computeNonRefNodes, NET_COLORS, NET_LABELS, type NonRefEvent } from '../nonRefNodes';
 	import type { RefKey } from '../genes';
 
 	let {
@@ -132,17 +131,20 @@
 	let selectedFeature = $state<SelectedFeature | null>(null);
 
 	// A clicked variant arc, shown in the inspector — the quantitative lens on the
-	// track: what the node replaces, its net length change, and how many walks carry
-	// it. Genomic coords are absolute (already offset by the reference start).
+	// track. `kind` says which side of the bubble was clicked (its net-insertion or
+	// net-deletion arc); the rest describe the whole feature. Genomic coords are
+	// absolute (already offset by the reference start).
 	interface SelectedArc {
-		id: string;
-		len: number;
-		skipped: number;
-		net: number;
-		cov: number;
+		kind: 'insertion' | 'deletion';
+		reason: string;
 		contig: string;
-		gLeft: number;
-		gRight: number;
+		gStart: number;
+		gEnd: number;
+		refSpan: number;
+		longest: number;
+		shortest: number;
+		insertion: number;
+		deletion: number;
 	}
 	let selectedArc = $state<SelectedArc | null>(null);
 	// Whether the arc inspector's "how these are calculated" note is expanded.
@@ -407,32 +409,53 @@
 		};
 	});
 
-	// Variant arcs for the band just below the reference axis: non-reference nodes
-	// placed on the reference coordinate system, weighted by how many haplotypes
-	// carry each (the "quantitative lens"). Computed straight from the reduced Gfa —
-	// no layout needed — and handed to the canvas as absolute genomic coordinates so
-	// it can position them through the same reference anchors the gene track uses.
-	const arcModel = $derived(showVariantArcs ? computeNonRefNodes(gfa, referenceSample, arcMinLen) : null);
-	interface ArcEvent extends NonRefEvent {
+	// Variant arcs: one per non-reference feature the reducer could not collapse
+	// (the reduced Gfa's `Y` / KeptSite records — see gfa.ts). Each marks a bubble
+	// that stayed in the graph, spanning the reference coordinates it covers. A
+	// bubble contributes a net-insertion arc when its longest walk runs longer than
+	// the reference it spans, and/or a net-deletion arc when its shortest walk runs
+	// shorter — carrying the reason it resisted collapse. No layout needed; placed
+	// in absolute genomic coordinates via the reference walk's start so the canvas
+	// positions them through the same reference anchors as the gene track.
+	interface SiteArc {
+		reason: string;
 		contig: string;
-		/** Absolute genomic coordinates of the event's anchors. */
-		gLeft: number;
-		gRight: number;
+		/** Genomic bp of the bubble's left/right reference edges. */
+		gStart: number;
+		gEnd: number;
+		/** Reference bp the bubble spans (gEnd - gStart). */
+		refSpan: number;
+		/** Longest / shortest walk through the bubble, in alt bp. */
+		longest: number;
+		shortest: number;
+		/** Net insertion (longest beyond the span) and net deletion (span beyond
+		 * shortest); either can be 0. */
+		insertion: number;
+		deletion: number;
 	}
-	const arcs = $derived.by((): ArcEvent[] => {
-		const m = arcModel;
-		if (!m) return [];
-		return m.events.map((ev) => ({
-			...ev,
-			contig: m.contig,
-			gLeft: m.genomicStart + ev.leftBp,
-			gRight: m.genomicStart + ev.rightBp
-		}));
+	const siteArcs = $derived.by((): SiteArc[] => {
+		if (!showVariantArcs || gfa.sites.length === 0) return [];
+		const ref = gfa.walks.find((w) => w.sample === referenceSample) ?? gfa.walks[0];
+		const base = ref?.start ?? 0;
+		const contig = ref?.seqId ?? '';
+		return gfa.sites
+			.map((s): SiteArc => {
+				const refSpan = Math.max(0, s.end - s.start);
+				return {
+					reason: s.reason,
+					contig,
+					gStart: base + s.start,
+					gEnd: base + s.end,
+					refSpan,
+					longest: s.longest,
+					shortest: s.shortest,
+					insertion: Math.max(0, s.longest - refSpan),
+					deletion: Math.max(0, refSpan - s.shortest)
+				};
+			})
+			// Hide features whose net change is below the size threshold.
+			.filter((s) => Math.max(s.insertion, s.deletion) >= arcMinLen);
 	});
-	// Total haplotypes at this locus (reference + non-reference) — the denominator
-	// for "N of M walks" in the arc inspector, so it reads as a plain fraction of all
-	// walks rather than a "non-reference" subset. Mirrors gfaStats' walk count.
-	const arcTotalWalks = $derived(gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length);
 
 	// Past this node count the full-quality layout takes minutes, so switch to a
 	// rough one automatically rather than making people wait. Below it, quality is
@@ -609,6 +632,24 @@
 	const reportStats = $derived(gfaStats(gfa, referenceSample));
 	const reportComputing = $derived(computing && !recomputeKeepsCanvas);
 	const reportBusy = $derived(querying || reportComputing);
+
+	// Human-readable form of a kept-site reason code (see gfa.ts KeptSite.reason).
+	function reasonLabel(reason: string): string {
+		switch (reason) {
+			case 'large-variant':
+				return 'too large to collapse';
+			case 'cyclic':
+				return 'cyclic — inversion or tandem repeat';
+			case 'tangled':
+				return 'tangled — not a clean bubble';
+			case 'unwitnessed':
+				return 'contains an edge no walk takes';
+			case 'complex':
+				return 'complex — not a clean bubble';
+			default:
+				return reason;
+		}
+	}
 
 	const selectedLen = $derived(selected ? (gfa.segments.get(selected)?.length ?? null) : null);
 	const selectedCoord = $derived(selected ? (refCoords.get(selected) ?? null) : null);
@@ -825,7 +866,7 @@
 						layout={displayLayout}
 						{refCoords}
 						{genes}
-						{arcs}
+						sites={siteArcs}
 						showArcs={showVariantArcs}
 						showGenes={showGeneTrack}
 						{discoPath}
@@ -996,9 +1037,9 @@
 				{:else if selectedArc}
 					<div class="inspector">
 						<div class="insp-head">
-							<span class="insp-title">
-								{selectedArc.net > 0 ? 'Insertion' : selectedArc.net < 0 ? 'Deletion' : 'Substitution'}
-							</span>
+							<span class="insp-title"
+								>{selectedArc.kind === 'insertion' ? 'Insertion' : 'Deletion'}</span
+							>
 							<div class="insp-actions">
 								<button
 									class="insp-info"
@@ -1015,46 +1056,44 @@
 						</div>
 						{#if arcInfoOpen}
 							<p class="insp-explain">
-								Each arc is a <b>single non-reference node</b>, not a whole bubble — a site with
-								several alleles shows one arc per node. Its <b>length</b> is that node's own sequence
-								(after simplification a run of nodes may be merged into one, so it's their combined
-								bp), not a path through the bubble. <b>replaces</b> is the reference span between the
-								two reference nodes it attaches to; <b>net</b> = length − replaces, and the arc points
-								up for a net gain, down for a loss (its reach grows with the larger of the two).
-								<b>walks</b> counts how many of the locus's haplotypes pass through the node.
+								Each arc is a whole bubble the reducer <b>could not collapse</b> — an alternate region
+								off the reference, not a single node — spanning the reference it covers. The
+								<b>longest walk</b> is the deepest path any haplotype takes through it (and sets the
+								insertion height); the <b>shortest walk</b> is the shallowest. A walk longer than the
+								span is a <b>net insertion</b>, one shorter a <b>net deletion</b>. <b>reason</b> is why
+								it stayed in the graph.
 							</p>
 						{/if}
 						<div class="ni-fields">
+							{#if selectedArc.kind === 'insertion'}
+								<span class="ni-field"
+									><span class="ni-key">net insertion</span> +{selectedArc.insertion.toLocaleString()}
+									bp</span
+								>
+								<span class="ni-field"
+									><span class="ni-key">longest walk</span> {selectedArc.longest.toLocaleString()} bp</span
+								>
+							{:else}
+								<span class="ni-field"
+									><span class="ni-key">net deletion</span> −{selectedArc.deletion.toLocaleString()}
+									bp</span
+								>
+								<span class="ni-field"
+									><span class="ni-key">shortest walk</span> {selectedArc.shortest.toLocaleString()} bp</span
+								>
+							{/if}
 							<span class="ni-field"
-								><span class="ni-key">net</span> {selectedArc.net > 0 ? '+' : ''}{selectedArc.net.toLocaleString()}
-								bp</span
+								><span class="ni-key">spans</span> {selectedArc.refSpan.toLocaleString()} bp of reference</span
 							>
-							{#if selectedArc.len > 0 && selectedArc.skipped > 0}
-								<span class="ni-field"
-									><span class="ni-key">alt length</span> {selectedArc.len.toLocaleString()} bp</span
-								>
-							{/if}
-							{#if selectedArc.skipped > 0}
-								<span class="ni-field"
-									><span class="ni-key">replaces</span> {selectedArc.skipped.toLocaleString()} bp of
-									reference</span
-								>
-							{/if}
 							<span class="ni-field"
-								><span class="ni-key">walks</span>
-								<b>{selectedArc.cov.toLocaleString()}</b> of {arcTotalWalks.toLocaleString()}</span
+								><span class="ni-key">reason</span> {reasonLabel(selectedArc.reason)}</span
 							>
-							{#if selectedArc.len > 0}
-								<span class="ni-field"
-									><span class="ni-key">node</span> <code>{selectedArc.id}</code></span
-								>
-							{/if}
 							<span class="ni-field"
 								><span class="ni-key">coords</span>
 								<span class="coord"
-									>{selectedArc.contig}:{selectedArc.gLeft.toLocaleString()}{selectedArc.gLeft !==
-									selectedArc.gRight
-										? '–' + selectedArc.gRight.toLocaleString()
+									>{selectedArc.contig}:{selectedArc.gStart.toLocaleString()}{selectedArc.gStart !==
+									selectedArc.gEnd
+										? '–' + selectedArc.gEnd.toLocaleString()
 										: ''}</span
 								></span
 							>
@@ -1089,12 +1128,10 @@
 		<div class="foot">
 			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 			<span class="spacer"></span>
-			{#if showVariantArcs && arcs.length > 0}
-				<span class="legend arc-legend" title="Variant arcs, colored by how the alternate allele's length compares to the reference it replaces">
-					<span class="al"><span class="asw" style="background:{NET_COLORS.insertion}"></span>{NET_LABELS.insertion}</span>
-					<span class="al"><span class="asw" style="background:{NET_COLORS.expansion}"></span>{NET_LABELS.expansion}</span>
-					<span class="al"><span class="asw" style="background:{NET_COLORS.contraction}"></span>{NET_LABELS.contraction}</span>
-					<span class="al"><span class="asw" style="background:{NET_COLORS.substitution}"></span>{NET_LABELS.substitution}</span>
+			{#if showVariantArcs && siteArcs.length > 0}
+				<span class="legend arc-legend" title="Each arc is a bubble that could not be collapsed: insertions arc up, deletions down">
+					<span class="al"><span class="asw" style="background:#1d4ed8"></span>net insertion</span>
+					<span class="al"><span class="asw" style="background:#dc2626"></span>net deletion</span>
 				</span>
 			{/if}
 			<span class="legend"><span class="sw backbone"></span> reference backbone</span>

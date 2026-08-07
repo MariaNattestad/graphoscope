@@ -26,7 +26,7 @@
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use crate::gfa::{Link, NodeId, OutSegment, Segment, Step};
+use crate::gfa::{Link, NodeId, OutSegment, Segment, SiteRecord, Step};
 
 //-----------------------------------------------------------------------------
 // The graph (segments + links), accumulated during pass 1.
@@ -117,6 +117,87 @@ fn neighbours<'a>(
     m.get(&n).into_iter().flat_map(|s| s.iter().copied())
 }
 
+/// Longest and shortest walk through a set of nodes, in bases — the deepest and
+/// shallowest source→sink path over the directed (walk) edges internal to `comp`,
+/// each node contributing its own length. `None` if the induced subgraph has a
+/// directed cycle (no topological order), for which the caller falls back to the
+/// total interior sequence. Used to size the arc for a feature that isn't a clean
+/// superbubble (a dangling insertion or a tangle).
+fn component_walk_extremes(
+    comp: &HashSet<NodeId>,
+    dir_out: &HashMap<NodeId, HashSet<NodeId>>,
+    graph: &Graph,
+) -> Option<(usize, usize)> {
+    let mut indeg: HashMap<NodeId, usize> = comp.iter().map(|&n| (n, 0)).collect();
+    let mut outdeg: HashMap<NodeId, usize> = comp.iter().map(|&n| (n, 0)).collect();
+    for &u in comp {
+        for v in neighbours(dir_out, u) {
+            if comp.contains(&v) {
+                *indeg.get_mut(&v).unwrap() += 1;
+                *outdeg.get_mut(&u).unwrap() += 1;
+            }
+        }
+    }
+    // Kahn topological order.
+    let mut ready: Vec<NodeId> = comp.iter().copied().filter(|n| indeg[n] == 0).collect();
+    let mut order: Vec<NodeId> = Vec::with_capacity(comp.len());
+    let mut ind = indeg.clone();
+    let mut i = 0;
+    while i < ready.len() {
+        let u = ready[i];
+        i += 1;
+        order.push(u);
+        for v in neighbours(dir_out, u) {
+            if comp.contains(&v) {
+                let e = ind.get_mut(&v).unwrap();
+                *e -= 1;
+                if *e == 0 {
+                    ready.push(v);
+                }
+            }
+        }
+    }
+    if order.len() != comp.len() {
+        return None; // cycle
+    }
+    // Longest/shortest path ending at each node. A source (no internal predecessor)
+    // starts a path; a non-source's shortest is INF until relaxed from a source.
+    let mut dmax: HashMap<NodeId, usize> =
+        comp.iter().map(|&n| (n, if indeg[&n] == 0 { graph.len_of(n) } else { 0 })).collect();
+    let mut dmin: HashMap<NodeId, usize> = comp
+        .iter()
+        .map(|&n| (n, if indeg[&n] == 0 { graph.len_of(n) } else { usize::MAX }))
+        .collect();
+    for &u in &order {
+        for v in neighbours(dir_out, u) {
+            if comp.contains(&v) {
+                let lv = graph.len_of(v);
+                if dmax[&u] + lv > dmax[&v] {
+                    dmax.insert(v, dmax[&u] + lv);
+                }
+                if dmin[&u] != usize::MAX && dmin[&u] + lv < dmin[&v] {
+                    dmin.insert(v, dmin[&u] + lv);
+                }
+            }
+        }
+    }
+    // Extremes over sink nodes (no internal successor) — the walk exits there.
+    let mut longest = 0usize;
+    let mut shortest = usize::MAX;
+    for &n in comp {
+        if outdeg[&n] == 0 {
+            longest = longest.max(dmax[&n]);
+            if dmin[&n] != usize::MAX {
+                shortest = shortest.min(dmin[&n]);
+            }
+        }
+    }
+    if shortest == usize::MAX {
+        shortest = longest;
+    }
+    Some((longest, shortest))
+}
+
 //-----------------------------------------------------------------------------
 // Collapse planning (pure graph operation — no walks needed).
 
@@ -132,6 +213,9 @@ pub struct CollapsePlan {
     pub nodes_removed: usize,
     pub snp_count: usize,
     pub bases_removed: usize,
+    /// One record per non-reference feature the simplifier could *not* collapse,
+    /// with the reason it survived. See [`SiteRecord`].
+    pub kept_sites: Vec<SiteRecord>,
 }
 
 struct Region {
@@ -161,7 +245,19 @@ pub fn plan_collapse(
     let ref_set: HashSet<NodeId> = ref_index.keys().copied().collect();
     let idx_of = |id: NodeId| -> usize { ref_index[&id] };
 
-    let detect = |s_idx: usize| -> Option<Region> {
+    // Reference-path bp offset before each step, so a region's [entry-end,
+    // exit-start) span can be expressed in the same reference bp the viewer uses.
+    let mut ref_off: Vec<usize> = Vec::with_capacity(ref_node_at.len());
+    let mut acc = 0usize;
+    for &id in &ref_node_at {
+        ref_off.push(acc);
+        acc += graph.len_of(id);
+    }
+
+    // Returns `Some(Region)` for a collapsible superbubble; for a feature that is
+    // *kept*, it pushes a `SiteRecord` (with the reason) and returns `None`, so the
+    // caller's collapse behaviour is exactly as before recording was added.
+    let detect = |s_idx: usize, sites: &mut Vec<SiteRecord>| -> Option<Region> {
         let s = ref_node_at[s_idx];
         if agg.dir_out.get(&s).map(|x| x.len()).unwrap_or(0) < 2 {
             return None; // an entry must branch
@@ -248,17 +344,34 @@ pub fn plan_collapse(
                 continue;
             }
 
-            // A tandem self-loop anywhere in the region is a cycle.
-            if region.iter().any(|n| agg.self_loop.contains(n)) {
-                return None;
-            }
-
             let interior_non_ref: Vec<NodeId> =
                 interior.iter().copied().filter(|x| !ref_set.contains(x)).collect();
             let has_skip = agg.dir_out.get(&s).map(|o| o.contains(&t)).unwrap_or(false)
                 && idx_of(t) > s_idx + 1;
             if interior_non_ref.is_empty() && !has_skip {
                 continue; // no variation here
+            }
+
+            // A closed region with variation that we cannot fold away is a "kept
+            // site". Below, every reason it might resist collapse pushes one
+            // record (reference span it covers + why) before returning. The
+            // reference span, and the interior sequence used as the height proxy
+            // for the non-DAG cases, are the same for all of them.
+            let span_start = ref_off[s_idx] + graph.len_of(s);
+            let span_end = ref_off[idx_of(t)];
+            let ref_span = span_end.saturating_sub(span_start);
+            let interior_bp: usize = interior_non_ref.iter().map(|&x| graph.len_of(x)).sum();
+
+            // A tandem self-loop anywhere in the region is a cycle.
+            if region.iter().any(|n| agg.self_loop.contains(n)) {
+                sites.push(SiteRecord {
+                    start: span_start,
+                    end: span_end,
+                    longest: interior_bp.max(ref_span),
+                    shortest: ref_span,
+                    reason: "cyclic",
+                });
+                return None;
             }
 
             // Single-source (s) / single-sink (t) over walk-directed edges.
@@ -290,6 +403,13 @@ pub fn plan_collapse(
                 }
             }
             if !ok {
+                sites.push(SiteRecord {
+                    start: span_start,
+                    end: span_end,
+                    longest: interior_bp.max(ref_span),
+                    shortest: ref_span,
+                    reason: "tangled",
+                });
                 return None;
             }
 
@@ -314,37 +434,64 @@ pub fn plan_collapse(
                 }
             }
             if topo.len() != region.len() {
-                return None; // cycle
+                sites.push(SiteRecord {
+                    start: span_start,
+                    end: span_end,
+                    longest: interior_bp.max(ref_span),
+                    shortest: ref_span,
+                    reason: "cyclic",
+                });
+                return None;
             }
 
             // Every graph edge inside the region must be walk-confirmed.
             for &u in &region {
                 for w in neighbours(&agg.adj, u) {
                     if region.contains(&w) && u < w && !agg.walk_pairs.contains(&pair(u, w)) {
+                        sites.push(SiteRecord {
+                            start: span_start,
+                            end: span_end,
+                            longest: interior_bp.max(ref_span),
+                            shortest: ref_span,
+                            reason: "unwitnessed",
+                        });
                         return None;
                     }
                 }
             }
 
-            // Longest entry->exit path in bases.
-            let mut dp: HashMap<NodeId, i64> = region.iter().map(|&n| (n, i64::MIN)).collect();
-            dp.insert(s, 0);
+            // Longest and shortest entry->exit path in bases (deepest / shallowest
+            // walk through the bubble). The entry contributes 0 and the exit is not
+            // counted, so both are measured in alt bases between the anchors.
+            let mut dpx: HashMap<NodeId, i64> = region.iter().map(|&n| (n, i64::MIN)).collect();
+            let mut dpn: HashMap<NodeId, i64> = region.iter().map(|&n| (n, i64::MAX)).collect();
+            dpx.insert(s, 0);
+            dpn.insert(s, 0);
             for &u in &topo {
-                let du = dp[&u];
-                if du == i64::MIN {
-                    continue;
-                }
+                let (xu, nu) = (dpx[&u], dpn[&u]);
                 for v in neighbours(&agg.dir_out, u) {
                     if region.contains(&v) {
-                        let cand = du + if v == t { 0 } else { graph.len_of(v) as i64 };
-                        if cand > dp[&v] {
-                            dp.insert(v, cand);
+                        let w = if v == t { 0 } else { graph.len_of(v) as i64 };
+                        if xu != i64::MIN && xu + w > dpx[&v] {
+                            dpx.insert(v, xu + w);
+                        }
+                        if nu != i64::MAX && nu + w < dpn[&v] {
+                            dpn.insert(v, nu + w);
                         }
                     }
                 }
             }
-            if dp[&t] >= max_variant as i64 {
-                return None; // too big — keep
+            let longest = dpx[&t].max(0) as usize;
+            if longest >= max_variant {
+                let shortest = if dpn[&t] == i64::MAX { longest } else { dpn[&t].max(0) as usize };
+                sites.push(SiteRecord {
+                    start: span_start,
+                    end: span_end,
+                    longest,
+                    shortest,
+                    reason: "large-variant",
+                });
+                return None;
             }
 
             return Some(Region {
@@ -360,6 +507,7 @@ pub fn plan_collapse(
     let mut removed_nodes: HashSet<NodeId> = HashSet::new();
     let mut collapsed_spans: Vec<(usize, usize)> = Vec::new();
     let mut claimed_interior: HashSet<NodeId> = HashSet::new();
+    let mut kept_sites: Vec<SiteRecord> = Vec::new();
     let (mut sites, mut nodes_removed, mut snp_count, mut bases_removed) = (0, 0, 0, 0);
 
     for i in 0..ref_node_at.len() {
@@ -367,7 +515,9 @@ pub fn plan_collapse(
         if ref_dup.contains(&s) || claimed_interior.contains(&s) {
             continue;
         }
-        let Some(r) = detect(i) else { continue };
+        // `detect` records kept features via `kept_sites` and returns None for them;
+        // only a collapse claims interior nodes, so collapse behaviour is unchanged.
+        let Some(r) = detect(i, &mut kept_sites) else { continue };
         removed_nodes.extend(r.interior_non_ref.iter().copied());
         let exit_idx = idx_of(r.exit);
         for k in (i + 1)..exit_idx {
@@ -379,6 +529,90 @@ pub fn plan_collapse(
         snp_count += r.snp_count;
         bases_removed += r.bases_removed;
     }
+
+    // Because kept features don't claim their interior, a complex bubble can be
+    // recorded once from its entry and again from interior reference nodes (nested
+    // sub-regions). Keep only maximal spans, so one bubble yields one arc. Processed
+    // in (start asc, end desc) order, a container is always seen before what it
+    // contains.
+    kept_sites.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    let mut maximal: Vec<SiteRecord> = Vec::with_capacity(kept_sites.len());
+    for site in kept_sites {
+        if maximal.iter().any(|m| m.start <= site.start && site.end <= m.end) {
+            continue; // nested inside a span we already kept
+        }
+        maximal.push(site);
+    }
+    let mut kept_sites = maximal;
+
+    // --- Component pass -----------------------------------------------------
+    // The superbubble detector above only marks clean, closed entry→exit bubbles.
+    // Every other surviving non-reference node — a one-sided/dangling insertion, a
+    // tangle the cone-cap aborted on — still stands in the graph and still "can't be
+    // simplified", so it gets a record too. We group the surviving non-reference
+    // nodes into connected components (reference nodes are the anchors between them)
+    // and emit one record per component, skipping any a clean-bubble record already
+    // covers. The feature's size is the longest/shortest walk through it (or its
+    // total interior sequence when it's cyclic).
+    {
+        let survivor: HashSet<NodeId> = graph
+            .segments
+            .iter()
+            .map(|s| s.id)
+            .filter(|id| !ref_set.contains(id) && !removed_nodes.contains(id))
+            .collect();
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        for &origin in &survivor {
+            if !seen.insert(origin) {
+                continue;
+            }
+            // BFS the component of survivors; collect the reference nodes it touches.
+            let mut comp: Vec<NodeId> = Vec::new();
+            let mut attach: Vec<usize> = Vec::new();
+            let mut stack = vec![origin];
+            while let Some(u) = stack.pop() {
+                comp.push(u);
+                for v in neighbours(&agg.adj, u) {
+                    if let Some(&ri) = ref_index.get(&v) {
+                        attach.push(ri);
+                    } else if survivor.contains(&v) && seen.insert(v) {
+                        stack.push(v);
+                    }
+                }
+            }
+            if attach.is_empty() {
+                continue; // floats free of the reference — nothing to anchor an arc to
+            }
+            attach.sort_unstable();
+            let left = attach[0];
+            let right = *attach.last().unwrap();
+            let span_start = ref_off[left] + graph.len_of(ref_node_at[left]);
+            let span_end = ref_off[right].max(span_start);
+            // Skip if a clean-bubble record already spans this feature.
+            if kept_sites.iter().any(|k| k.start <= span_start && span_end <= k.end) {
+                continue;
+            }
+            let comp_set: HashSet<NodeId> = comp.iter().copied().collect();
+            let interior_bp: usize = comp.iter().map(|&n| graph.len_of(n)).sum();
+            let cyclic = comp.iter().any(|n| agg.self_loop.contains(n));
+            let (longest, shortest, reason) = if cyclic {
+                (interior_bp, interior_bp, "cyclic")
+            } else {
+                match component_walk_extremes(&comp_set, &agg.dir_out, graph) {
+                    Some((lo, sh)) => (lo, sh, "complex"),
+                    None => (interior_bp, interior_bp, "cyclic"),
+                }
+            };
+            kept_sites.push(SiteRecord {
+                start: span_start,
+                end: span_end,
+                longest,
+                shortest,
+                reason,
+            });
+        }
+    }
+    kept_sites.sort_by_key(|s| s.start);
 
     // Spans come out ascending by start; precompute the prefix max of the ends.
     let span_l: Vec<usize> = collapsed_spans.iter().map(|&(l, _)| l).collect();
@@ -399,6 +633,7 @@ pub fn plan_collapse(
         nodes_removed,
         snp_count,
         bases_removed,
+        kept_sites,
     }
 }
 
