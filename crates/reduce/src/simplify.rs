@@ -75,6 +75,11 @@ fn pair(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
 
 impl Aggregates {
     /// Folds one walk in, then forgets it. Only consecutive step pairs matter.
+    ///
+    /// Steps are read in the order given; the caller is responsible for handing
+    /// walks in reference-forward order (see `reduce`'s reverse-strand
+    /// normalisation), so a reverse-strand copy of the reference does not lay
+    /// down spurious backward edges here.
     pub fn observe_walk<I: Iterator<Item = Step>>(&mut self, steps: I) {
         let mut prev: Option<NodeId> = None;
         for s in steps {
