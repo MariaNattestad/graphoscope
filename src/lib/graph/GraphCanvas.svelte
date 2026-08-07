@@ -57,8 +57,6 @@
 		refCoords,
 		genes = [],
 		arcs = [],
-		totalNonRef = 0,
-		maxArcLen = 1,
 		showArcs = true,
 		showGenes = true,
 		strokeWidth = 3,
@@ -79,10 +77,6 @@
 		genes?: Transcript[];
 		/** Variant arcs for the band under the reference axis (empty to hide). */
 		arcs?: ArcEvent[];
-		/** Non-reference walk total, for the arc coverage heatmap scale. */
-		totalNonRef?: number;
-		/** Largest event size among the arcs, for the arc-depth scale. */
-		maxArcLen?: number;
 		/** Draw the variant-arc band. */
 		showArcs?: boolean;
 		/** Draw the gene track. */
@@ -135,7 +129,7 @@
 	// fitToView fits the graph into the height above all of them, so the backbone
 	// never overlaps them. (This uses the space the one-sided layout keeps clear.)
 	const AXIS_BAND = 22;
-	const ARC_BAND = 78;
+	const ARC_BAND = 96;
 	const GENE_BAND = 84;
 	const GENE_ROW = 15;
 	const GENE_MAX_ROWS = 4;
@@ -612,7 +606,6 @@
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
 		const gx = (bp: number) => genomicToScreenX(bp, anchors);
-		const contig = anchors[0].coord.contig;
 
 		const bandTop = height - geneBand - arcBand;
 		const baseY = bandTop + arcBand / 2; // reference baseline, centered so arcs go both ways
@@ -637,8 +630,23 @@
 		ctx.lineTo(width, baseY);
 		ctx.stroke();
 
-		const reach = (size: number) =>
-			Math.max(6, maxReach * Math.sqrt(size / Math.max(1, maxArcLen)));
+		// Scale each side against its own largest event, not a single global max.
+		// Insertions and deletions differ in size by orders of magnitude (a locus can
+		// carry a ~40 kb deletion alongside sub-kb insertions), so one shared
+		// denominator flattens the smaller side to the floor — insertions all looked
+		// the same height. Per-side maxima give each direction its own y-axis limit.
+		let upMax = 1;
+		let downMax = 1;
+		for (const ev of arcs) {
+			const size = Math.max(ev.len, ev.skipped);
+			if (ev.net < 0) downMax = Math.max(downMax, size);
+			else upMax = Math.max(upMax, size);
+		}
+		// Height is anchored at 0 (the baseline is 0 bp, not the smallest event in the
+		// data), so a variant's reach is proportional to its absolute size — sqrt only
+		// shapes the curve. A small floor keeps the tiniest variants clickable/visible.
+		const reach = (size: number, sideMax: number) =>
+			Math.max(4, maxReach * Math.sqrt(size / sideMax));
 
 		for (const ev of arcs) {
 			const x1 = gx(ev.gLeft);
@@ -646,9 +654,9 @@
 			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
 			const xm = (x1 + x2) / 2;
 			const size = Math.max(ev.len, ev.skipped);
-			const d = reach(size);
 			// Net gain (or an equal-length substitution) arcs up; net loss arcs down.
 			const dir = ev.net < 0 ? 1 : -1;
+			const d = reach(size, dir === 1 ? downMax : upMax);
 			const tipY = baseY + dir * d;
 			const cls = classify({ skipped: ev.skipped, net: ev.net });
 			const emph = ev.id === hoveredArcId;
@@ -675,18 +683,20 @@
 			}
 			ctx.globalAlpha = 1;
 
-			const isDel = ev.len === 0 && ev.skipped > 0;
+			// Minimal hover label: the kind of event and its net length change, e.g.
+			// "insertion +76 bp". Coordinates and coverage live in the click inspector.
+			const kind = ev.net > 0 ? 'insertion' : ev.net < 0 ? 'deletion' : 'substitution';
+			const sizeStr =
+				ev.net !== 0
+					? `${ev.net > 0 ? '+' : ''}${ev.net.toLocaleString()} bp`
+					: `${ev.len.toLocaleString()} bp`;
 			arcHits.push({
 				x0: Math.min(x1, x2) - 3,
 				x1: Math.max(x1, x2) + 3,
 				yTop: Math.min(baseY, tipY) - 4,
 				yBot: Math.max(baseY, tipY) + 4,
 				arc: ev,
-				label:
-					`${isDel ? 'deletion' : `node ${ev.id} · ${ev.len.toLocaleString()} bp`} · ` +
-					`${contig}:${ev.gLeft.toLocaleString()}${ev.gLeft !== ev.gRight ? '–' + ev.gRight.toLocaleString() : ''} · ` +
-					`replaces ${ev.skipped.toLocaleString()} bp · net ${ev.net > 0 ? '+' : ''}${ev.net.toLocaleString()} bp · ` +
-					`${ev.cov.toLocaleString()}/${totalNonRef.toLocaleString()} walks`
+				label: `${kind} ${sizeStr}`
 			});
 		}
 		ctx.restore();
@@ -1046,8 +1056,6 @@
 		theme;
 		showExits;
 		arcs;
-		totalNonRef;
-		maxArcLen;
 		untrack(() => draw());
 	});
 

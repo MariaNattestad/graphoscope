@@ -145,6 +145,8 @@
 		gRight: number;
 	}
 	let selectedArc = $state<SelectedArc | null>(null);
+	// Whether the arc inspector's "how these are calculated" note is expanded.
+	let arcInfoOpen = $state(false);
 
 	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), shown in
 	// the same inspector.
@@ -427,8 +429,10 @@
 			gRight: m.genomicStart + ev.rightBp
 		}));
 	});
-	const arcTotalNonRef = $derived(arcModel?.totalNonRef ?? 0);
-	const arcMaxLen = $derived(arcModel?.maxLen ?? 1);
+	// Total haplotypes at this locus (reference + non-reference) — the denominator
+	// for "N of M walks" in the arc inspector, so it reads as a plain fraction of all
+	// walks rather than a "non-reference" subset. Mirrors gfaStats' walk count.
+	const arcTotalWalks = $derived(gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length);
 
 	// Past this node count the full-quality layout takes minutes, so switch to a
 	// rough one automatically rather than making people wait. Below it, quality is
@@ -822,8 +826,6 @@
 						{refCoords}
 						{genes}
 						{arcs}
-						totalNonRef={arcTotalNonRef}
-						maxArcLen={arcMaxLen}
 						showArcs={showVariantArcs}
 						showGenes={showGeneTrack}
 						{discoPath}
@@ -843,6 +845,7 @@
 						}}
 						onSelectArc={(a) => {
 							selectedArc = a;
+							arcInfoOpen = false;
 							if (a) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_arc' });
 						}}
 						onSelectExit={(e) => {
@@ -994,15 +997,56 @@
 					<div class="inspector">
 						<div class="insp-head">
 							<span class="insp-title">
-								{#if selectedArc.len === 0 && selectedArc.skipped > 0}Deletion{:else}Variant <code
-										>{selectedArc.id}</code
-									>{/if}
+								{selectedArc.net > 0 ? 'Insertion' : selectedArc.net < 0 ? 'Deletion' : 'Substitution'}
 							</span>
-							<button class="insp-close" onclick={() => (selectedArc = null)} aria-label="Close"
-								>×</button
-							>
+							<div class="insp-actions">
+								<button
+									class="insp-info"
+									class:on={arcInfoOpen}
+									onclick={() => (arcInfoOpen = !arcInfoOpen)}
+									aria-label="How these values are calculated"
+									aria-expanded={arcInfoOpen}
+									title="How these values are calculated">ⓘ</button
+								>
+								<button class="insp-close" onclick={() => (selectedArc = null)} aria-label="Close"
+									>×</button
+								>
+							</div>
 						</div>
+						{#if arcInfoOpen}
+							<p class="insp-explain">
+								This is a non-reference node placed on the reference path. <b>alt length</b> is the
+								node's own sequence length; <b>replaces</b> is the stretch of reference between the two
+								points it attaches to; <b>net</b> = alt&nbsp;length − replaces, so the arc points up
+								for a net gain and down for a net loss. <b>walks</b> counts how many of the locus's
+								haplotypes pass through this node.
+							</p>
+						{/if}
 						<div class="ni-fields">
+							<span class="ni-field"
+								><span class="ni-key">net</span> {selectedArc.net > 0 ? '+' : ''}{selectedArc.net.toLocaleString()}
+								bp</span
+							>
+							{#if selectedArc.len > 0 && selectedArc.skipped > 0}
+								<span class="ni-field"
+									><span class="ni-key">alt length</span> {selectedArc.len.toLocaleString()} bp</span
+								>
+							{/if}
+							{#if selectedArc.skipped > 0}
+								<span class="ni-field"
+									><span class="ni-key">replaces</span> {selectedArc.skipped.toLocaleString()} bp of
+									reference</span
+								>
+							{/if}
+							<span class="ni-field"
+								><span class="ni-key">walks</span>
+								<b>{selectedArc.cov.toLocaleString()}</b> of {arcTotalWalks.toLocaleString()}</span
+							>
+							{#if selectedArc.len > 0}
+								<span class="ni-field"
+									><span class="ni-key">node</span> <code>{selectedArc.id}</code></span
+								>
+							{/if}
 							<span class="ni-field"
 								><span class="ni-key">coords</span>
 								<span class="coord"
@@ -1011,23 +1055,6 @@
 										? '–' + selectedArc.gRight.toLocaleString()
 										: ''}</span
 								></span
-							>
-							{#if !(selectedArc.len === 0 && selectedArc.skipped > 0)}
-								<span class="ni-field"
-									><span class="ni-key">alt length</span> {selectedArc.len.toLocaleString()} bp</span
-								>
-							{/if}
-							<span class="ni-field"
-								><span class="ni-key">replaces</span> {selectedArc.skipped.toLocaleString()} bp of
-								reference</span
-							>
-							<span class="ni-field"
-								><span class="ni-key">net</span> {selectedArc.net > 0 ? '+' : ''}{selectedArc.net.toLocaleString()}
-								bp</span
-							>
-							<span class="ni-field"
-								><span class="ni-key">walks</span>
-								<b>{selectedArc.cov.toLocaleString()}</b> of {arcTotalNonRef.toLocaleString()} non-reference</span
 							>
 						</div>
 					</div>
@@ -1499,6 +1526,38 @@
 		background: #eef1f5;
 		padding: 0 4px;
 		border-radius: 4px;
+	}
+	.insp-actions {
+		flex: 0 0 auto;
+		display: flex;
+		align-items: center;
+		gap: 0.1rem;
+	}
+	.insp-info {
+		background: none;
+		border: none;
+		font-size: 0.95rem;
+		line-height: 1;
+		color: #98a0ac;
+		cursor: pointer;
+		padding: 0 0.15rem;
+	}
+	.insp-info:hover,
+	.insp-info.on {
+		color: #2563eb;
+	}
+	.insp-explain {
+		margin: 0;
+		font-size: 0.76rem;
+		line-height: 1.45;
+		color: #4b5563;
+		background: #f6f8fc;
+		border: 1px solid #e3e7ee;
+		border-radius: 6px;
+		padding: 0.4rem 0.55rem;
+	}
+	.insp-explain b {
+		color: #1f2430;
 	}
 	.insp-close {
 		flex: 0 0 auto;
