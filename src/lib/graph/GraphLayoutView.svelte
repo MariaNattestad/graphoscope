@@ -1029,34 +1029,40 @@
 							</div>
 						{/if}
 
-						{#if endpointCounts}
-							{@const total = endpointCounts.starts + endpointCounts.ends}
+						{#if endpointCounts || endpoints.length > 0}
 							<div class="endpoints">
-								<span class="hint muted">
-									a walk dead-ending here usually indicates a haplotype connects to another locus and
-									got chopped off this subgraph
-								</span>
-								<span class="etag"
-									>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
-								>
-							</div>
-						{:else if endpoints.length > 0}
-							<div class="endpoints">
-								<span class="hint muted">
-									a walk dead-ending here usually indicates a haplotype connects to another locus and
-									got chopped off this subgraph
-								</span>
-								<div class="erow">
+								<p class="exit-note">
+									A haplotype starts or ends here rather than passing through — it connects to another
+									locus and continues into the graph <b>beyond the region that was fetched</b>. We can't
+									show where it goes: that node is outside this subgraph.
+								</p>
+								{#if endpointCounts}
+									{@const total = endpointCounts.starts + endpointCounts.ends}
 									<span class="etag"
-										>{endpoints.length} walk{endpoints.length === 1
-											? ' starts/ends'
-											: 's start/end'} here</span
+										>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
 									>
-									{#each endpoints.slice(0, 6) as e (e.label)}
-										<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
-									{/each}
-									{#if endpoints.length > 6}<span class="muted">+{endpoints.length - 6}</span>{/if}
-								</div>
+								{:else}
+									<div class="erow">
+										<span class="etag"
+											>{endpoints.length} walk{endpoints.length === 1
+												? ' starts/ends'
+												: 's start/end'} here</span
+										>
+										{#each endpoints.slice(0, 6) as e (e.label)}
+											<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
+										{/each}
+										{#if endpoints.length > 6}<span class="muted">+{endpoints.length - 6}</span>{/if}
+									</div>
+								{/if}
+								{#if onRequestMoreContext}
+									<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
+										Increase context &amp; re-query
+									</button>
+									<span class="exit-hint">
+										Widens the window past the locus so the query follows these haplotypes further —
+										fewer dangling exits, more nodes shown.
+									</span>
+								{/if}
 							</div>
 						{/if}
 					</div>
@@ -1812,8 +1818,8 @@
 		border-radius: 6px;
 		padding: 0.5rem 0.7rem;
 	}
-	.endpoints .hint {
-		font-size: 0.76rem;
+	.endpoints .exit-note {
+		font-size: 0.78rem;
 	}
 	.erow {
 		display: flex;
