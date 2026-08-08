@@ -138,7 +138,6 @@ where
     gfa::write_reduced(
         &reference_samples,
         &stats,
-        &plan.kept_sites,
         &unchop.segments,
         &unchop.links,
         &cov.node,

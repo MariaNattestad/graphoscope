@@ -259,64 +259,6 @@ fn int_tag(line: &str, tag: &str) -> Option<u64> {
         .and_then(|v| v.parse().ok())
 }
 
-fn str_tag<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
-    line.split('\t').find_map(|f| f.strip_prefix(&format!("{}:Z:", tag)))
-}
-
-/// Every `Y` (kept-site) line as (start, end, longest, shortest, reason).
-fn kept_sites(gfa: &str) -> Vec<(u64, u64, u64, u64, String)> {
-    gfa.lines()
-        .filter(|l| l.starts_with("Y\t"))
-        .map(|l| {
-            (
-                int_tag(l, "SS").unwrap(),
-                int_tag(l, "SE").unwrap(),
-                int_tag(l, "LO").unwrap(),
-                int_tag(l, "SH").unwrap(),
-                str_tag(l, "RE").unwrap().to_string(),
-            )
-        })
-        .collect()
-}
-
-#[test]
-fn kept_sites_record_the_features_that_resist_collapse() {
-    // Small variants collapse, so they leave no Y line.
-    for name in ["snp", "mnp", "small_ins", "small_del", "multiallelic"] {
-        assert!(
-            kept_sites(&run_reduce(&fixture(name), 50)).is_empty(),
-            "{}: small variants should collapse, not be kept",
-            name
-        );
-    }
-
-    // A large insertion is kept: a pure insertion (span start == end), its
-    // longest walk is the inserted sequence, its shortest is the bare reference.
-    let ins = kept_sites(&run_reduce(&fixture("large_ins"), 50));
-    assert_eq!(ins.len(), 1, "large_ins: one kept site");
-    let (ss, se, lo, sh, ref re) = ins[0];
-    assert_eq!(ss, se, "large_ins: pure insertion spans no reference");
-    assert!(lo >= 50 && sh == 0, "large_ins: longest {} shortest {}", lo, sh);
-    assert_eq!(re, "large-variant");
-
-    // A large deletion is kept: it spans reference (start < end), the longest
-    // walk is the reference it replaces, the shortest skips it (net deletion).
-    let del = kept_sites(&run_reduce(&fixture("large_del"), 50));
-    assert_eq!(del.len(), 1, "large_del: one kept site");
-    let (ss, se, _lo, sh, ref re) = del[0];
-    assert!(se > ss, "large_del: spans reference");
-    assert!(sh < se - ss, "large_del: a walk nets a deletion (shortest < span)");
-    assert_eq!(re, "large-variant");
-
-    // A cycle (inversion/tandem) is kept and labelled as such.
-    let cyc = kept_sites(&run_reduce(&fixture("cyclic"), 50));
-    assert!(
-        cyc.iter().any(|(.., r)| r == "cyclic"),
-        "cyclic: a kept site should carry the cyclic reason, got {:?}",
-        cyc
-    );
-}
-
 #[test]
 fn output_edges_existed_in_the_input() {
     for name in all_fixtures() {

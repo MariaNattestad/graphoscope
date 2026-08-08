@@ -13,27 +13,27 @@
 		end: number;
 	}
 
-	// A variant arc: a whole bubble the reducer could not collapse, placed on the
-	// reference axis by the two genomic coordinates it spans. Its longest walk gives
-	// the net-insertion height (arc up); its shortest gives the net-deletion (arc
-	// down). Positioned through the same reference anchors as the gene track, so it
-	// tracks the backbone under pan/zoom.
-	export interface SiteArc {
-		reason: string;
+	// A bubble drawn in the track under the reference axis: a structure that departs
+	// from the reference (see bubbles.ts), placed by the two genomic coordinates it
+	// attaches to, and marked with the shortest→longest path through it. Positioned
+	// through the same reference anchors as the gene track, so it tracks the backbone
+	// under pan/zoom.
+	export interface CanvasBubble {
 		contig: string;
+		/** Genomic bp of the bubble's left/right reference attachment. */
 		gStart: number;
 		gEnd: number;
+		/** Reference bp the bubble spans (gEnd - gStart). */
 		refSpan: number;
-		longest: number;
+		/** Fewest / most alternate bases any path takes through the bubble. */
 		shortest: number;
-		insertion: number;
-		deletion: number;
-	}
-
-	/** A clicked variant arc: the whole site plus which side (net-insertion or
-	 * net-deletion arc) was hit. */
-	export interface SelectedArc extends SiteArc {
-		kind: 'insertion' | 'deletion';
+		longest: number;
+		/** Most haplotypes through any of its segments. */
+		coverage: number;
+		/** Non-reference segments in the bubble (0 for a bare skip edge). */
+		nodeCount: number;
+		/** A bare reference-to-reference skip (deletion with no alt node). */
+		isSkip: boolean;
 	}
 
 	interface DiscoStep {
@@ -63,7 +63,7 @@
 		layout,
 		refCoords,
 		genes = [],
-		sites = [],
+		bubbles = [],
 		showArcs = true,
 		showGenes = true,
 		strokeWidth = 3,
@@ -83,10 +83,9 @@
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
-		/** Variant arcs — one per kept bubble — for the band under the reference axis
-		 * (empty to hide). */
-		sites?: SiteArc[];
-		/** Draw the variant-arc band. */
+		/** Bubbles for the band under the reference axis (empty to hide). */
+		bubbles?: CanvasBubble[];
+		/** Draw the bubble band. */
 		showArcs?: boolean;
 		/** Draw the gene track. */
 		showGenes?: boolean;
@@ -94,8 +93,8 @@
 		onSelectSegment?: (segId: string | null) => void;
 		/** A gene-track exon was clicked (or cleared); shown in the inspector. */
 		onSelectFeature?: (feature: SelectedFeature | null) => void;
-		/** A variant arc was clicked (or cleared); shown in the inspector. */
-		onSelectArc?: (arc: SelectedArc | null) => void;
+		/** A bubble was clicked (or cleared); shown in the inspector. */
+		onSelectArc?: (arc: CanvasBubble | null) => void;
 		/** An off-locus exit cue was clicked (or cleared); shown in the inspector. */
 		onSelectExit?: (exit: SelectedExit | null) => void;
 		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
@@ -146,7 +145,7 @@
 	const GENE_ROW = 15;
 	const GENE_MAX_ROWS = 4;
 	const geneBand = $derived(showGenes && genes.length > 0 ? GENE_BAND : 0);
-	const arcBand = $derived(showArcs && sites.length > 0 ? ARC_BAND : 0);
+	const arcBand = $derived(showArcs && bubbles.length > 0 ? ARC_BAND : 0);
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let containerEl: HTMLDivElement | undefined = $state();
@@ -210,18 +209,17 @@
 	}
 	let exonHits: ExonHit[] = [];
 
-	// Screen-space hit regions for the variant arcs, rebuilt each draw so a pointer
-	// move/click can resolve which arc it's over. `hoveredArcKey` (plain, not state:
+	// Screen-space hit regions for the bubble marks, rebuilt each draw so a pointer
+	// move/click can resolve which one it's over. `hoveredArcKey` (plain, not state:
 	// only the pointer handlers read it, and they call draw() directly) emphasises
-	// the arc under the cursor — a bubble can have both an insertion and a deletion
-	// arc, so the key is `<site index>:<kind>`.
+	// the bubble under the cursor.
 	interface ArcHit {
 		x0: number;
 		x1: number;
 		yTop: number;
 		yBot: number;
 		key: string;
-		sel: SelectedArc;
+		sel: CanvasBubble;
 		label: string;
 	}
 	let arcHits: ArcHit[] = [];
@@ -605,21 +603,21 @@
 	// together on one reference axis.
 	function drawArcTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		arcHits = [];
-		if (!showArcs || sites.length === 0) return;
+		if (!showArcs || bubbles.length === 0) return;
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
 		const gx = (bp: number) => genomicToScreenX(bp, anchors);
 
 		const bandTop = height - geneBand - arcBand;
-		const baseY = bandTop + arcBand / 2; // reference baseline, centered so arcs go both ways
-		const maxReach = arcBand / 2 - 8; // furthest an arc reaches either side of the baseline
+		const baseline = bandTop + 8; // the reference line, 0 bp; bubbles hang below it
+		const maxDepth = arcBand - 18; // depth of the longest path
 
 		ctx.save();
 		ctx.beginPath();
 		ctx.rect(0, bandTop, width, arcBand);
 		ctx.clip();
 
-		// band top border + centered baseline
+		// band top border + reference baseline
 		ctx.strokeStyle = theme.geneBandLine;
 		ctx.lineWidth = 1;
 		ctx.beginPath();
@@ -629,80 +627,77 @@
 		ctx.strokeStyle = theme.arcBaseline;
 		ctx.lineWidth = 1.5;
 		ctx.beginPath();
-		ctx.moveTo(0, baseY);
-		ctx.lineTo(width, baseY);
+		ctx.moveTo(0, baseline);
+		ctx.lineTo(width, baseline);
 		ctx.stroke();
 
-		// Scale each side against its own largest change, not a single global max, so a
-		// huge deletion doesn't flatten every insertion to the floor. Height is anchored
-		// at 0 (the baseline is 0 bp), so reach is proportional to the absolute change;
-		// sqrt only shapes the curve, and a small floor keeps tiny arcs clickable.
-		let upMax = 1;
-		let downMax = 1;
-		for (const s of sites) {
-			if (s.insertion > 0) upMax = Math.max(upMax, s.insertion);
-			if (s.deletion > 0) downMax = Math.max(downMax, s.deletion);
-		}
-		const reach = (size: number, sideMax: number) =>
-			Math.max(4, maxReach * Math.sqrt(size / sideMax));
+		// One depth scale for every bubble, anchored at 0 bp (the baseline). sqrt only
+		// shapes the curve so a huge feature doesn't flatten the rest.
+		let maxLen = 1;
+		for (const b of bubbles) maxLen = Math.max(maxLen, b.longest, b.refSpan);
+		const depth = (bp: number) => Math.max(0, maxDepth * Math.sqrt(bp / maxLen));
 
-		const emit = (
-			i: number,
-			s: SiteArc,
-			kind: 'insertion' | 'deletion',
-			x1: number,
-			x2: number,
-			xm: number,
-			d: number,
-			color: string,
-			label: string
-		) => {
-			const dir = kind === 'deletion' ? 1 : -1;
-			const tipY = baseY + dir * d;
-			const emph = hoveredArcKey === `${i}:${kind}`;
-			ctx.strokeStyle = color;
-			ctx.globalAlpha = emph ? 1 : 0.85;
-			ctx.lineWidth = emph ? 2.4 : 1.4;
-			if (x2 - x1 < 4) {
-				// lollipop: a stick + dot for a feature too narrow to arc
-				ctx.beginPath();
-				ctx.moveTo(xm, baseY);
-				ctx.lineTo(xm, tipY);
-				ctx.stroke();
-				ctx.beginPath();
-				ctx.fillStyle = color;
-				ctx.arc(xm, tipY, emph ? 4 : 2.6, 0, Math.PI * 2);
-				ctx.fill();
-			} else {
-				ctx.beginPath();
-				ctx.moveTo(x1, baseY);
-				ctx.quadraticCurveTo(xm, baseY + dir * 2 * d, x2, baseY);
-				ctx.stroke();
-			}
-			ctx.globalAlpha = 1;
-			arcHits.push({
-				x0: Math.min(x1, x2) - 3,
-				x1: Math.max(x1, x2) + 3,
-				yTop: Math.min(baseY, tipY) - 4,
-				yBot: Math.max(baseY, tipY) + 4,
-				key: `${i}:${kind}`,
-				sel: { ...s, kind },
-				label
-			});
-		};
-
-		for (let i = 0; i < sites.length; i++) {
-			const s = sites[i];
-			const x1 = gx(s.gStart);
-			const x2 = gx(s.gEnd);
+		for (let i = 0; i < bubbles.length; i++) {
+			const b = bubbles[i];
+			const x1 = gx(b.gStart);
+			const x2 = gx(b.gEnd);
 			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
 			const xm = (x1 + x2) / 2;
-			if (s.insertion > 0) {
-				emit(i, s, 'insertion', x1, x2, xm, reach(s.insertion, upMax), theme.arcInsertion, `insertion +${s.insertion.toLocaleString()} bp`);
+			const yShort = baseline + depth(b.shortest);
+			const yLong = baseline + depth(b.longest);
+			const emph = hoveredArcKey === `${i}`;
+			const color = theme.arcInsertion;
+
+			// Reference span the bubble covers, faint along the baseline.
+			if (x2 - x1 > 3) {
+				ctx.strokeStyle = theme.arcBaseline;
+				ctx.globalAlpha = 0.6;
+				ctx.lineWidth = emph ? 2 : 1;
+				ctx.beginPath();
+				ctx.moveTo(x1, baseline);
+				ctx.lineTo(x2, baseline);
+				ctx.stroke();
+				ctx.globalAlpha = 1;
 			}
-			if (s.deletion > 0) {
-				emit(i, s, 'deletion', x1, x2, xm, reach(s.deletion, downMax), theme.arcContraction, `deletion −${s.deletion.toLocaleString()} bp`);
-			}
+
+			ctx.strokeStyle = color;
+			ctx.globalAlpha = emph ? 1 : 0.9;
+			// thin stem from the reference (0) down to the shortest path
+			ctx.lineWidth = 1;
+			ctx.beginPath();
+			ctx.moveTo(xm, baseline);
+			ctx.lineTo(xm, yShort);
+			ctx.stroke();
+			// thick bar spanning the shortest→longest path range
+			ctx.lineWidth = emph ? 4 : 2.6;
+			ctx.beginPath();
+			ctx.moveTo(xm, yShort);
+			ctx.lineTo(xm, yLong);
+			ctx.stroke();
+			// shortest tick + longest dot
+			ctx.lineWidth = emph ? 2 : 1.4;
+			ctx.beginPath();
+			ctx.moveTo(xm - 3, yShort);
+			ctx.lineTo(xm + 3, yShort);
+			ctx.stroke();
+			ctx.fillStyle = color;
+			ctx.beginPath();
+			ctx.arc(xm, yLong, emph ? 4 : 2.8, 0, Math.PI * 2);
+			ctx.fill();
+			ctx.globalAlpha = 1;
+
+			arcHits.push({
+				x0: xm - 5,
+				x1: xm + 5,
+				yTop: baseline - 3,
+				yBot: yLong + 5,
+				key: `${i}`,
+				sel: b,
+				label:
+					b.shortest === b.longest
+						? `${b.longest.toLocaleString()} bp`
+						: `${b.shortest.toLocaleString()}–${b.longest.toLocaleString()} bp`
+			});
 		}
 		ctx.restore();
 	}
@@ -1068,13 +1063,11 @@
 		// a new glow color, or disco turning on/off), the theme flips, or the arc set
 		// changes within an unchanged band (e.g. the threshold). Untracked so draw()'s
 		// internal reads don't make this effect depend on hover/transform state.
-		discoPath;
-		discoColor;
 		discoPaths;
 		discoActive;
 		theme;
 		showExits;
-		sites;
+		bubbles;
 		untrack(() => draw());
 	});
 

@@ -41,11 +41,21 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 - **Reference-anchored graph layout** (`src/lib/graph/`) — a deterministic,
   reference-pinned force layout, with optional reference-guided simplification
   (small-variant popping + unchop) and reference genomic coordinates drawn along
-  the backbone.
-- **Large non-reference nodes** (`src/lib/RefArcView.svelte`) — arc/lollipop view
-  of insertions/deletions/substitutions on a reference coordinate axis.
-- **Genome browser** (`src/lib/IgvView.svelte`) — an IGV.js track (hg38 / hs1,
-  IGV's built-in id for T2T-CHM13v2.0) of the non-reference nodes.
+  the backbone. Two optional tracks sit under the backbone, on the same reference
+  axis:
+  - **Bubbles** (`src/lib/graph/bubbles.ts`) — a catalogue of everything that
+    departs from the reference and survives simplification. A *bubble* is a
+    connected component of non-reference segments (or a skip edge — a deletion
+    with no alternate node). Each is computed straight from the reduced graph the
+    viewer draws, so it's anchored purely at the reference coordinates where it
+    attaches (its "cut sites"), and marked with the **shortest and longest path**
+    (in bases) any route takes through it. Minigraph-Cactus graphs are acyclic, so
+    those two path lengths are well-defined DAG paths; the track deliberately does
+    not classify a bubble as an insertion or deletion — it just reports the two
+    lengths against the reference span the bubble covers. See
+    `src/lib/graph/bubbles.test.ts`.
+  - **Genes** (`src/lib/graph/geneTrack.ts`) — exon/UTR structure for the locus,
+    read from UCSC bigBed over HTTP range requests.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground

@@ -726,7 +726,7 @@
 				Web Worker and pulls only the few megabytes of database pages a locus actually touches
 				from the file on Cloudflare R2 — an approach inspired by
 				<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
-				The visualizations above (the graph layout, with optional variant-arc and gene tracks
+				The visualizations above (the graph layout, with optional bubble and gene tracks
 				beneath it, and the simplification described next) are a few prototypes we built for
 				inspecting a graph's complex patterns around a particular reference locus.
 			</p>

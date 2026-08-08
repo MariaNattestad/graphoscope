@@ -84,25 +84,6 @@ export interface ReducedStats {
 	totalSequenceBp: number;
 }
 
-/** A non-reference feature the reducer could not fold onto the reference,
- * carried on a `Y` line so the viewer can mark it and say why it remains. All
- * bp are reference-path relative (add the subgraph's genomic start to place
- * them), matching the coordinate space `computeNonRefNodes` already uses. */
-export interface KeptSite {
-	/** Reference bp of the entry anchor's end (left edge of the bubble). */
-	start: number;
-	/** Reference bp of the exit anchor's start (right edge of the bubble). */
-	end: number;
-	/** Longest entry→exit walk through the bubble, in alt bases. */
-	longest: number;
-	/** Shortest entry→exit walk, in alt bases. Below `end - start` means some
-	 * walk nets a deletion. */
-	shortest: number;
-	/** Why the feature resisted collapse: 'large-variant' | 'cyclic' | 'tangled'
-	 * | 'unwitnessed' (open-ended — treat unknown values as a generic reason). */
-	reason: string;
-}
-
 export interface Gfa {
 	headers: string[];
 	segments: Map<string, Segment>;
@@ -112,8 +93,6 @@ export interface Gfa {
 	referenceSamples: string[];
 	/** Present when parsed from a reduced GFA (server-side simplified + walk-counted). */
 	reduced?: ReducedStats;
-	/** Kept-site records from the reduced GFA's `Y` lines (empty when absent). */
-	sites: KeptSite[];
 }
 
 /** Reads a string GFA tag like `MB:Z:1,2,3` from a line's trailing fields. */
@@ -153,7 +132,6 @@ export function parseGfa(text: string): Gfa {
 	const segments = new Map<string, Segment>();
 	const links: Link[] = [];
 	const walks: Walk[] = [];
-	const sites: KeptSite[] = [];
 	let referenceSamples: string[] = [];
 	let reduced: ReducedStats | undefined;
 
@@ -188,18 +166,6 @@ export function parseGfa(text: string): Gfa {
 					walkRecords: intTag(f, 'WR') ?? 0,
 					totalSequenceBp: intTag(f, 'TS') ?? 0
 				};
-				break;
-			}
-			case 'Y': {
-				// Kept-site record (custom): a non-reference feature that resisted
-				// collapse, with its reference span, longest/shortest walk, and reason.
-				sites.push({
-					start: intTag(f, 'SS') ?? 0,
-					end: intTag(f, 'SE') ?? 0,
-					longest: intTag(f, 'LO') ?? 0,
-					shortest: intTag(f, 'SH') ?? 0,
-					reason: stringTag(f, 'RE') ?? 'kept'
-				});
 				break;
 			}
 			case 'S': {
@@ -248,7 +214,7 @@ export function parseGfa(text: string): Gfa {
 		}
 	}
 
-	return { headers, segments, links, walks, referenceSamples, reduced, sites };
+	return { headers, segments, links, walks, referenceSamples, reduced };
 }
 
 export interface GfaStats {

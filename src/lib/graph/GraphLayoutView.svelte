@@ -11,8 +11,9 @@
 	import type { GfaGraph } from './types';
 	import type { LayoutResult, SimNode, SegmentChain } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
-	import GraphCanvas from './GraphCanvas.svelte';
+	import GraphCanvas, { type CanvasBubble } from './GraphCanvas.svelte';
 	import QueryReport from './QueryReport.svelte';
+	import { computeBubbles } from './bubbles';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
@@ -137,24 +138,10 @@
 	}
 	let selectedFeature = $state<SelectedFeature | null>(null);
 
-	// A clicked variant arc, shown in the inspector — the quantitative lens on the
-	// track. `kind` says which side of the bubble was clicked (its net-insertion or
-	// net-deletion arc); the rest describe the whole feature. Genomic coords are
-	// absolute (already offset by the reference start).
-	interface SelectedArc {
-		kind: 'insertion' | 'deletion';
-		reason: string;
-		contig: string;
-		gStart: number;
-		gEnd: number;
-		refSpan: number;
-		longest: number;
-		shortest: number;
-		insertion: number;
-		deletion: number;
-	}
-	let selectedArc = $state<SelectedArc | null>(null);
-	// Whether the arc inspector's "how these are calculated" note is expanded.
+	// A clicked bubble, shown in the inspector — its reference span and the shortest
+	// and longest path through it. Genomic coords are absolute.
+	let selectedArc = $state<CanvasBubble | null>(null);
+	// Whether the bubble inspector's "how these are calculated" note is expanded.
 	let arcInfoOpen = $state(false);
 
 	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), shown in
@@ -547,52 +534,31 @@
 		};
 	});
 
-	// Variant arcs: one per non-reference feature the reducer could not collapse
-	// (the reduced Gfa's `Y` / KeptSite records — see gfa.ts). Each marks a bubble
-	// that stayed in the graph, spanning the reference coordinates it covers. A
-	// bubble contributes a net-insertion arc when its longest walk runs longer than
-	// the reference it spans, and/or a net-deletion arc when its shortest walk runs
-	// shorter — carrying the reason it resisted collapse. No layout needed; placed
-	// in absolute genomic coordinates via the reference walk's start so the canvas
-	// positions them through the same reference anchors as the gene track.
-	interface SiteArc {
-		reason: string;
-		contig: string;
-		/** Genomic bp of the bubble's left/right reference edges. */
-		gStart: number;
-		gEnd: number;
-		/** Reference bp the bubble spans (gEnd - gStart). */
-		refSpan: number;
-		/** Longest / shortest walk through the bubble, in alt bp. */
-		longest: number;
-		shortest: number;
-		/** Net insertion (longest beyond the span) and net deletion (span beyond
-		 * shortest); either can be 0. */
-		insertion: number;
-		deletion: number;
-	}
-	const siteArcs = $derived.by((): SiteArc[] => {
-		if (!showVariantArcs || gfa.sites.length === 0) return [];
-		const ref = gfa.walks.find((w) => w.sample === referenceSample) ?? gfa.walks[0];
-		const base = ref?.start ?? 0;
-		const contig = ref?.seqId ?? '';
-		return gfa.sites
-			.map((s): SiteArc => {
-				const refSpan = Math.max(0, s.end - s.start);
-				return {
-					reason: s.reason,
-					contig,
-					gStart: base + s.start,
-					gEnd: base + s.end,
-					refSpan,
-					longest: s.longest,
-					shortest: s.shortest,
-					insertion: Math.max(0, s.longest - refSpan),
-					deletion: Math.max(0, refSpan - s.shortest)
-				};
-			})
-			// Hide features whose net change is below the size threshold.
-			.filter((s) => Math.max(s.insertion, s.deletion) >= arcMinLen);
+	// Bubbles: everything that departs from the reference and survives
+	// simplification — a connected component of non-reference segments, or a skip
+	// edge (see bubbles.ts). Computed straight from the reduced graph the canvas
+	// draws, so each is anchored at the reference coordinates where it attaches and
+	// carries the shortest and longest path (bp) through it. No insertion/deletion
+	// classification — just the two path lengths against the reference span it
+	// covers. Handed to the canvas in absolute genomic coordinates.
+	const bubbles = $derived.by((): CanvasBubble[] => {
+		if (!showVariantArcs) return [];
+		const model = computeBubbles(gfa, referenceSample);
+		if (!model) return [];
+		return model.bubbles
+			// Below the threshold on both path lengths there's nothing worth marking.
+			.filter((b) => Math.max(b.longest, b.refSpan) >= arcMinLen)
+			.map((b) => ({
+				contig: model.contig,
+				gStart: model.genomicStart + b.entryBp,
+				gEnd: model.genomicStart + b.exitBp,
+				refSpan: b.refSpan,
+				shortest: b.shortest,
+				longest: b.longest,
+				coverage: b.coverage,
+				nodeCount: b.nodeCount,
+				isSkip: b.isSkip
+			}));
 	});
 
 	// Past this node count the full-quality layout takes minutes, so switch to a
@@ -771,24 +737,6 @@
 	const reportComputing = $derived(computing && !recomputeKeepsCanvas);
 	const reportBusy = $derived(querying || reportComputing);
 
-	// Human-readable form of a kept-site reason code (see gfa.ts KeptSite.reason).
-	function reasonLabel(reason: string): string {
-		switch (reason) {
-			case 'large-variant':
-				return 'too large to collapse';
-			case 'cyclic':
-				return 'cyclic — inversion or tandem repeat';
-			case 'tangled':
-				return 'tangled — not a clean bubble';
-			case 'unwitnessed':
-				return 'contains an edge no walk takes';
-			case 'complex':
-				return 'complex — not a clean bubble';
-			default:
-				return reason;
-		}
-	}
-
 	const selectedLen = $derived(selected ? (gfa.segments.get(selected)?.length ?? null) : null);
 	const selectedCoord = $derived(selected ? (refCoords.get(selected) ?? null) : null);
 	function fmtCoord(c: RefCoord): string {
@@ -896,17 +844,17 @@
 			     layout: variant arcs just below the reference axis, genes below them. -->
 			<section class="group tracks-group">
 				<span class="group-title">Tracks under graph</span>
-				<label class="switch" title="Draw the variant arcs on the reference axis: non-reference nodes as arcs (reach ∝ event size), insertions arcing up and deletions down. Click one for its coverage and net length.">
+				<label class="switch" title="Mark each bubble that departs from the reference and survives simplification, on the reference axis: the bar shows the shortest→longest path (bp) through it. Click one for details.">
 					<input type="checkbox" bind:checked={showVariantArcs} />
 					<span class="track"><span class="thumb"></span></span>
 					<span class="switch-text">
-						<span class="switch-label">Variant arcs</span>
-						<span class="switch-sub">insertions up, deletions down</span>
+						<span class="switch-label">Bubbles</span>
+						<span class="switch-sub">shortest → longest path</span>
 					</span>
 				</label>
 				{#if showVariantArcs}
-					<label class="thresh" title="Hide variants smaller than this. The reduce already pops most small ones; the survivors failed a safety check.">
-						hide variants under
+					<label class="thresh" title="Hide bubbles whose longest path (and reference span) are below this, to cut clutter from tiny survivors.">
+						hide bubbles under
 						<input type="number" min="1" max="1000" step="1" bind:value={arcMinLen} /> bp
 					</label>
 				{/if}
@@ -1073,7 +1021,7 @@
 						layout={displayLayout}
 						{refCoords}
 						{genes}
-						sites={siteArcs}
+						{bubbles}
 						showArcs={showVariantArcs}
 						showGenes={showGeneTrack}
 						{discoPaths}
@@ -1300,9 +1248,7 @@
 				{:else if selectedArc}
 					<div class="inspector">
 						<div class="insp-head">
-							<span class="insp-title"
-								>{selectedArc.kind === 'insertion' ? 'Insertion' : 'Deletion'}</span
-							>
+							<span class="insp-title">{selectedArc.isSkip ? 'Skip (deletion)' : 'Bubble'}</span>
 							<div class="insp-actions">
 								<button
 									class="insp-info"
@@ -1319,37 +1265,30 @@
 						</div>
 						{#if arcInfoOpen}
 							<p class="insp-explain">
-								Each arc is a whole bubble the reducer <b>could not collapse</b> — an alternate region
-								off the reference, not a single node — spanning the reference it covers. The
-								<b>longest walk</b> is the deepest path any haplotype takes through it (and sets the
-								insertion height); the <b>shortest walk</b> is the shallowest. A walk longer than the
-								span is a <b>net insertion</b>, one shorter a <b>net deletion</b>. <b>reason</b> is why
-								it stayed in the graph.
+								A <b>bubble</b> is anything that departs from the reference and survives
+								simplification — a connected set of non-reference segments, or a skip that jumps over
+								reference. It's anchored at the reference coordinates where it attaches (its cut
+								sites). The <b>shortest</b> and <b>longest paths</b> are the fewest and most bases any
+								route takes through it; compare them to the <b>reference span</b> it covers.
 							</p>
 						{/if}
 						<div class="ni-fields">
-							{#if selectedArc.kind === 'insertion'}
+							<span class="ni-field"
+								><span class="ni-key">shortest path</span> {selectedArc.shortest.toLocaleString()} bp</span
+							>
+							<span class="ni-field"
+								><span class="ni-key">longest path</span> {selectedArc.longest.toLocaleString()} bp</span
+							>
+							<span class="ni-field"
+								><span class="ni-key">reference span</span> {selectedArc.refSpan.toLocaleString()} bp</span
+							>
+							{#if !selectedArc.isSkip}
 								<span class="ni-field"
-									><span class="ni-key">net insertion</span> +{selectedArc.insertion.toLocaleString()}
-									bp</span
-								>
-								<span class="ni-field"
-									><span class="ni-key">longest walk</span> {selectedArc.longest.toLocaleString()} bp</span
-								>
-							{:else}
-								<span class="ni-field"
-									><span class="ni-key">net deletion</span> −{selectedArc.deletion.toLocaleString()}
-									bp</span
-								>
-								<span class="ni-field"
-									><span class="ni-key">shortest walk</span> {selectedArc.shortest.toLocaleString()} bp</span
+									><span class="ni-key">segments</span> {selectedArc.nodeCount.toLocaleString()}</span
 								>
 							{/if}
 							<span class="ni-field"
-								><span class="ni-key">spans</span> {selectedArc.refSpan.toLocaleString()} bp of reference</span
-							>
-							<span class="ni-field"
-								><span class="ni-key">reason</span> {reasonLabel(selectedArc.reason)}</span
+								><span class="ni-key">haplotypes</span> {selectedArc.coverage.toLocaleString()}</span
 							>
 							<span class="ni-field"
 								><span class="ni-key">coords</span>
@@ -1391,10 +1330,9 @@
 		<div class="foot">
 			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 			<span class="spacer"></span>
-			{#if showVariantArcs && siteArcs.length > 0}
-				<span class="legend arc-legend" title="Each arc is a bubble that could not be collapsed: insertions arc up, deletions down">
-					<span class="al"><span class="asw" style="background:#1d4ed8"></span>net insertion</span>
-					<span class="al"><span class="asw" style="background:#dc2626"></span>net deletion</span>
+			{#if showVariantArcs && bubbles.length > 0}
+				<span class="legend arc-legend" title="Each bubble hangs below the reference line; the bar spans its shortest to longest path in bp">
+					<span class="al"><span class="asw" style="background:#1d4ed8"></span>bubble: shortest–longest path ↓</span>
 				</span>
 			{/if}
 			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
