@@ -594,13 +594,14 @@
 	// packed into rows. Positioned by genomic coordinate through the same anchors
 	// as the axis, so it tracks the backbone under pan/zoom. Display-only — the
 	// arc view is where genes are interactive.
-	// Variant arcs in the band under the reference axis: a local reference baseline
-	// through the middle of the band, and one arc per kept bubble — its net insertion
-	// (longest walk beyond the reference span) arcs up, its net deletion (span beyond
-	// the shortest walk) arcs down, so a bubble can show both. Reach ∝ the net change,
-	// blue up / red down. Positioned by genomic coordinate through the same anchors as
-	// the axis and gene track, so the whole stack (graph, arcs, genes) pans and zooms
-	// together on one reference axis.
+	// The bubble track, drawn in two clearly separate spaces so path length is never
+	// read as reference distance. HORIZONTAL is reference (genomic bp): each bubble's
+	// foot on the reference line marks the extent it affects — an up-caret at a single
+	// point (a tip/insertion), or a bracket across [entry, exit] when it truly spans
+	// reference. VERTICAL is a length value axis (alt bp, its own scale on the left,
+	// no gridlines): the whisker below each foot spans the bubble's shortest→longest
+	// path. Positioned through the same anchors as the coordinate axis and gene track,
+	// so it pans and zooms with the backbone.
 	function drawArcTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		arcHits = [];
 		if (!showArcs || bubbles.length === 0) return;
@@ -609,15 +610,15 @@
 		const gx = (bp: number) => genomicToScreenX(bp, anchors);
 
 		const bandTop = height - geneBand - arcBand;
-		const baseline = bandTop + 8; // the reference line, 0 bp; bubbles hang below it
-		const maxDepth = arcBand - 18; // depth of the longest path
+		const baseline = bandTop + 12; // reference line = 0 on the value axis; whiskers hang below
+		const maxDepth = arcBand - 24; // depth of the largest path length
 
 		ctx.save();
 		ctx.beginPath();
 		ctx.rect(0, bandTop, width, arcBand);
 		ctx.clip();
 
-		// band top border + reference baseline
+		// band top border + reference line (also 0 bp on the value axis)
 		ctx.strokeStyle = theme.geneBandLine;
 		ctx.lineWidth = 1;
 		ctx.beginPath();
@@ -631,11 +632,39 @@
 		ctx.lineTo(width, baseline);
 		ctx.stroke();
 
-		// One depth scale for every bubble, anchored at 0 bp (the baseline). sqrt only
-		// shapes the curve so a huge feature doesn't flatten the rest.
+		// Value scale for path length, anchored at 0 (the reference line). sqrt keeps a
+		// small bubble visible next to a large one; the labelled axis discloses it.
 		let maxLen = 1;
-		for (const b of bubbles) maxLen = Math.max(maxLen, b.longest, b.refSpan);
+		for (const b of bubbles) maxLen = Math.max(maxLen, b.longest);
 		const depth = (bp: number) => Math.max(0, maxDepth * Math.sqrt(bp / maxLen));
+
+		// --- value axis on the left (path bp), no gridlines -----------------------
+		ctx.strokeStyle = theme.tick;
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		ctx.moveTo(2.5, baseline);
+		ctx.lineTo(2.5, baseline + maxDepth);
+		ctx.stroke();
+		const niceTicks = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000];
+		const shown = niceTicks.filter((v) => v <= maxLen).slice(-3);
+		ctx.font = '9px ui-sans-serif, system-ui, sans-serif';
+		ctx.textBaseline = 'middle';
+		ctx.textAlign = 'left';
+		for (let k = 0; k < shown.length; k++) {
+			const v = shown[k];
+			const y = baseline + depth(v);
+			ctx.strokeStyle = theme.tick;
+			ctx.beginPath();
+			ctx.moveTo(2.5, y);
+			ctx.lineTo(6, y);
+			ctx.stroke();
+			const label = k === shown.length - 1 ? `${v.toLocaleString()} bp` : v.toLocaleString();
+			const w = ctx.measureText(label).width;
+			ctx.fillStyle = theme.coordPill;
+			ctx.fillRect(7, y - 6, w + 4, 12);
+			ctx.fillStyle = theme.coordText;
+			ctx.fillText(label, 9, y + 0.5);
+		}
 
 		for (let i = 0; i < bubbles.length; i++) {
 			const b = bubbles[i];
@@ -643,53 +672,64 @@
 			const x2 = gx(b.gEnd);
 			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
 			const xm = (x1 + x2) / 2;
+			const spans = x2 - x1 > 3;
 			const yShort = baseline + depth(b.shortest);
 			const yLong = baseline + depth(b.longest);
 			const emph = hoveredArcKey === `${i}`;
 			const color = theme.arcInsertion;
 
-			// Reference span the bubble covers, faint along the baseline.
-			if (x2 - x1 > 3) {
-				ctx.strokeStyle = theme.arcBaseline;
-				ctx.globalAlpha = 0.6;
-				ctx.lineWidth = emph ? 2 : 1;
+			ctx.strokeStyle = color;
+			ctx.fillStyle = color;
+			ctx.globalAlpha = emph ? 1 : 0.9;
+
+			// foot on the reference line: the extent it affects
+			if (spans) {
+				// bracket across [entry, exit] with small downward end-caps
+				ctx.lineWidth = emph ? 2.5 : 1.6;
 				ctx.beginPath();
 				ctx.moveTo(x1, baseline);
 				ctx.lineTo(x2, baseline);
+				ctx.moveTo(x1, baseline);
+				ctx.lineTo(x1, baseline + 3);
+				ctx.moveTo(x2, baseline);
+				ctx.lineTo(x2, baseline + 3);
 				ctx.stroke();
-				ctx.globalAlpha = 1;
+			} else {
+				// up-caret marking the single attachment point
+				const s = emph ? 4 : 3;
+				ctx.beginPath();
+				ctx.moveTo(xm, baseline - s);
+				ctx.lineTo(xm - s, baseline);
+				ctx.lineTo(xm + s, baseline);
+				ctx.closePath();
+				ctx.fill();
 			}
 
-			ctx.strokeStyle = color;
-			ctx.globalAlpha = emph ? 1 : 0.9;
-			// thin stem from the reference (0) down to the shortest path
+			// value whisker below the foot: shortest → longest path
 			ctx.lineWidth = 1;
 			ctx.beginPath();
 			ctx.moveTo(xm, baseline);
 			ctx.lineTo(xm, yShort);
 			ctx.stroke();
-			// thick bar spanning the shortest→longest path range
 			ctx.lineWidth = emph ? 4 : 2.6;
 			ctx.beginPath();
 			ctx.moveTo(xm, yShort);
 			ctx.lineTo(xm, yLong);
 			ctx.stroke();
-			// shortest tick + longest dot
 			ctx.lineWidth = emph ? 2 : 1.4;
 			ctx.beginPath();
 			ctx.moveTo(xm - 3, yShort);
 			ctx.lineTo(xm + 3, yShort);
 			ctx.stroke();
-			ctx.fillStyle = color;
 			ctx.beginPath();
 			ctx.arc(xm, yLong, emph ? 4 : 2.8, 0, Math.PI * 2);
 			ctx.fill();
 			ctx.globalAlpha = 1;
 
 			arcHits.push({
-				x0: xm - 5,
-				x1: xm + 5,
-				yTop: baseline - 3,
+				x0: Math.min(x1, xm - 5),
+				x1: Math.max(x2, xm + 5),
+				yTop: baseline - 6,
 				yBot: yLong + 5,
 				key: `${i}`,
 				sel: b,
