@@ -666,75 +666,106 @@
 			ctx.fillText(label, 9, y + 0.5);
 		}
 
+		// Visible bubbles, with a small horizontal dodge so several bubbles that attach
+		// at the very same reference point (distinct components, no links between them)
+		// stay separately visible and clickable instead of drawing on top of each other.
+		interface Vis {
+			i: number;
+			x1: number;
+			x2: number;
+			xm: number;
+			cx: number;
+		}
+		const vis: Vis[] = [];
 		for (let i = 0; i < bubbles.length; i++) {
 			const b = bubbles[i];
 			const x1 = gx(b.gStart);
 			const x2 = gx(b.gEnd);
 			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
 			const xm = (x1 + x2) / 2;
+			vis.push({ i, x1, x2, xm, cx: xm });
+		}
+		const byX = new Map<number, Vis[]>();
+		for (const v of vis) {
+			const k = Math.round(v.xm);
+			(byX.get(k) ?? byX.set(k, []).get(k)!).push(v);
+		}
+		for (const grp of byX.values()) {
+			if (grp.length < 2) continue;
+			for (let k = 0; k < grp.length; k++) grp[k].cx = grp[k].xm + (k - (grp.length - 1) / 2) * 7;
+		}
+
+		for (const v of vis) {
+			const b = bubbles[v.i];
+			const { x1, x2, xm, cx } = v;
 			const spans = x2 - x1 > 3;
 			const yShort = baseline + depth(b.shortest);
 			const yLong = baseline + depth(b.longest);
-			const emph = hoveredArcKey === `${i}`;
+			const emph = hoveredArcKey === `${v.i}`;
 			const color = theme.arcInsertion;
 
 			ctx.strokeStyle = color;
 			ctx.fillStyle = color;
 			ctx.globalAlpha = emph ? 1 : 0.9;
 
-			// foot on the reference line: the extent it affects
+			// foot on the reference line: the extent of reference it affects
 			if (spans) {
-				// bracket across [entry, exit] with small downward end-caps
-				ctx.lineWidth = emph ? 2.5 : 1.6;
+				// bracket across [entry, exit] with downward end-caps
+				ctx.lineWidth = emph ? 2.5 : 1.8;
 				ctx.beginPath();
 				ctx.moveTo(x1, baseline);
 				ctx.lineTo(x2, baseline);
 				ctx.moveTo(x1, baseline);
-				ctx.lineTo(x1, baseline + 3);
+				ctx.lineTo(x1, baseline + 4);
 				ctx.moveTo(x2, baseline);
-				ctx.lineTo(x2, baseline + 3);
+				ctx.lineTo(x2, baseline + 4);
 				ctx.stroke();
 			} else {
-				// up-caret marking the single attachment point
-				const s = emph ? 4 : 3;
+				// up-caret marking the single attachment point (a pure insertion / tip)
+				const s = emph ? 6 : 5;
 				ctx.beginPath();
-				ctx.moveTo(xm, baseline - s);
-				ctx.lineTo(xm - s, baseline);
-				ctx.lineTo(xm + s, baseline);
+				ctx.moveTo(cx, baseline - s);
+				ctx.lineTo(cx - s * 0.7, baseline);
+				ctx.lineTo(cx + s * 0.7, baseline);
 				ctx.closePath();
 				ctx.fill();
 			}
 
-			// value whisker below the foot: shortest → longest path
-			ctx.lineWidth = 1;
-			ctx.beginPath();
-			ctx.moveTo(xm, baseline);
-			ctx.lineTo(xm, yShort);
-			ctx.stroke();
-			ctx.lineWidth = emph ? 4 : 2.6;
-			ctx.beginPath();
-			ctx.moveTo(xm, yShort);
-			ctx.lineTo(xm, yLong);
-			ctx.stroke();
-			ctx.lineWidth = emph ? 2 : 1.4;
-			ctx.beginPath();
-			ctx.moveTo(xm - 3, yShort);
-			ctx.lineTo(xm + 3, yShort);
-			ctx.stroke();
-			ctx.beginPath();
-			ctx.arc(xm, yLong, emph ? 4 : 2.8, 0, Math.PI * 2);
-			ctx.fill();
+			// value whisker below the foot: the alternate path, shortest → longest. A
+			// bubble whose alternate path is 0 bp (a bare deletion) has no whisker — the
+			// bracket alone carries it.
+			if (b.longest > 0) {
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(cx, baseline);
+				ctx.lineTo(cx, yShort);
+				ctx.stroke();
+				ctx.lineWidth = emph ? 4 : 2.6;
+				ctx.beginPath();
+				ctx.moveTo(cx, yShort);
+				ctx.lineTo(cx, yLong);
+				ctx.stroke();
+				ctx.lineWidth = emph ? 2 : 1.4;
+				ctx.beginPath();
+				ctx.moveTo(cx - 3, yShort);
+				ctx.lineTo(cx + 3, yShort);
+				ctx.stroke();
+				ctx.beginPath();
+				ctx.arc(cx, yLong, emph ? 4 : 2.8, 0, Math.PI * 2);
+				ctx.fill();
+			}
 			ctx.globalAlpha = 1;
 
 			arcHits.push({
-				x0: Math.min(x1, xm - 5),
-				x1: Math.max(x2, xm + 5),
-				yTop: baseline - 6,
-				yBot: yLong + 5,
-				key: `${i}`,
+				x0: Math.min(x1, cx - 6),
+				x1: Math.max(x2, cx + 6),
+				yTop: baseline - 8,
+				yBot: Math.max(yLong, baseline) + 5,
+				key: `${v.i}`,
 				sel: b,
-				label:
-					b.shortest === b.longest
+				label: b.isSkip
+					? `deletion · ${b.refSpan.toLocaleString()} bp reference`
+					: b.shortest === b.longest
 						? `${b.longest.toLocaleString()} bp`
 						: `${b.shortest.toLocaleString()}–${b.longest.toLocaleString()} bp`
 			});

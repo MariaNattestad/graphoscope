@@ -50,13 +50,14 @@ describe('computeBubbles', () => {
 		expect(comp.coverage).toBe(8); // max WC over its segments
 
 		const skip = m.bubbles.find((b) => b.isSkip)!;
-		// Jumps from the end of node 1 (100) to the start of node 3 (200): the skip
-		// takes no bases, the reference it replaces is 100 bp.
+		// Jumps from the end of node 1 (100) to the start of node 3 (200): the
+		// alternate path (the skip) takes no bases, so both path lengths are 0; the
+		// reference span it replaces (100 bp) is the extent.
 		expect(skip.entryBp).toBe(100);
 		expect(skip.exitBp).toBe(200);
 		expect(skip.refSpan).toBe(100);
 		expect(skip.shortest).toBe(0);
-		expect(skip.longest).toBe(100);
+		expect(skip.longest).toBe(0);
 	});
 
 	it('returns null when there is no reference walk', () => {

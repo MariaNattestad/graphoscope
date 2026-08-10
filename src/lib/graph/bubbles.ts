@@ -228,9 +228,9 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 		bubbles.push({
 			entryBp: lo.end,
 			exitBp: hi.start,
-			refSpan: gap,
-			shortest: 0, // the skip takes no bases
-			longest: gap, // the reference it jumps over
+			refSpan: gap, // the reference it jumps over (shown as the extent)
+			shortest: 0, // the alternate path (the skip) takes no bases…
+			longest: 0, // …so both path lengths are 0 on the value axis
 			nodeCount: 0,
 			coverage: l.coverage ?? 0,
 			isSkip: true
