@@ -3,7 +3,7 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
-	import { heatmapColor, darkTheme, lightTheme } from './colors';
+	import { heatmapModeColor, discreteColor, darkTheme, lightTheme, type ColorMode } from './colors';
 	import type { Transcript } from '../geneTrack';
 	import { trackEvent } from '../analytics';
 
@@ -74,6 +74,10 @@
 		onExitSegments,
 		lightMode = false,
 		showExits = true,
+		colorMode = 'coverage',
+		bubbleIdBySeg = null,
+		bubbleLongestBySeg = null,
+		maxBubbleLongest = 0,
 		onReady,
 		nodeTooltip
 	}: {
@@ -127,6 +131,16 @@
 		lightMode?: boolean;
 		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
 		showExits?: boolean;
+		/** What each node's fill encodes: walk coverage (default), the size of the
+		 * bubble it belongs to, a discrete per-bubble color, or its own length. */
+		colorMode?: ColorMode;
+		/** segId → its bubble's index, for the discrete `bubble` color mode. Supplied
+		 * by the parent from the bubble model; null when no bubble mode is active. */
+		bubbleIdBySeg?: Map<string, number> | null;
+		/** segId → the longest bp path through its bubble, for the `bubbleSize` heatmap. */
+		bubbleLongestBySeg?: Map<string, number> | null;
+		/** The largest bubble longest-path bp, to normalize the `bubbleSize` heatmap. */
+		maxBubbleLongest?: number;
 		/** Hands the parent a small API (currently just PNG export) once mounted. */
 		onReady?: (api: { exportImage: (filename: string) => void }) => void;
 	} = $props();
@@ -294,11 +308,44 @@
 		hoverLabel = `${segId} — ${(length ?? 0).toLocaleString()} bp${coordStr}`;
 	}
 
+	// Largest non-backbone node length, so the `length` heatmap normalizes against
+	// the variant nodes rather than the (typically much longer) reference segments.
+	const maxSegmentLength = $derived.by(() => {
+		let max = 0;
+		for (const [segId, len] of layout.segmentLengths) {
+			if (layout.backboneSegIds.has(segId)) continue;
+			if (len > max) max = len;
+		}
+		return max;
+	});
+
+	// A gentle log-scaled ratio so a handful of huge nodes/bubbles don't crush
+	// everything else to the low end of a linear ramp.
+	function logRatio(value: number, max: number): number {
+		if (max <= 0 || value <= 0) return 0;
+		return Math.log1p(value) / Math.log1p(max);
+	}
+
 	function colorForChain(segId: string): string {
 		if (layout.backboneSegIds.has(segId)) return theme.backbone;
-		const coverage = layout.pathCoverage.get(segId) ?? 0;
-		const ratio = layout.maxPathCoverage > 0 ? coverage / layout.maxPathCoverage : 0;
-		return heatmapColor(ratio, theme.heatmapLow, theme.heatmapHigh);
+		const heat = (mode: ColorMode, ratio: number) => heatmapModeColor(mode, ratio, lightMode, theme);
+		switch (colorMode) {
+			case 'bubble': {
+				const id = bubbleIdBySeg?.get(segId);
+				// A node outside any catalogued bubble (shouldn't happen for non-backbone
+				// nodes) falls back to the reference tone rather than a misleading hue.
+				return id === undefined ? theme.backbone : discreteColor(id, lightMode ? 45 : 58);
+			}
+			case 'bubbleSize':
+				return heat('bubbleSize', logRatio(bubbleLongestBySeg?.get(segId) ?? 0, maxBubbleLongest));
+			case 'length':
+				return heat('length', logRatio(layout.segmentLengths.get(segId) ?? 0, maxSegmentLength));
+			case 'coverage':
+			default: {
+				const coverage = layout.pathCoverage.get(segId) ?? 0;
+				return heat('coverage', layout.maxPathCoverage > 0 ? coverage / layout.maxPathCoverage : 0);
+			}
+		}
 	}
 
 	function fitToView(retriesLeft = 5) {
@@ -1051,6 +1098,10 @@
 		exitHighlightSegments;
 		theme;
 		showExits;
+		colorMode;
+		bubbleIdBySeg;
+		bubbleLongestBySeg;
+		maxBubbleLongest;
 		untrack(() => draw());
 	});
 
