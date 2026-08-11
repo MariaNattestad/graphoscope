@@ -135,6 +135,10 @@ const BUBBLE_Y_STEP_DIVISOR = 20;
  * graph stay within a few steps of the backbone instead of defining the whole
  * canvas's scale. */
 const MAX_DEPTH_OFFSET = 3;
+/** Vertical gap (in bubble-Y-steps) from the reference down to the straightened
+ * walk's track. Close enough that the walk reads as a second track just under the
+ * reference, not a distant line with tall connectors. */
+const STRAIGHTEN_GAP_STEPS = 1.35;
 /** Pull back toward the reference x a bubble attaches to (stops long sideways
  * drift). Kept gentle: too strong and every node in a bubble collapses onto the
  * single attachment x, stacking them into one vertical line instead of letting
@@ -377,7 +381,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// rather than being held above with every other bubble — so the walk reads as a
 	// self-contained lower track with its own local variation, while unrelated bubbles
 	// keep force-relaxing above the reference as usual.
-	const straightenY = (MAX_DEPTH_OFFSET + 1.5) * bubbleYStep;
+	const straightenY = STRAIGHTEN_GAP_STEPS * bubbleYStep;
 	const straightenSet = new Set<string>();
 	if (opts.straightenPath) {
 		for (const step of opts.straightenPath) {

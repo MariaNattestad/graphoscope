@@ -701,6 +701,51 @@
 		showHaplotypes && (showDiscoButton || namedWalks.length > 0 || canLoadHaplos)
 	);
 
+	// Auto-load the walks when the full graph is light enough that fetching + parsing
+	// it costs nothing noticeable — then the haplotype list (and disco) are just there,
+	// no button to hunt for. Only past a size threshold does it stay an explicit "load"
+	// (the full graph is walks ~97% of the payload, tens of MB at a repetitive locus).
+	// The size is known before loading from the reduced graph's stats: node count bounds
+	// the layout/memory cost, walk-record count bounds the fetch/parse cost (it explodes
+	// at repetitive loci where one haplotype fragments into thousands of W-lines).
+	//
+	// Thresholds are provisional — deliberately conservative here, to be tuned app-wide
+	// in a later pass. Mobile gets much lower ceilings: less memory, metered data.
+	let isNarrow = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 768px), (pointer: coarse)');
+		const update = () => (isNarrow = mq.matches);
+		update();
+		mq.addEventListener('change', update);
+		return () => mq.removeEventListener('change', update);
+	});
+	const AUTO_LOAD_MAX_NODES = $derived(isNarrow ? 2000 : 6000);
+	const AUTO_LOAD_MAX_WALK_RECORDS = $derived(isNarrow ? 6000 : 20000);
+	// Full-graph size estimate from the reduced `X` line (0 when not a reduced graph).
+	const fullGraphNodes = $derived(gfa.reduced?.segmentsBefore ?? 0);
+	const fullGraphWalkRecords = $derived(
+		gfa.reduced?.walkRecords ?? gfa.reduced?.totalWalks ?? 0
+	);
+	const haploDataLight = $derived(
+		fullGraphNodes > 0 &&
+			fullGraphNodes <= AUTO_LOAD_MAX_NODES &&
+			fullGraphWalkRecords <= AUTO_LOAD_MAX_WALK_RECORDS
+	);
+	$effect(() => {
+		if (
+			showHaplotypes &&
+			walksGfa == null &&
+			discoAvailable &&
+			!discoLoading &&
+			!walkLoadRequested &&
+			haploDataLight
+		) {
+			walkLoadRequested = true;
+			onRequestDiscoGraph?.();
+		}
+	});
+
 	// Reference genomic coordinates for each reference segment. Walk the reference
 	// sample's path (fall back to the first walk, matching gfaToGraph) and
 	// accumulate segment lengths from the walk's own genomic start. After
@@ -1370,7 +1415,9 @@
 							>
 						{/if}
 					{:else if canLoadHaplos}
-						{#if discoLoading || walkLoadRequested}
+						{#if discoLoading || walkLoadRequested || haploDataLight}
+							<!-- Light loci auto-load (an effect fires as soon as `haploDataLight`),
+							     so this covers both the auto-load and an in-flight manual load. -->
 							<span class="switch-sub">loading haplotypes…</span>
 						{:else}
 							<button
@@ -1382,7 +1429,9 @@
 								title="Fetch the full-walk graph so individual walks can be traced and straightened"
 								>Load haplotypes to inspect</button
 							>
-							<span class="switch-sub">list every walk to trace or straighten one</span>
+							<span class="switch-sub"
+								>{fullGraphNodes.toLocaleString()}-node full graph — loaded on request</span
+							>
 						{/if}
 					{/if}
 				</section>

@@ -69,10 +69,16 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
     and indexes it once. (A *walk* is one W-line; a haplotype can be fragmented
     across several, so the counts are of walks, not haplotypes.)
 
-  A **Haplotypes** box holds the disco-walks spotlight and a per-walk list (loaded on
-  demand — the same full-walk graph disco uses). On the hosted locus browser the walks
-  are anonymised to `unknown`, so they show as "Walk 1, 2, …" ("Walk", not
-  "Haplotype", since several of these fragments can belong to the same haplotype); on
+  A **Haplotypes** box holds the disco-walks spotlight and a per-walk list. The walks
+  live only in the full (unsimplified) graph, so the box loads it — automatically when
+  that graph is light enough that the fetch + parse costs nothing noticeable, and behind
+  an explicit "Load haplotypes" button past a size threshold (the full graph is walks
+  ~97% of the payload, tens of MB at a repetitive locus). The size is known up front from
+  the reduced graph's stats — node count and W-line count — and the thresholds are lower
+  on small/touch screens; they're provisional, pending an app-wide tuning pass. On the
+  hosted locus browser the walks are anonymised to `unknown`, so they show as
+  "Walk 1, 2, …" ("Walk", not "Haplotype", since several of these fragments can belong
+  to the same haplotype); on
   the `/gfa` viewer their real sample names are kept. It's the paused counterpart to
   disco-walks: hover a row to preview its path, click to pin one or several in their
   own colours for side-by-side comparison, or from the node inspector restrict the list
