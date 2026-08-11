@@ -6,11 +6,13 @@
  *
  *  - `anchored` modes lay the graph out along a chosen reference backbone
  *    (genome-browser style): a straight horizontal axis with variant bubbles
- *    hanging off it. Good when you have a reference and want coordinates.
+ *    hanging off it. Good when you have a reference and want coordinates. They
+ *    all show the coordinate axis and gene track.
  *
  *  - `free` modes ignore the backbone for positioning entirely and let the
- *    graph find its own shape from a force simulation. Good for graphs with no
- *    natural reference, or when the reference layout hides real topology.
+ *    graph find its own shape from a force simulation. There is no reference
+ *    axis, no coordinates and no gene track — good for graphs with no natural
+ *    reference, or when the reference layout hides real topology.
  *
  * The renderer (GraphCanvas) is agnostic to which family produced the layout —
  * it only reads node positions plus the shared chain/link/coverage data — so a
@@ -23,11 +25,11 @@ export type LayoutMode =
 	// reference-anchored
 	| 'classic'
 	| 'ribbon'
-	| 'balanced'
-	// reference-free
 	| 'naive'
-	| 'stringy'
 	| 'bubble-repel'
+	// reference-free
+	| 'simple-force'
+	| 'stringy'
 	| 'flow'
 	| 'radial';
 
@@ -57,9 +59,18 @@ export interface LayoutModeConfig {
 	family: LayoutFamily;
 	/** One-line description for the UI. */
 	blurb: string;
-	/** Primitive knobs for anchored modes (ignored by free modes). */
+	// --- anchored-mode knobs (ignored by free modes) ---
+	/** Keep bubbles on one side (above the reference line), freeing the space below
+	 * for the gene track. */
 	bubblesAbove: boolean;
+	/** Pull each bubble onto its reference node's x so it stacks into a tidy column.
+	 * Off gives the older, freer relaxation where bubbles open out sideways. */
 	anchorToReference: boolean;
+	/** Push bubbles clear of the reference line so nothing overlaps it. Off lets the
+	 * relaxation drift across the line (part of the "naive" older look). */
+	avoidBaseline: boolean;
+	/** Add an inter-bubble repulsion force so distinct variant bubbles keep apart. */
+	bubbleRepel: boolean;
 	/** Whether to draw curved strands through bend nodes (both families honor this). */
 	bendNodes: boolean;
 	/** Tuning for free modes (undefined for anchored modes). */
@@ -75,6 +86,8 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		blurb: 'Straight reference axis, variant bubbles stacked above it. The genome-browser view.',
 		bubblesAbove: true,
 		anchorToReference: true,
+		avoidBaseline: true,
+		bubbleRepel: false,
 		bendNodes: false
 	},
 	{
@@ -84,25 +97,43 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		blurb: 'Classic, but with smooth curved strands. For clean publication figures.',
 		bubblesAbove: true,
 		anchorToReference: true,
+		avoidBaseline: true,
+		bubbleRepel: false,
 		bendNodes: true
 	},
 	{
-		id: 'balanced',
-		label: 'Balanced',
+		id: 'naive',
+		label: 'Naive',
 		family: 'anchored',
-		blurb: 'Anchored to the reference, bubbles free to fall on either side. Symmetric variant density.',
+		blurb:
+			'The reference on a straight axis, but bubbles left to spread freely on both sides — not stacked, not pushed off the line. Graphoscope’s original look.',
 		bubblesAbove: false,
-		anchorToReference: true,
+		anchorToReference: false,
+		avoidBaseline: false,
+		bubbleRepel: false,
+		bendNodes: false
+	},
+	{
+		id: 'bubble-repel',
+		label: 'Bubble-repel',
+		family: 'anchored',
+		blurb: 'Anchored to the reference, but neighbouring bubbles push apart so each reads on its own.',
+		bubblesAbove: false,
+		anchorToReference: false,
+		avoidBaseline: true,
+		bubbleRepel: true,
 		bendNodes: true
 	},
 	// --- reference-free ---
 	{
-		id: 'naive',
-		label: 'Naive',
+		id: 'simple-force',
+		label: 'Simple force-directed',
 		family: 'free',
 		blurb: 'Plain force layout — no reference, no anchoring. The graph finds its own shape.',
 		bubblesAbove: false,
 		anchorToReference: false,
+		avoidBaseline: false,
+		bubbleRepel: false,
 		bendNodes: false,
 		refFree: {
 			charge: -34,
@@ -121,6 +152,8 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		blurb: 'Long, loose strands that spread out organically. Good for tangles and repeats.',
 		bubblesAbove: false,
 		anchorToReference: false,
+		avoidBaseline: false,
+		bubbleRepel: false,
 		bendNodes: true,
 		refFree: {
 			charge: -90,
@@ -133,30 +166,14 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		}
 	},
 	{
-		id: 'bubble-repel',
-		label: 'Bubble-repel',
-		family: 'free',
-		blurb: 'Force layout that pushes distinct variant bubbles apart so each reads on its own.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		bendNodes: true,
-		refFree: {
-			charge: -46,
-			chargeDistanceMax: 420,
-			linkDistanceScale: 1.3,
-			linkStrength: 0.4,
-			collide: 9,
-			seeding: 'scatter',
-			bubbleRepel: true
-		}
-	},
-	{
 		id: 'flow',
 		label: 'Flow',
 		family: 'free',
 		blurb: 'Left-to-right layering by graph distance — direction without picking a reference.',
 		bubblesAbove: false,
 		anchorToReference: false,
+		avoidBaseline: false,
+		bubbleRepel: false,
 		bendNodes: true,
 		refFree: {
 			charge: -40,
@@ -175,6 +192,8 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		blurb: 'Grows outward from a central node by graph depth. An overview of overall topology.',
 		bubblesAbove: false,
 		anchorToReference: false,
+		avoidBaseline: false,
+		bubbleRepel: false,
 		bendNodes: true,
 		refFree: {
 			charge: -50,

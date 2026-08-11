@@ -103,14 +103,20 @@ export interface LayoutOptions {
 	 * default; turning it off gives the older, freer relaxation where the link
 	 * forces open bubbles out into more organic shapes. */
 	anchorToReference?: boolean;
+	/** (Anchored modes) push bubble nodes clear of the reference line so nothing
+	 * overlaps it. On by default; off lets the relaxation drift across the line —
+	 * part of the freer, older "naive" look. */
+	avoidBaseline?: boolean;
+	/** (Anchored modes) add an inter-bubble repulsion force so neighbouring variant
+	 * bubbles push apart instead of piling on top of one another. */
+	bubbleRepel?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 	/** Which named layout mode to use. Anchored modes ('classic', 'ribbon',
-	 * 'balanced') lay out along the reference backbone and honor bubblesAbove /
-	 * anchorToReference / bendNodes above; free modes ('naive', 'stringy',
-	 * 'bubble-repel', 'flow', 'radial') ignore the backbone for positioning and
-	 * run a force simulation tuned per mode (see layoutModes.ts). Defaults to
-	 * 'classic'. */
+	 * 'naive', 'bubble-repel') lay out along the reference backbone; free modes
+	 * ('simple-force', 'stringy', 'flow', 'radial') ignore the backbone for
+	 * positioning and run a force simulation tuned per mode (see layoutModes.ts).
+	 * Defaults to 'classic'. */
 	mode?: LayoutMode;
 }
 
@@ -121,7 +127,9 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode'>> = {
 	iterations: 350,
 	bendNodes: true,
 	bubblesAbove: false,
-	anchorToReference: true
+	anchorToReference: true,
+	avoidBaseline: true,
+	bubbleRepel: false
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -359,8 +367,17 @@ function seedBendNodes(ctx: FreeCtx) {
  * backbone segments are removed) and returns a d3 force that pushes each
  * bubble's centroid away from every other, so distinct variant bubbles don't
  * pile on top of one another. The backbone is used only to identify what a
- * bubble *is* — it doesn't anchor any position, so the layout stays free. */
-function makeBubbleRepelForce(ctx: FreeCtx): (alpha: number) => void {
+ * bubble *is* — it doesn't anchor any position. Shared by the reference-free
+ * bubble modes and the anchored 'bubble-repel' mode (where the backbone nodes
+ * are pinned via fx/fy, so the force can't move them anyway). */
+interface BubbleRepelCtx {
+	graph: GfaGraph;
+	nodesById: Map<string, SimNode>;
+	chains: SegmentChain[];
+	backboneSegIds: Set<string>;
+	unit: number;
+}
+function makeBubbleRepelForce(ctx: BubbleRepelCtx): (alpha: number) => void {
 	const adjacency = buildAdjacency(ctx.graph);
 	// Cluster non-backbone segments over the non-backbone subgraph.
 	const clusterOf = new Map<string, number>();
@@ -546,6 +563,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		...DEFAULTS,
 		bubblesAbove: modeCfg.bubblesAbove,
 		anchorToReference: modeCfg.anchorToReference,
+		avoidBaseline: modeCfg.avoidBaseline,
+		bubbleRepel: modeCfg.bubbleRepel,
 		bendNodes: modeCfg.bendNodes,
 		...options
 	};
@@ -888,6 +907,19 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	}
 
+	// The anchored 'bubble-repel' mode adds inter-bubble repulsion on top of the
+	// pinned backbone; the backbone nodes are fixed (fx/fy) so the force can only
+	// move the bubbles apart, never the reference axis.
+	const bubbleRepel = opts.bubbleRepel
+		? makeBubbleRepelForce({
+				graph,
+				nodesById,
+				chains,
+				backboneSegIds: assignedSegIds,
+				unit: opts.unitEdgeLength
+			})
+		: null;
+
 	const simulation = forceSimulation(nodeArray)
 		.force(
 			'link',
@@ -899,7 +931,9 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
 		.force('collide', forceCollide(8))
 		.force('anchor', opts.anchorToReference ? anchorForce : null)
-		.force('avoidBaseline', avoidBaselineForce)
+		// 'naive' turns this off, letting bubbles drift across the reference line.
+		.force('avoidBaseline', opts.avoidBaseline ? avoidBaselineForce : null)
+		.force('bubbleRepel', bubbleRepel)
 		.stop();
 
 	const n = Math.max(1, opts.iterations);
