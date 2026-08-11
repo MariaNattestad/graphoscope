@@ -752,6 +752,10 @@
 	const fullGraphWalkRecords = $derived(
 		gfa.reduced?.walkRecords ?? gfa.reduced?.totalWalks ?? 0
 	);
+	// Number of haplotype walks in the full graph — what the "load haplotypes"
+	// button actually fetches (the walks are ~97% of the payload). Distinct from
+	// `fullGraphNodes`: loading them doesn't change the node count on screen.
+	const fullGraphWalks = $derived(gfa.reduced?.totalWalks ?? 0);
 	const haploDataLight = $derived(
 		fullGraphNodes > 0 &&
 			fullGraphNodes <= AUTO_LOAD_MAX_NODES &&
@@ -1447,7 +1451,7 @@
 								>Load haplotypes to inspect</button
 							>
 							<span class="switch-sub"
-								>{fullGraphNodes.toLocaleString()}-node full graph — loaded on request</span
+								>{fullGraphWalks.toLocaleString()} haplotype walks — loaded on request</span
 							>
 						{/if}
 					{/if}
@@ -1487,6 +1491,35 @@
 							</select>
 							<p class="mode-blurb">{modeCfg.blurb}</p>
 						</div>
+						<!-- Rough layout: the single biggest speed lever. On a large graph the
+						     full-quality force layout runs for many seconds (measured ~6 s at
+						     ~1k nodes, ~14 s near the 25k ceiling); rough mode collapses each
+						     segment to one node and cuts iterations, an order of magnitude
+						     faster. It turns on automatically past LARGE_LAYOUT_NODE_THRESHOLD;
+						     this switch lets the user force it either way for the current graph. -->
+						<label
+							class="switch"
+							title="Faster, lower-detail layout: one node per segment, fewer relaxation steps. Turns on automatically on large graphs; toggle to override for this graph."
+						>
+							<input
+								type="checkbox"
+								checked={effectiveRough}
+								onchange={(e) => (roughOverride = e.currentTarget.checked)}
+							/>
+							<span class="track"><span class="thumb"></span></span>
+							<span class="switch-text">
+								<span class="switch-label">Rough layout</span>
+								<span class="switch-sub">
+									{#if roughOverride === null && autoRough}
+										on automatically — {adapted.keptSegments.toLocaleString()} nodes is slow at full detail
+									{:else if effectiveRough}
+										faster, less detail
+									{:else}
+										full detail — can take several seconds
+									{/if}
+								</span>
+							</span>
+						</label>
 					{:else if ctlTab === 'view'}
 						{#if !referenceFree}
 							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
