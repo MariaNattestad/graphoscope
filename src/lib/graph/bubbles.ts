@@ -30,10 +30,17 @@ export interface Bubble {
 	longest: number;
 	/** Non-reference segments in the bubble (0 for a bare skip edge). */
 	nodeCount: number;
-	/** Most haplotypes through any of its segments (or the skip edge). */
+	/** The bubble's non-reference segment ids — the same ids the viewer draws, so a
+	 * node can be mapped back to the bubble it belongs to (empty for a skip edge). */
+	nodeIds: string[];
+	/** Most walks through any of its segments (or the skip edge). */
 	coverage: number;
 	/** A bare reference-to-reference skip (a deletion with no alternate node). */
 	isSkip: boolean;
+	/** For a skip, the reference segment ids its link connects (so the viewer can
+	 * match it to the structural link it draws). Empty for a node bubble. */
+	linkFrom: string;
+	linkTo: string;
 }
 
 export interface BubbleModel {
@@ -208,8 +215,11 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 			shortest: ext.shortest,
 			longest: ext.longest,
 			nodeCount,
+			nodeIds: [...comp],
 			coverage,
-			isSkip: false
+			isSkip: false,
+			linkFrom: '',
+			linkTo: ''
 		});
 	}
 
@@ -232,8 +242,11 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 			shortest: 0, // the alternate path (the skip) takes no bases…
 			longest: 0, // …so both path lengths are 0 on the value axis
 			nodeCount: 0,
+			nodeIds: [],
 			coverage: l.coverage ?? 0,
-			isSkip: true
+			isSkip: true,
+			linkFrom: l.from,
+			linkTo: l.to
 		});
 	}
 

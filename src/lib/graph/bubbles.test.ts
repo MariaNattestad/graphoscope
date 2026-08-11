@@ -47,6 +47,7 @@ describe('computeBubbles', () => {
 		expect(comp.longest).toBe(70);
 		expect(comp.shortest).toBe(50);
 		expect(comp.nodeCount).toBe(3);
+		expect([...comp.nodeIds].sort()).toEqual(['10', '11', '12']);
 		expect(comp.coverage).toBe(8); // max WC over its segments
 
 		const skip = m.bubbles.find((b) => b.isSkip)!;
@@ -58,6 +59,9 @@ describe('computeBubbles', () => {
 		expect(skip.refSpan).toBe(100);
 		expect(skip.shortest).toBe(0);
 		expect(skip.longest).toBe(0);
+		// Records the reference segments the skip link connects (1 → 3).
+		expect(skip.linkFrom).toBe('1');
+		expect(skip.linkTo).toBe('3');
 	});
 
 	it('returns null when there is no reference walk', () => {

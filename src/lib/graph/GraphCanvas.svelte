@@ -13,32 +13,24 @@
 		end: number;
 	}
 
-	// A bubble drawn in the track under the reference axis: a structure that departs
-	// from the reference (see bubbles.ts), placed by the two genomic coordinates it
-	// attaches to, and marked with the shortest→longest path through it. Positioned
-	// through the same reference anchors as the gene track, so it tracks the backbone
-	// under pan/zoom.
-	export interface CanvasBubble {
-		contig: string;
-		/** Genomic bp of the bubble's left/right reference attachment. */
-		gStart: number;
-		gEnd: number;
-		/** Reference bp the bubble spans (gEnd - gStart). */
-		refSpan: number;
-		/** Fewest / most alternate bases any path takes through the bubble. */
-		shortest: number;
-		longest: number;
-		/** Most haplotypes through any of its segments. */
-		coverage: number;
-		/** Non-reference segments in the bubble (0 for a bare skip edge). */
-		nodeCount: number;
-		/** A bare reference-to-reference skip (deletion with no alt node). */
-		isSkip: boolean;
-	}
-
 	interface DiscoStep {
 		id: string;
 		orient: '+' | '-';
+	}
+
+	// A deletion-only ("skip") bubble: a reference→reference jump with no alternate
+	// node, so it has nothing to highlight in the graph except the structural link
+	// that draws it. Passed in so that link can be hit-tested and inspected like a
+	// node bubble. Matched to the drawn link by its `from`/`to` segment ids.
+	export interface CanvasSkip {
+		key: string;
+		from: string;
+		to: string;
+		refSpan: number;
+		coverage: number;
+		contig: string;
+		gStart: number;
+		gEnd: number;
 	}
 
 	// A clicked gene-track feature (an exon), surfaced to the inspector.
@@ -63,18 +55,23 @@
 		layout,
 		refCoords,
 		genes = [],
-		bubbles = [],
-		showArcs = true,
 		showGenes = true,
 		strokeWidth = 3,
 		onSelectSegment,
 		onSelectFeature,
-		onSelectArc,
 		onSelectExit,
 		discoPath = null,
 		discoColor = '#ff3ce0',
 		discoPaths = null,
 		discoActive = false,
+		highlightSegments = null,
+		onHoverSegment,
+		skipBubbles = [],
+		activeSkipKey = null,
+		onHoverSkip,
+		onSelectSkip,
+		exitHighlightSegments = null,
+		onExitSegments,
 		lightMode = false,
 		showExits = true,
 		onReady,
@@ -83,18 +80,12 @@
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
-		/** Bubbles for the band under the reference axis (empty to hide). */
-		bubbles?: CanvasBubble[];
-		/** Draw the bubble band. */
-		showArcs?: boolean;
 		/** Draw the gene track. */
 		showGenes?: boolean;
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
 		/** A gene-track exon was clicked (or cleared); shown in the inspector. */
 		onSelectFeature?: (feature: SelectedFeature | null) => void;
-		/** A bubble was clicked (or cleared); shown in the inspector. */
-		onSelectArc?: (arc: CanvasBubble | null) => void;
 		/** An off-locus exit cue was clicked (or cleared); shown in the inspector. */
 		onSelectExit?: (exit: SelectedExit | null) => void;
 		/** Builds the hover-tooltip text for a segment (fields chosen by the parent).
@@ -109,6 +100,29 @@
 		discoPaths?: { path: DiscoStep[]; color: string }[] | null;
 		/** When true, dim the base graph so the spotlit walk pops. */
 		discoActive?: boolean;
+		/** Segment ids to spotlight in the base graph itself (bubble mode): when this
+		 * set is non-empty, its members are drawn emphasised and every other strand is
+		 * dimmed, so a whole bubble reads as one unit on node-hover. */
+		highlightSegments?: Set<string> | null;
+		/** The strand under the pointer changed (a segment id, or null off any strand).
+		 * Drives the parent's hover-driven modes (bubble/walk highlighting). */
+		onHoverSegment?: (segId: string | null) => void;
+		/** Deletion-only (skip) bubbles to make hoverable/clickable on their structural
+		 * link, so they can be inspected like node bubbles. */
+		skipBubbles?: CanvasSkip[];
+		/** The skip bubble to draw emphasised (its key), or null. Everything else dims,
+		 * mirroring the node-bubble spotlight. */
+		activeSkipKey?: string | null;
+		/** The skip bubble under the pointer changed (its key, or null). */
+		onHoverSkip?: (key: string | null) => void;
+		/** A skip bubble was clicked (or cleared); shown in the inspector. */
+		onSelectSkip?: (skip: CanvasSkip | null) => void;
+		/** Displayed segment ids whose off-locus exit cue should be emphasised — the
+		 * chopped strands of the active bubble/walk, so a leaving haplotype is visible. */
+		exitHighlightSegments?: Set<string> | null;
+		/** Reports which displayed segments have an off-locus exit cue (loose ends),
+		 * so the parent can note in the inspector when a bubble/walk leaves the locus. */
+		onExitSegments?: (segIds: string[]) => void;
 		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
 		lightMode?: boolean;
 		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
@@ -122,6 +136,17 @@
 	// segId -> its chain, for tracing a walk's polyline through the layout.
 	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
 
+	// `${from}>${to}` (both orientations) -> the skip bubble that link carries, so the
+	// structural-link draw can recognise a deletion-only bubble and make it inspectable.
+	const skipByLink = $derived.by(() => {
+		const m = new Map<string, CanvasSkip>();
+		for (const s of skipBubbles) {
+			m.set(`${s.from}>${s.to}`, s);
+			m.set(`${s.to}>${s.from}`, s);
+		}
+		return m;
+	});
+
 	// Node ids that a structural link attaches to. A non-backbone chain end that
 	// isn't in here is a strand that just stops — a haplotype chopped at the
 	// subgraph boundary — which drawExitCues() marks as leaving the locus.
@@ -134,18 +159,36 @@
 		return s;
 	});
 
+	// Displayed segments with an off-locus exit (a non-backbone chain end that no link
+	// attaches to — a strand chopped at the subgraph boundary). Depends only on the
+	// layout, so it's computed once and reported to the parent (which uses it to note
+	// in the inspector when a bubble/walk leaves the locus).
+	const exitSegIds = $derived.by(() => {
+		const s = new Set<string>();
+		for (const chain of layout.chains) {
+			if (layout.backboneSegIds.has(chain.segId)) continue;
+			const ids = chain.nodeIds;
+			const loose =
+				(ids.length > 0 && !linkedNodeIds.has(ids[0])) ||
+				(ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1]));
+			if (loose) s.add(chain.segId);
+		}
+		return s;
+	});
+	$effect(() => {
+		onExitSegments?.([...exitSegIds]);
+	});
+
 	// Reserved bottom bands, in screen (CSS) px, stacked under the backbone: the
-	// coordinate axis directly under it, then the variant-arc band, then the gene
-	// track at the very bottom — each only reserved when it has something to draw.
-	// fitToView fits the graph into the height above all of them, so the backbone
-	// never overlaps them. (This uses the space the one-sided layout keeps clear.)
+	// coordinate axis directly under it, then the gene track at the very bottom —
+	// each only reserved when it has something to draw. fitToView fits the graph into
+	// the height above all of them, so the backbone never overlaps them. (This uses
+	// the space the one-sided layout keeps clear.)
 	const AXIS_BAND = 22;
-	const ARC_BAND = 96;
 	const GENE_BAND = 84;
 	const GENE_ROW = 15;
 	const GENE_MAX_ROWS = 4;
 	const geneBand = $derived(showGenes && genes.length > 0 ? GENE_BAND : 0);
-	const arcBand = $derived(showArcs && bubbles.length > 0 ? ARC_BAND : 0);
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let containerEl: HTMLDivElement | undefined = $state();
@@ -209,21 +252,6 @@
 	}
 	let exonHits: ExonHit[] = [];
 
-	// Screen-space hit regions for the bubble marks, rebuilt each draw so a pointer
-	// move/click can resolve which one it's over. `hoveredArcKey` (plain, not state:
-	// only the pointer handlers read it, and they call draw() directly) emphasises
-	// the bubble under the cursor.
-	interface ArcHit {
-		x0: number;
-		x1: number;
-		yTop: number;
-		yBot: number;
-		key: string;
-		sel: CanvasBubble;
-		label: string;
-	}
-	let arcHits: ArcHit[] = [];
-	let hoveredArcKey: string | null = null;
 
 	// Screen-space hit regions for the off-locus exit cues (the dashed lines), so a
 	// click near one can resolve which chopped strand it belongs to. Rebuilt each
@@ -236,11 +264,19 @@
 		exit: SelectedExit;
 	}
 	let exitHits: ExitHit[] = [];
+	// Screen-space geometry of each drawn skip-bubble link (a sampled polyline of its
+	// bowed curve), rebuilt each draw so the pointer can resolve which one it's over.
+	interface SkipHit {
+		pts: { x: number; y: number }[];
+		skip: CanvasSkip;
+	}
+	let skipHits: SkipHit[] = [];
 	// Flip the tooltip above the cursor near the bottom of the stage (the gene
 	// track lives there, and a tooltip below would clip against the frame).
 	const tooltipAbove = $derived(hoverPos.y > 360);
 
 	function setHovered(segId: string | null) {
+		if (segId !== hoveredSegment) onHoverSegment?.(segId);
 		hoveredSegment = segId;
 		if (!segId) {
 			hoverLabel = null;
@@ -301,7 +337,7 @@
 		// only reserved when there are reference coordinates to draw (the
 		// playground graphs have none), and the gene band only when there are genes.
 		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
-		const fitH = Math.max(1, height - axisBand - arcBand - geneBand);
+		const fitH = Math.max(1, height - axisBand - geneBand);
 		const scaleX = Math.min((width / graphWidth) * padding, 8);
 		baseScaleY = Math.min((fitH / graphHeight) * padding, 8);
 		panY = fitH / 2 - cy * baseScaleY;
@@ -353,6 +389,12 @@
 		// as an alternate path like the bubbles — with an amplitude that grows with the
 		// on-screen span. Every other structural link (a bubble's attachment to the
 		// reference) still curves through its bend node.
+		// A node bubble is spotlit (highlightSegments) or a skip bubble is (activeSkipKey):
+		// either way, everything not part of it dims. Computed once so strands, skip
+		// arcs, and exit cues all dim consistently.
+		const hl = highlightSegments && highlightSegments.size > 0 ? highlightSegments : null;
+		const anyHighlight = hl != null || activeSkipKey != null;
+		skipHits = [];
 		ctx.strokeStyle = theme.structuralLink;
 		for (const link of layout.structuralLinkPaths) {
 			const a = layout.nodesById.get(link.fromNode);
@@ -360,10 +402,18 @@
 			if (!a || !b) continue;
 			const isDeletionSkip =
 				layout.backboneSegIds.has(link.from) && layout.backboneSegIds.has(link.to);
+			const skip = isDeletionSkip ? skipByLink.get(`${link.from}>${link.to}`) : undefined;
+			const skipActive = skip != null && skip.key === activeSkipKey;
+			// An edge belonging to the spotlit bubble — either internal to it, or the
+			// link that attaches it to a reference node (only one end is a member). We
+			// don't dim these, so the whole bubble reads as one connected unit; they keep
+			// their normal link colour (not the node highlight) so it stays understated.
+			const inBubble = hl != null && (hl.has(link.from) || hl.has(link.to));
 			const ax = toScreenX(a.x);
 			const ay = toScreenY(a.y);
 			const bx = toScreenX(b.x);
 			const by = toScreenY(b.y);
+			ctx.save();
 			ctx.beginPath();
 			ctx.moveTo(ax, ay);
 			if (isDeletionSkip) {
@@ -371,31 +421,60 @@
 				// still bows visibly and a whole-locus deletion doesn't balloon.
 				const span = Math.abs(bx - ax);
 				const amp = Math.min(64, Math.max(16, span * 0.22));
+				const qx = (ax + bx) / 2;
+				const qy = (ay + by) / 2 - 2 * amp;
 				// Quadratic control at 2× amp so the curve's peak sits ~amp above the line.
-				ctx.quadraticCurveTo((ax + bx) / 2, (ay + by) / 2 - 2 * amp, bx, by);
-				ctx.lineWidth = 1.5;
+				ctx.quadraticCurveTo(qx, qy, bx, by);
+				ctx.lineWidth = skipActive ? 3 : 1.5;
+				if (skipActive) ctx.strokeStyle = theme.bubbleHighlight;
+				else if (anyHighlight) ctx.globalAlpha = 0.15;
+				// Record a sampled polyline of the bow so the pointer can hit-test it.
+				if (skip) {
+					const pts: { x: number; y: number }[] = [];
+					for (let t = 0; t <= 1.0001; t += 1 / 16) {
+						const u = 1 - t;
+						pts.push({
+							x: u * u * ax + 2 * u * t * qx + t * t * bx,
+							y: u * u * ay + 2 * u * t * qy + t * t * by
+						});
+					}
+					skipHits.push({ pts, skip });
+				}
 			} else {
 				const m = layout.nodesById.get(link.bendNode);
 				if (m) ctx.quadraticCurveTo(toScreenX(m.x), toScreenY(m.y), bx, by);
 				else ctx.lineTo(bx, by);
 				ctx.lineWidth = 1;
+				// Dim only the links that aren't part of the spotlit bubble; the bubble's
+				// own links stay at their normal (undimmed) brightness.
+				if (anyHighlight && !inBubble) ctx.globalAlpha = 0.15;
 			}
 			ctx.stroke();
+			ctx.restore();
 		}
 
 		// strands
 		ctx.lineJoin = 'round';
 		ctx.lineCap = 'round';
+		// Bubble-mode spotlight: when a highlight set is active, its members draw at
+		// full brightness and every other strand is dimmed, so the hovered bubble
+		// stands out as one connected unit. A skip bubble has no member strands, so all
+		// strands dim under it. No highlight → every strand at full brightness.
 		for (const chain of layout.chains) {
 			const pts = chain.nodeIds.map((id) => layout.nodesById.get(id)!);
 			if (pts.length === 0) continue;
+			const inHl = hl ? hl.has(chain.segId) : true;
+			const dim = (hl && !inHl) || (activeSkipKey != null && hl == null);
 			ctx.beginPath();
 			ctx.moveTo(toScreenX(pts[0].x), toScreenY(pts[0].y));
 			for (let i = 1; i < pts.length; i++) ctx.lineTo(toScreenX(pts[i].x), toScreenY(pts[i].y));
-			ctx.strokeStyle = colorForChain(chain.segId);
-			ctx.lineWidth = chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth;
+			ctx.globalAlpha = dim ? 0.15 : 1;
+			ctx.strokeStyle = hl && inHl ? theme.bubbleHighlight : colorForChain(chain.segId);
+			ctx.lineWidth =
+				chain.segId === hoveredSegment || (hl && inHl) ? strokeWidth * 1.6 : strokeWidth;
 			ctx.stroke();
 		}
+		ctx.globalAlpha = 1;
 
 		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
 		drawExitCues(ctx, width);
@@ -415,7 +494,6 @@
 		// coordinates — reapply the DPR scale so they still land in the right spot.
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawRefCoordLabels(ctx, width, height);
-		drawArcTrack(ctx, width, height);
 		drawGeneTrack(ctx, width, height);
 	}
 
@@ -592,187 +670,8 @@
 	// Gene models drawn in the reserved bottom band: intron line + strand arrows,
 	// exon boxes (taller where coding), one representative transcript per gene,
 	// packed into rows. Positioned by genomic coordinate through the same anchors
-	// as the axis, so it tracks the backbone under pan/zoom. Display-only — the
-	// arc view is where genes are interactive.
-	// The bubble track, drawn in two clearly separate spaces so path length is never
-	// read as reference distance. HORIZONTAL is reference (genomic bp): each bubble's
-	// foot on the reference line marks the extent it affects — an up-caret at a single
-	// point (a tip/insertion), or a bracket across [entry, exit] when it truly spans
-	// reference. VERTICAL is a length value axis (alt bp, its own scale on the left,
-	// no gridlines): the whisker below each foot spans the bubble's shortest→longest
-	// path. Positioned through the same anchors as the coordinate axis and gene track,
-	// so it pans and zooms with the backbone.
-	function drawArcTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
-		arcHits = [];
-		if (!showArcs || bubbles.length === 0) return;
-		const anchors = buildRefAnchors();
-		if (anchors.length === 0) return;
-		const gx = (bp: number) => genomicToScreenX(bp, anchors);
-
-		const bandTop = height - geneBand - arcBand;
-		const baseline = bandTop + 12; // reference line = 0 on the value axis; whiskers hang below
-		const maxDepth = arcBand - 24; // depth of the largest path length
-
-		ctx.save();
-		ctx.beginPath();
-		ctx.rect(0, bandTop, width, arcBand);
-		ctx.clip();
-
-		// band top border + reference line (also 0 bp on the value axis)
-		ctx.strokeStyle = theme.geneBandLine;
-		ctx.lineWidth = 1;
-		ctx.beginPath();
-		ctx.moveTo(0, bandTop + 0.5);
-		ctx.lineTo(width, bandTop + 0.5);
-		ctx.stroke();
-		ctx.strokeStyle = theme.arcBaseline;
-		ctx.lineWidth = 1.5;
-		ctx.beginPath();
-		ctx.moveTo(0, baseline);
-		ctx.lineTo(width, baseline);
-		ctx.stroke();
-
-		// Value scale for path length, anchored at 0 (the reference line). sqrt keeps a
-		// small bubble visible next to a large one; the labelled axis discloses it.
-		let maxLen = 1;
-		for (const b of bubbles) maxLen = Math.max(maxLen, b.longest);
-		const depth = (bp: number) => Math.max(0, maxDepth * Math.sqrt(bp / maxLen));
-
-		// --- value axis on the left (path bp), no gridlines -----------------------
-		ctx.strokeStyle = theme.tick;
-		ctx.lineWidth = 1;
-		ctx.beginPath();
-		ctx.moveTo(2.5, baseline);
-		ctx.lineTo(2.5, baseline + maxDepth);
-		ctx.stroke();
-		const niceTicks = [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000];
-		const shown = niceTicks.filter((v) => v <= maxLen).slice(-3);
-		ctx.font = '9px ui-sans-serif, system-ui, sans-serif';
-		ctx.textBaseline = 'middle';
-		ctx.textAlign = 'left';
-		for (let k = 0; k < shown.length; k++) {
-			const v = shown[k];
-			const y = baseline + depth(v);
-			ctx.strokeStyle = theme.tick;
-			ctx.beginPath();
-			ctx.moveTo(2.5, y);
-			ctx.lineTo(6, y);
-			ctx.stroke();
-			const label = k === shown.length - 1 ? `${v.toLocaleString()} bp` : v.toLocaleString();
-			const w = ctx.measureText(label).width;
-			ctx.fillStyle = theme.coordPill;
-			ctx.fillRect(7, y - 6, w + 4, 12);
-			ctx.fillStyle = theme.coordText;
-			ctx.fillText(label, 9, y + 0.5);
-		}
-
-		// Visible bubbles, with a small horizontal dodge so several bubbles that attach
-		// at the very same reference point (distinct components, no links between them)
-		// stay separately visible and clickable instead of drawing on top of each other.
-		interface Vis {
-			i: number;
-			x1: number;
-			x2: number;
-			xm: number;
-			cx: number;
-		}
-		const vis: Vis[] = [];
-		for (let i = 0; i < bubbles.length; i++) {
-			const b = bubbles[i];
-			const x1 = gx(b.gStart);
-			const x2 = gx(b.gEnd);
-			if (Math.max(x1, x2) < -10 || Math.min(x1, x2) > width + 10) continue; // off-screen
-			const xm = (x1 + x2) / 2;
-			vis.push({ i, x1, x2, xm, cx: xm });
-		}
-		const byX = new Map<number, Vis[]>();
-		for (const v of vis) {
-			const k = Math.round(v.xm);
-			(byX.get(k) ?? byX.set(k, []).get(k)!).push(v);
-		}
-		for (const grp of byX.values()) {
-			if (grp.length < 2) continue;
-			for (let k = 0; k < grp.length; k++) grp[k].cx = grp[k].xm + (k - (grp.length - 1) / 2) * 7;
-		}
-
-		for (const v of vis) {
-			const b = bubbles[v.i];
-			const { x1, x2, xm, cx } = v;
-			const spans = x2 - x1 > 3;
-			const yShort = baseline + depth(b.shortest);
-			const yLong = baseline + depth(b.longest);
-			const emph = hoveredArcKey === `${v.i}`;
-			const color = theme.arcInsertion;
-
-			ctx.strokeStyle = color;
-			ctx.fillStyle = color;
-			ctx.globalAlpha = emph ? 1 : 0.9;
-
-			// foot on the reference line: the extent of reference it affects
-			if (spans) {
-				// bracket across [entry, exit] with downward end-caps
-				ctx.lineWidth = emph ? 2.5 : 1.8;
-				ctx.beginPath();
-				ctx.moveTo(x1, baseline);
-				ctx.lineTo(x2, baseline);
-				ctx.moveTo(x1, baseline);
-				ctx.lineTo(x1, baseline + 4);
-				ctx.moveTo(x2, baseline);
-				ctx.lineTo(x2, baseline + 4);
-				ctx.stroke();
-			} else {
-				// up-caret marking the single attachment point (a pure insertion / tip)
-				const s = emph ? 6 : 5;
-				ctx.beginPath();
-				ctx.moveTo(cx, baseline - s);
-				ctx.lineTo(cx - s * 0.7, baseline);
-				ctx.lineTo(cx + s * 0.7, baseline);
-				ctx.closePath();
-				ctx.fill();
-			}
-
-			// value whisker below the foot: the alternate path, shortest → longest. A
-			// bubble whose alternate path is 0 bp (a bare deletion) has no whisker — the
-			// bracket alone carries it.
-			if (b.longest > 0) {
-				ctx.lineWidth = 1;
-				ctx.beginPath();
-				ctx.moveTo(cx, baseline);
-				ctx.lineTo(cx, yShort);
-				ctx.stroke();
-				ctx.lineWidth = emph ? 4 : 2.6;
-				ctx.beginPath();
-				ctx.moveTo(cx, yShort);
-				ctx.lineTo(cx, yLong);
-				ctx.stroke();
-				ctx.lineWidth = emph ? 2 : 1.4;
-				ctx.beginPath();
-				ctx.moveTo(cx - 3, yShort);
-				ctx.lineTo(cx + 3, yShort);
-				ctx.stroke();
-				ctx.beginPath();
-				ctx.arc(cx, yLong, emph ? 4 : 2.8, 0, Math.PI * 2);
-				ctx.fill();
-			}
-			ctx.globalAlpha = 1;
-
-			arcHits.push({
-				x0: Math.min(x1, cx - 6),
-				x1: Math.max(x2, cx + 6),
-				yTop: baseline - 8,
-				yBot: Math.max(yLong, baseline) + 5,
-				key: `${v.i}`,
-				sel: b,
-				label: b.isSkip
-					? `deletion · ${b.refSpan.toLocaleString()} bp reference`
-					: b.shortest === b.longest
-						? `${b.longest.toLocaleString()} bp`
-						: `${b.shortest.toLocaleString()}–${b.longest.toLocaleString()} bp`
-			});
-		}
-		ctx.restore();
-	}
-
+	// as the axis, so it tracks the backbone under pan/zoom. Exons are clickable
+	// (surfaced to the inspector); everything else in the band is display-only.
 	function drawGeneTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		exonHits = [];
 		if (!showGenes || genes.length === 0) return;
@@ -1012,6 +911,7 @@
 			const endIdx: number[] = [];
 			if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
 			if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
+			const emph = exitHighlightSegments?.has(chain.segId) ?? false;
 			for (const i of endIdx) {
 				const n = layout.nodesById.get(ids[i]);
 				if (!n) continue;
@@ -1019,10 +919,21 @@
 				const ey = toScreenY(n.y);
 				const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
 				const edgeX = side === 'left' ? 0 : width;
-				const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
-				grad.addColorStop(0, theme.exitCue);
-				grad.addColorStop(1, theme.exitCueFade);
-				ctx.strokeStyle = grad;
+				if (emph) {
+					// This strand belongs to the active bubble/walk: draw its cue bright and
+					// solid-cored so the leaving haplotype is unmistakable.
+					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					grad.addColorStop(0, theme.bubbleHighlight);
+					grad.addColorStop(1, theme.exitCueFade);
+					ctx.strokeStyle = grad;
+					ctx.lineWidth = 2.5;
+				} else {
+					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					grad.addColorStop(0, theme.exitCue);
+					grad.addColorStop(1, theme.exitCueFade);
+					ctx.strokeStyle = grad;
+					ctx.lineWidth = 1.5;
+				}
 				ctx.beginPath();
 				ctx.moveTo(ex, ey);
 				ctx.lineTo(edgeX, ey);
@@ -1099,11 +1010,15 @@
 		return null;
 	}
 
-	function findArcAt(px: number, py: number): ArcHit | null {
-		// Reverse order so the last-drawn (topmost) arc wins where they overlap.
-		for (let i = arcHits.length - 1; i >= 0; i--) {
-			const h = arcHits[i];
-			if (px >= h.x0 && px <= h.x1 && py >= h.yTop && py <= h.yBot) return h;
+	// The skip-bubble arc under the pointer: nearest sampled point on any bow within a
+	// few pixels. Reverse order so a later-drawn arc wins where they overlap.
+	function findSkipAt(px: number, py: number): CanvasSkip | null {
+		const TOL = 6;
+		for (let i = skipHits.length - 1; i >= 0; i--) {
+			const { pts, skip } = skipHits[i];
+			for (const p of pts) {
+				if (Math.abs(px - p.x) <= TOL && Math.abs(py - p.y) <= TOL) return skip;
+			}
 		}
 		return null;
 	}
@@ -1113,32 +1028,29 @@
 		// that reads of hoveredSegment/transform inside draw()/fitToView() don't
 		// turn every hover/pan into an implicit dependency of this effect (which
 		// was resetting the zoom back to the fitted view on every hover change).
-		// Also re-runs when a reserved bottom band appears or disappears (a track
-		// loading, emptying, or toggling), since that changes the vertical fit. Keyed
-		// on the band *heights*, not the track contents, so tweaking the arc threshold
-		// (which changes which arcs show but not the band) redraws without resetting
-		// the user's pan/zoom — that redraw is handled by the effect below.
+		// Also re-runs when the gene band appears or disappears (the track loading,
+		// emptying, or toggling), since that changes the vertical fit.
 		layout;
 		geneBand;
-		arcBand;
 		untrack(() => {
 			setHovered(null);
-			hoveredArcKey = null;
 			fitToView();
 			draw();
 		});
 	});
 
 	$effect(() => {
-		// Redraw whenever the disco-walks spotlight changes (a new walk in the cycle,
-		// a new glow color, or disco turning on/off), the theme flips, or the arc set
-		// changes within an unchanged band (e.g. the threshold). Untracked so draw()'s
-		// internal reads don't make this effect depend on hover/transform state.
+		// Redraw whenever the disco-walks spotlight or the bubble-mode highlight
+		// changes, or the theme flips. Untracked so draw()'s internal reads don't make
+		// this effect depend on hover/transform state.
 		discoPaths;
 		discoActive;
+		highlightSegments;
+		skipBubbles;
+		activeSkipKey;
+		exitHighlightSegments;
 		theme;
 		showExits;
-		bubbles;
 		untrack(() => draw());
 	});
 
@@ -1198,6 +1110,8 @@
 		}
 
 		let clickStart: { x: number; y: number } | null = null;
+		// Last skip key reported to the parent, so onHoverSkip fires only on a change.
+		let lastSkipKey: string | null = null;
 		function onPointerDown(e: PointerEvent) {
 			clickStart = { x: e.clientX, y: e.clientY };
 		}
@@ -1210,15 +1124,15 @@
 			const px = e.clientX - rect.left;
 			const py = e.clientY - rect.top;
 			// Priority among the bottom-band features and the graph: a gene-track exon,
-			// then a variant arc, then a strand, then an off-locus exit cue. All are
+			// then a strand, then a skip-bubble arc, then an off-locus exit cue. All are
 			// emitted — with null for the misses — so selecting one clears the rest.
 			const feature = findFeatureAt(px, py);
-			const arcHit = feature ? null : findArcAt(px, py);
-			const segId = feature || arcHit ? null : findSegmentAt(px, py);
-			const exit = feature || arcHit || segId ? null : findExitAt(px, py);
+			const segId = feature ? null : findSegmentAt(px, py);
+			const skip = feature || segId ? null : findSkipAt(px, py);
+			const exit = feature || segId || skip ? null : findExitAt(px, py);
 			onSelectFeature?.(feature);
-			onSelectArc?.(arcHit?.sel ?? null);
 			onSelectSegment?.(segId);
+			onSelectSkip?.(skip);
 			onSelectExit?.(exit);
 		}
 		function onPointerMove(e: PointerEvent) {
@@ -1230,31 +1144,13 @@
 			// Exons win: they live in the bottom band, clear of the strands.
 			const exon = findExonAt(px, py);
 			if (exon) {
-				if (hoveredSegment !== null || hoveredArcKey !== null) {
+				if (hoveredSegment !== null) {
 					setHovered(null);
-					hoveredArcKey = null;
 					draw();
 				}
 				hoverLabel = exon;
 				canvasEl!.style.cursor = 'default';
 				return;
-			}
-
-			// Variant arcs also live in a bottom band, clear of the strands.
-			const arcHit = findArcAt(px, py);
-			if (arcHit) {
-				if (hoveredSegment !== null) setHovered(null);
-				if (hoveredArcKey !== arcHit.key) {
-					hoveredArcKey = arcHit.key;
-					draw();
-				}
-				hoverLabel = arcHit.label;
-				canvasEl!.style.cursor = 'pointer';
-				return;
-			}
-			if (hoveredArcKey !== null) {
-				hoveredArcKey = null;
-				draw();
 			}
 
 			const segId = findSegmentAt(px, py);
@@ -1264,16 +1160,38 @@
 			}
 			if (segId) {
 				canvasEl!.style.cursor = 'pointer';
+				if (lastSkipKey !== null) {
+					lastSkipKey = null;
+					onHoverSkip?.(null);
+				}
 			} else {
-				// Empty space, or the dashed tail of an off-locus exit (also clickable).
-				if (hoverLabel !== null) hoverLabel = null;
-				canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
+				// A skip-bubble arc bows through the otherwise-empty bubble space, so
+				// probe it before falling back to empty space / the exit-cue tail.
+				const skip = findSkipAt(px, py);
+				if (skip) {
+					hoverLabel = `deletion · ${skip.refSpan.toLocaleString()} bp reference`;
+					canvasEl!.style.cursor = 'pointer';
+					if (lastSkipKey !== skip.key) {
+						lastSkipKey = skip.key;
+						onHoverSkip?.(skip.key);
+					}
+				} else {
+					if (hoverLabel !== null) hoverLabel = null;
+					canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
+					if (lastSkipKey !== null) {
+						lastSkipKey = null;
+						onHoverSkip?.(null);
+					}
+				}
 			}
 		}
 		function onPointerLeave() {
-			const wasEmph = hoveredSegment !== null || hoveredArcKey !== null;
+			const wasEmph = hoveredSegment !== null;
 			setHovered(null); // also clears hoverLabel
-			hoveredArcKey = null;
+			if (lastSkipKey !== null) {
+				lastSkipKey = null;
+				onHoverSkip?.(null);
+			}
 			canvasEl!.style.cursor = 'grab';
 			if (wasEmph) draw();
 		}

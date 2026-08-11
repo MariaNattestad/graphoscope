@@ -11,7 +11,7 @@
 	import type { GfaGraph } from './types';
 	import type { LayoutResult, SimNode, SegmentChain } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
-	import GraphCanvas, { type CanvasBubble } from './GraphCanvas.svelte';
+	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
 	import { trackEvent } from '../analytics';
@@ -97,13 +97,34 @@
 	// as random dangles. Off for a clean figure.
 	let showExits = $state(true);
 
-	// The two optional tracks drawn in bands under the backbone, inside the graph
-	// canvas: variant arcs (just below the reference axis) above the gene track. Both
-	// on by default; each can be switched off from the side panel. The arc threshold
-	// hides variants below a given size (the reduce already pops most small ones).
-	let showVariantArcs = $state(true);
+	// The gene track drawn in a band under the backbone, inside the graph canvas. On
+	// by default; switched off from the side panel.
 	let showGeneTrack = $state(true);
-	let arcMinLen = $state(50);
+
+	// What hovering a node does, on top of the always-on tooltip:
+	//   'info'   — nothing extra (just the tooltip / click-to-inspect).
+	//   'bubble' — light up every node of the bubble the hovered node belongs to,
+	//              and show that bubble's shortest/longest path in the inspector.
+	//   'walk'   — trace (disco-style) every haplotype walk that passes through the
+	//              hovered node, each in its own colour.
+	// Info by default so nothing extra is computed until asked — the two richer modes
+	// build an index over the graph (and walk mode may load the full-walk graph), so
+	// on a large locus they carry a slow-down warning (see hoverModeHeavy). This is
+	// Graphoscope's general rule: show context by default unless it slows the app, and
+	// then keep it one switch away with a warning.
+	let hoverMode = $state<'info' | 'bubble' | 'walk'>('info');
+	// The strand currently under the pointer (reported by the canvas), which drives
+	// the two hover modes. Independent of `selected` (a click), so highlighting
+	// follows the pointer without pinning an inspector open.
+	let hoveredNode = $state<string | null>(null);
+	// Set once per graph when the user first asks for walk mode on a reduced graph, so
+	// we request the full-walk graph exactly once rather than on every hover.
+	let walkLoadRequested = $state(false);
+	// A clicked skip-edge (deletion-only) bubble, reported by the canvas; it has no
+	// drawn nodes, so it's tracked here rather than through `selected`.
+	let selectedSkip = $state<CanvasSkip | null>(null);
+	// The skip-edge bubble under the pointer (reported by the canvas).
+	let hoveredSkip = $state<string | null>(null);
 
 	// The two most-used controls (Simplify + disco) stay pinned; everything else
 	// lives behind these sidebar tabs so the panel stays short as options grow.
@@ -124,6 +145,23 @@
 
 	let selected = $state<string | null>(null);
 
+	// The node the highlighting is keyed to: the one under the pointer while hovering,
+	// otherwise the clicked (selected) one. So a click *freezes* the highlight — you
+	// can move off the node and pan/zoom around with the bubble or its walks still lit,
+	// exploring what's connected — and hovering another node previews it live. The skip
+	// equivalent works the same way (hoveredSkip ?? selectedSkip's key).
+	const activeNode = $derived(hoveredNode ?? selected);
+	// The skip whose arc is spotlit in the graph. Only in bubble mode, where the whole
+	// bubble reads as one lit unit against a dimmed graph; in walk mode a skip instead
+	// traces its walks (below), so we don't dim there.
+	const activeSkipKey = $derived(
+		hoverMode === 'bubble' ? (hoveredSkip ?? selectedSkip?.key ?? null) : null
+	);
+	// The inspector's × just hides the box; it doesn't clear the selection, so the
+	// frozen bubble/walk highlight stays lit (the box was covering the view). Any new
+	// selection re-opens it; clicking empty graph clears the selection entirely.
+	let inspectorDismissed = $state(false);
+
 	// A clicked gene/exon in the track below the graph, shown in the same floating
 	// inspector as a node. The click callbacks below are mutually exclusive:
 	// GraphCanvas emits them all on every click, so selecting one clears the rest.
@@ -138,12 +176,6 @@
 	}
 	let selectedFeature = $state<SelectedFeature | null>(null);
 
-	// A clicked bubble, shown in the inspector — its reference span and the shortest
-	// and longest path through it. Genomic coords are absolute.
-	let selectedArc = $state<CanvasBubble | null>(null);
-	// Whether the bubble inspector's "how these are calculated" note is expanded.
-	let arcInfoOpen = $state(false);
-
 	// A clicked off-locus exit cue (a dashed strand leaving the subgraph), shown in
 	// the same inspector.
 	interface SelectedExit {
@@ -156,7 +188,6 @@
 		gfa;
 		selected = null;
 		selectedFeature = null;
-		selectedArc = null;
 		selectedExit = null;
 		// A new graph clears any pinned haplotype traces (its walk keys won't exist).
 		pinnedKeys = [];
@@ -164,6 +195,13 @@
 		nodeFilter = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
 		roughOverride = null;
+		// Hover highlighting doesn't carry across graphs (node ids won't match), and the
+		// walk-graph load is per-graph.
+		hoveredNode = null;
+		hoveredSkip = null;
+		selectedSkip = null;
+		inspectorDismissed = false;
+		walkLoadRequested = false;
 	});
 
 	// Walks that start or end exactly at the selected node — the tell for a
@@ -464,7 +502,134 @@
 		}
 		return [];
 	});
-	const traceActive = $derived(discoPaths.length > 0);
+	// --- walk mode: walks through the hovered node or deletion arc --------------
+	// Index every displayed segment to the walks that pass through it (mapping each
+	// walk's original node ids onto the displayed segments via origToDisplayed), plus
+	// each skip (deletion) edge to the walks that *take* it — a walk takes a skip when
+	// its projected path steps straight from the skip's `from` node to its `to` node
+	// (walks don't name edges, but a traversed edge is just two consecutive steps).
+	// Both are built in one pass over `walksGfa` (the full-walk graph, loaded on demand)
+	// when walk mode turns on, so a hover is an O(1) lookup instead of a re-scan.
+	const MAX_WALK_HOVER_PATHS = 48; // cap the glowing overlays so a hover stays smooth
+	// Displayed node pair "a>b" (either orientation) -> the skip edge it is.
+	const skipEdgeLookup = $derived.by((): Map<string, string> => {
+		const m = new Map<string, string>();
+		if (hoverMode !== 'walk') return m;
+		for (const s of skipBubbles) {
+			m.set(`${s.from}>${s.to}`, s.key);
+			m.set(`${s.to}>${s.from}`, s.key);
+		}
+		return m;
+	});
+	const walkIndex = $derived.by(() => {
+		const byNode = new Map<string, { id: string; orient: '+' | '-' }[][]>();
+		const bySkip = new Map<string, DiscoStep[][]>();
+		if (hoverMode !== 'walk' || !walksGfa) return { byNode, bySkip };
+		for (const w of walksGfa.walks) {
+			if (w.steps.length < 2) continue;
+			// File the walk under every displayed segment it touches (deduped).
+			const touched = new Set<string>();
+			for (const s of w.steps) {
+				const d = origToDisplayed.get(s.id);
+				if (d) touched.add(d);
+			}
+			for (const d of touched) {
+				let arr = byNode.get(d);
+				if (!arr) byNode.set(d, (arr = []));
+				arr.push(w.steps);
+			}
+			// …and under every skip edge its projected path traverses.
+			if (skipEdgeLookup.size > 0) {
+				const p = projectWalk(w.steps);
+				if (p && p.length >= 2) {
+					let matched: Set<string> | null = null;
+					for (let i = 0; i + 1 < p.length; i++) {
+						const key = skipEdgeLookup.get(`${p[i].id}>${p[i + 1].id}`);
+						if (key) (matched ??= new Set()).add(key);
+					}
+					if (matched)
+						for (const k of matched) {
+							let arr = bySkip.get(k);
+							if (!arr) bySkip.set(k, (arr = []));
+							arr.push(p);
+						}
+				}
+			}
+		}
+		return { byNode, bySkip };
+	});
+
+	// What walk mode is currently tracing: a hovered target takes precedence over a
+	// clicked (frozen) one, and a skip over a node when both are under the pointer.
+	type WalkTarget = { type: 'node'; id: string } | { type: 'skip'; key: string } | null;
+	const walkTarget = $derived.by((): WalkTarget => {
+		if (hoverMode !== 'walk') return null;
+		if (hoveredSkip) return { type: 'skip', key: hoveredSkip };
+		if (hoveredNode) return { type: 'node', id: hoveredNode };
+		if (selectedSkip) return { type: 'skip', key: selectedSkip.key };
+		if (selected) return { type: 'node', id: selected };
+		return null;
+	});
+
+	// Dedupe a list of walk traces (a repetitive locus files many identical ones),
+	// colour them, and cap the count so a hover stays smooth.
+	function traceOverlays(paths: (DiscoStep[] | null)[]): { path: DiscoStep[]; color: string }[] {
+		const out: { path: DiscoStep[]; color: string }[] = [];
+		const seen = new Set<string>();
+		for (const p of paths) {
+			if (!p || p.length === 0) continue;
+			const key = p.map((s) => s.id).join('>');
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push({ path: p, color: colorForSeed(out.length) });
+			if (out.length >= MAX_WALK_HOVER_PATHS) break;
+		}
+		return out;
+	}
+	function countTraces(paths: (DiscoStep[] | null)[]): number {
+		const seen = new Set<string>();
+		for (const p of paths) if (p && p.length > 0) seen.add(p.map((s) => s.id).join('>'));
+		return seen.size;
+	}
+	// Projected traces for a target — node walks are projected here; skip walks were
+	// already projected when the index was built (that's how the edge was detected).
+	function tracesFor(target: WalkTarget): (DiscoStep[] | null)[] {
+		if (!target) return [];
+		if (target.type === 'skip') return walkIndex.bySkip.get(target.key) ?? [];
+		return (walkIndex.byNode.get(target.id) ?? []).map((steps) => projectWalk(steps));
+	}
+
+	const walkHoverPaths = $derived(
+		hoverMode === 'walk' ? traceOverlays(tracesFor(walkTarget)) : []
+	);
+	const activeWalkCount = $derived(hoverMode === 'walk' ? countTraces(tracesFor(walkTarget)) : 0);
+	// Counts for the inspectors of a clicked node / clicked skip.
+	const selectedWalkCount = $derived(
+		hoverMode === 'walk' && selected ? countTraces(tracesFor({ type: 'node', id: selected })) : 0
+	);
+	const selectedSkipWalkCount = $derived(
+		hoverMode === 'walk' && selectedSkip
+			? countTraces(tracesFor({ type: 'skip', key: selectedSkip.key }))
+			: 0
+	);
+
+	// Walk mode needs the full-walk graph. On a reduced graph that means asking the
+	// parent to load it once (the same fetch disco uses); on a graph that already
+	// carries walks it's ready immediately.
+	const walkModeNeedsLoad = $derived(hoverMode === 'walk' && !walksGfa);
+	$effect(() => {
+		if (hoverMode === 'walk' && !walksGfa && discoAvailable && !discoLoading && !walkLoadRequested) {
+			walkLoadRequested = true;
+			onRequestDiscoGraph?.();
+		}
+	});
+
+	// What the canvas actually spotlights: in walk mode a live hover supersedes the
+	// disco/haplotype traces; otherwise the existing disco paths.
+	const overlayPaths = $derived(
+		hoverMode === 'walk' && walkHoverPaths.length > 0 ? walkHoverPaths : discoPaths
+	);
+	const traceActive = $derived(overlayPaths.length > 0);
 	// Show the button whenever disco is either already possible or loadable.
 	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
 
@@ -534,31 +699,114 @@
 		};
 	});
 
-	// Bubbles: everything that departs from the reference and survives
-	// simplification — a connected component of non-reference segments, or a skip
-	// edge (see bubbles.ts). Computed straight from the reduced graph the canvas
-	// draws, so each is anchored at the reference coordinates where it attaches and
-	// carries the shortest and longest path (bp) through it. No insertion/deletion
-	// classification — just the two path lengths against the reference span it
-	// covers. Handed to the canvas in absolute genomic coordinates.
-	const bubbles = $derived.by((): CanvasBubble[] => {
-		if (!showVariantArcs) return [];
-		const model = computeBubbles(gfa, referenceSample);
-		if (!model) return [];
-		return model.bubbles
-			// Below the threshold on both path lengths there's nothing worth marking.
-			.filter((b) => Math.max(b.longest, b.refSpan) >= arcMinLen)
-			.map((b) => ({
-				contig: model.contig,
-				gStart: model.genomicStart + b.entryBp,
-				gEnd: model.genomicStart + b.exitBp,
-				refSpan: b.refSpan,
+	// --- bubble mode: node → the bubble it belongs to ---------------------------
+	// Bubbles: everything that departs from the reference and survives simplification
+	// — a connected component of non-reference segments, or a skip edge (see
+	// bubbles.ts). Computed straight from the reduced graph the canvas draws, so each
+	// is anchored at the reference coordinates where it attaches and carries the
+	// shortest and longest path (bp) through it. Built in bubble mode (the node→bubble
+	// map) and in walk mode (skip edges, so a deletion arc can be traced), but not for
+	// a plain info-mode view of a large graph.
+	const bubbleModel = $derived.by(() => {
+		if (hoverMode !== 'bubble' && hoverMode !== 'walk') return null;
+		return computeBubbles(gfa, referenceSample);
+	});
+
+	// Maps every non-reference segment id to its bubble, so hovering (or selecting)
+	// any one node can light up the whole bubble and read out its path extremes.
+	interface NodeBubble {
+		segIds: Set<string>;
+		shortest: number;
+		longest: number;
+		refSpan: number;
+		nodeCount: number;
+		coverage: number;
+		contig: string;
+		gStart: number;
+		gEnd: number;
+	}
+	const nodeToBubble = $derived.by((): Map<string, NodeBubble> => {
+		const m = new Map<string, NodeBubble>();
+		if (hoverMode !== 'bubble' || !bubbleModel) return m;
+		const model = bubbleModel;
+		for (const b of model.bubbles) {
+			if (b.nodeIds.length === 0) continue; // a bare skip has no drawn nodes
+			const nb: NodeBubble = {
+				segIds: new Set(b.nodeIds),
 				shortest: b.shortest,
 				longest: b.longest,
-				coverage: b.coverage,
+				refSpan: b.refSpan,
 				nodeCount: b.nodeCount,
-				isSkip: b.isSkip
+				coverage: b.coverage,
+				contig: model.contig,
+				gStart: model.genomicStart + b.entryBp,
+				gEnd: model.genomicStart + b.exitBp
+			};
+			for (const id of b.nodeIds) m.set(id, nb);
+		}
+		return m;
+	});
+	// The set of segments to spotlight in the graph: the active node's whole bubble.
+	const bubbleHighlight = $derived.by((): Set<string> | null => {
+		if (hoverMode !== 'bubble' || !activeNode) return null;
+		return nodeToBubble.get(activeNode)?.segIds ?? null;
+	});
+	// The bubble of the *clicked* node, shown in the node inspector.
+	const selectedBubble = $derived(
+		hoverMode === 'bubble' && selected ? (nodeToBubble.get(selected) ?? null) : null
+	);
+
+	// Deletion-only (skip) bubbles: no drawn nodes, so they're handed to the canvas to
+	// make their structural-link arc hoverable/clickable and inspectable like the rest.
+	// Available in bubble mode (to inspect) and walk mode (to trace the walks that take
+	// the deletion).
+	const skipBubbles = $derived.by((): CanvasSkip[] => {
+		if ((hoverMode !== 'bubble' && hoverMode !== 'walk') || !bubbleModel) return [];
+		const model = bubbleModel;
+		return model.bubbles
+			.filter((b) => b.isSkip)
+			.map((b) => ({
+				key: `${b.linkFrom}>${b.linkTo}`,
+				from: b.linkFrom,
+				to: b.linkTo,
+				refSpan: b.refSpan,
+				coverage: b.coverage,
+				contig: model.contig,
+				gStart: model.genomicStart + b.entryBp,
+				gEnd: model.genomicStart + b.exitBp
 			}));
+	});
+
+	// --- off-locus exits: which highlighted strands leave the fetched window --------
+	// The canvas reports every displayed segment that has an exit cue (a chopped
+	// strand); we intersect that with the active bubble/walk to (a) tell the canvas
+	// which cues to light up and (b) note it in the inspector.
+	let exitSegIds = $state<Set<string>>(new Set());
+	// Displayed segments the active highlight covers — the bubble's members, or the
+	// segments the traced walks pass through — so the canvas can brighten their exit
+	// cues. Only the ones that actually have a cue end up emphasised (canvas-side).
+	const exitHighlightSegments = $derived.by((): Set<string> | null => {
+		if (hoverMode === 'bubble') return bubbleHighlight;
+		if (hoverMode === 'walk' && walkHoverPaths.length > 0) {
+			const s = new Set<string>();
+			for (const { path } of walkHoverPaths) for (const step of path) s.add(step.id);
+			return s;
+		}
+		return null;
+	});
+	// Whether the clicked node's bubble / walks include a strand that leaves the locus.
+	const selectedBubbleExits = $derived(
+		selectedBubble ? [...selectedBubble.segIds].some((id) => exitSegIds.has(id)) : false
+	);
+	const selectedWalkExits = $derived.by(() => {
+		if (hoverMode !== 'walk' || !selected || exitSegIds.size === 0) return false;
+		const walks = walkIndex.byNode.get(selected);
+		if (!walks) return false;
+		for (const steps of walks) {
+			const p = projectWalk(steps);
+			if (p && p.some((s) => exitSegIds.has(s.id))) return true;
+		}
+		return false;
 	});
 
 	// Past this node count the full-quality layout takes minutes, so switch to a
@@ -580,6 +828,15 @@
 	// (MAX_UNSIMPLIFIED_NODES is 25,000), where even the rough layout can run long.
 	const LARGE_LAYOUT_WARNING_THRESHOLD = 15000;
 	const showSlowLayoutWarning = $derived(adapted.keptSegments > LARGE_LAYOUT_WARNING_THRESHOLD);
+
+	// Past this the hover modes build a noticeably heavy index (and walk mode also
+	// loads the full-walk graph), so the mode control warns before switching. The
+	// modes still stay off by default (info) on every graph — this only softens the
+	// opt-in on a big locus, per the "context by default, warn on slow-down" rule.
+	// (Provisional bar; in practice even ~10k-node graphs trace fine, especially with
+	// rough layout — flagged for a proper review of warning thresholds.)
+	const HOVER_MODE_HEAVY_THRESHOLD = 10000;
+	const hoverModeHeavy = $derived(adapted.keptSegments > HOVER_MODE_HEAVY_THRESHOLD);
 
 	// --- layout worker ---
 	let worker: Worker | null = null;
@@ -839,26 +1096,11 @@
 				{/if}
 			</section>
 
-			<!-- Tracks drawn in bands under the backbone (inside the canvas). Pinned
-			     (not tabbed) since they toggle what's shown rather than shaping the
-			     layout: variant arcs just below the reference axis, genes below them. -->
+			<!-- Gene track drawn in a band under the backbone (inside the canvas). Pinned
+			     (not tabbed) since it toggles what's shown rather than shaping the layout. -->
 			<section class="group tracks-group">
-				<span class="group-title">Tracks under graph</span>
-				<label class="switch" title="Mark each bubble that departs from the reference and survives simplification, on the reference axis: the bar shows the shortest→longest path (bp) through it. Click one for details.">
-					<input type="checkbox" bind:checked={showVariantArcs} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
-						<span class="switch-label">Bubbles</span>
-						<span class="switch-sub">shortest → longest path</span>
-					</span>
-				</label>
-				{#if showVariantArcs}
-					<label class="thresh" title="Hide bubbles whose longest path (and reference span) are below this, to cut clutter from tiny survivors.">
-						hide bubbles under
-						<input type="number" min="1" max="1000" step="1" bind:value={arcMinLen} /> bp
-					</label>
-				{/if}
-				<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the variant arcs, on the same reference axis.">
+				<span class="group-title">Track under graph</span>
+				<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
 					<input type="checkbox" bind:checked={showGeneTrack} />
 					<span class="track"><span class="thumb"></span></span>
 					<span class="switch-text">
@@ -866,6 +1108,63 @@
 						<span class="switch-sub">annotated transcripts</span>
 					</span>
 				</label>
+			</section>
+
+			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
+			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
+			     over the graph, so they read as opt-in and warn on a large locus. -->
+			<section class="group hover-group">
+				<span class="group-title">On node hover</span>
+				<div class="seg" role="radiogroup" aria-label="Hover mode">
+					<button
+						class:active={hoverMode === 'info'}
+						role="radio"
+						aria-checked={hoverMode === 'info'}
+						onclick={() => (hoverMode = 'info')}
+						title="Just show the node tooltip; click a node to inspect it.">Info</button
+					>
+					<button
+						class:active={hoverMode === 'bubble'}
+						role="radio"
+						aria-checked={hoverMode === 'bubble'}
+						onclick={() => (hoverMode = 'bubble')}
+						title="Light up every node of the bubble the hovered node belongs to, and show its shortest/longest path in the inspector."
+						>Bubbles</button
+					>
+					<button
+						class:active={hoverMode === 'walk'}
+						role="radio"
+						aria-checked={hoverMode === 'walk'}
+						onclick={() => (hoverMode = 'walk')}
+						title="Trace every walk that passes through the hovered node, each in its own colour (needs the full-walk graph)."
+						>Walks</button
+					>
+				</div>
+				{#if hoverMode === 'info'}
+					<span class="switch-sub">tooltip only · click to inspect</span>
+				{:else if hoverMode === 'bubble'}
+					<span class="switch-sub">hover a node to light up its whole bubble</span>
+					{#if hoverModeHeavy}
+						<span class="switch-sub note"
+							>{adapted.keptSegments.toLocaleString()} nodes — cataloguing bubbles may take a moment.</span
+						>
+					{/if}
+				{:else if hoverMode === 'walk'}
+					{#if walkModeNeedsLoad}
+						<span class="switch-sub"
+							>{#if discoLoading || walkLoadRequested}loading the full-walk graph…{:else if discoAvailable}needs
+								the full-walk graph{:else}no walk data available for this graph{/if}</span
+						>
+					{:else}
+						<span class="switch-sub">hover a node to trace its walks</span>
+					{/if}
+					{#if hoverModeHeavy}
+						<span class="switch-sub note"
+							>{adapted.keptSegments.toLocaleString()} nodes — tracing every walk can be slow on a large
+							locus.</span
+						>
+					{/if}
+				{/if}
 			</section>
 
 			<!-- Named haplotypes (general GFA / the /gfa page): pick one to trace its
@@ -1021,10 +1320,15 @@
 						layout={displayLayout}
 						{refCoords}
 						{genes}
-						{bubbles}
-						showArcs={showVariantArcs}
 						showGenes={showGeneTrack}
-						{discoPaths}
+						discoPaths={overlayPaths}
+						highlightSegments={bubbleHighlight}
+						onHoverSegment={(id) => (hoveredNode = id)}
+						{skipBubbles}
+						{activeSkipKey}
+						onHoverSkip={(k) => (hoveredSkip = k)}
+						{exitHighlightSegments}
+						onExitSegments={(ids) => (exitSegIds = new Set(ids))}
 						{lightMode}
 						{nodeTooltip}
 						{showExits}
@@ -1032,20 +1336,31 @@
 						onReady={(api) => (canvasApi = api)}
 						onSelectSegment={(id) => {
 							selected = id;
-							if (id) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
+							if (id) {
+								inspectorDismissed = false;
+								trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_node' });
+							}
 						}}
 						onSelectFeature={(f) => {
 							selectedFeature = f;
-							if (f) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
+							if (f) {
+								inspectorDismissed = false;
+								trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_gene' });
+							}
 						}}
-						onSelectArc={(a) => {
-							selectedArc = a;
-							arcInfoOpen = false;
-							if (a) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_arc' });
+						onSelectSkip={(s) => {
+							selectedSkip = s;
+							if (s) {
+								inspectorDismissed = false;
+								trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_skip' });
+							}
 						}}
 						onSelectExit={(e) => {
 							selectedExit = e;
-							if (e) trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
+							if (e) {
+								inspectorDismissed = false;
+								trackEvent('widget_interact', { widget: 'graph_layout', action: 'select_exit' });
+							}
 						}}
 					/>
 				{/if}
@@ -1081,6 +1396,31 @@
 					</div>
 				{/if}
 
+				<!-- Hover-mode readout: a small badge naming what's lit up under the pointer
+				     (or frozen by a click). Bubble mode names the bubble's path extremes;
+				     walk mode names how many walks run through the node (the count is exact
+				     even when the drawn overlays are capped). -->
+				{#if hoverMode === 'bubble' && bubbleHighlight}
+					{@const nb = activeNode ? nodeToBubble.get(activeNode) : null}
+					{#if nb}
+						<div class="trace-badge">
+							<span class="tb-dot" style="background:#22d3ee"></span>
+							bubble · <b
+								>{nb.shortest === nb.longest
+									? `${nb.longest.toLocaleString()} bp`
+									: `${nb.shortest.toLocaleString()}–${nb.longest.toLocaleString()} bp`}</b
+							>
+							path · {nb.nodeCount.toLocaleString()} nodes
+						</div>
+					{/if}
+				{:else if hoverMode === 'walk' && activeWalkCount > 0}
+					<div class="trace-badge">
+						tracing <b>{activeWalkCount.toLocaleString()}</b> walk{activeWalkCount === 1 ? '' : 's'}
+						{walkTarget?.type === 'skip' ? 'taking this deletion' : 'through this node'}{#if activeWalkCount > MAX_WALK_HOVER_PATHS}
+							<span class="tb-more">· showing {MAX_WALK_HOVER_PATHS}</span>{/if}
+					</div>
+				{/if}
+
 				<!-- On-graph legend of the traced haplotypes. A hover preview (single)
 				     supersedes the pinned comparison set. -->
 				{#if hoverWalk}
@@ -1105,15 +1445,16 @@
 					</div>
 				{/if}
 
-				<!-- Floating node inspector: only present while a node is selected, so it
-				     never reserves layout space (click empty graph or × to dismiss). -->
-				{#if selected}
+				<!-- Floating node inspector: shown while a node is selected and not dismissed.
+				     The × only hides the box (keeping the frozen highlight lit); clicking the
+				     empty graph clears the selection. -->
+				{#if selected && !inspectorDismissed}
 					<div class="inspector">
 						<div class="insp-head">
 							<span class="insp-title">
 								{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
 							</span>
-							<button class="insp-close" onclick={() => (selected = null)} aria-label="Close">×</button>
+							<button class="insp-close" onclick={() => (inspectorDismissed = true)} aria-label="Close">×</button>
 						</div>
 
 						{#if showLength || showCoords}
@@ -1130,6 +1471,75 @@
 												class="muted">—</span
 											>{/if}</span
 									>
+								{/if}
+							</div>
+						{/if}
+
+						{#if hoverMode === 'bubble'}
+							<div class="ni-bubble">
+								{#if selectedBubble}
+									<span class="ni-bubble-title">This node's bubble</span>
+									<div class="ni-fields">
+										<span class="ni-field"
+											><span class="ni-key">shortest path</span>
+											{selectedBubble.shortest.toLocaleString()} bp</span
+										>
+										<span class="ni-field"
+											><span class="ni-key">longest path</span>
+											{selectedBubble.longest.toLocaleString()} bp</span
+										>
+										<span class="ni-field"
+											><span class="ni-key">reference span</span>
+											{selectedBubble.refSpan.toLocaleString()} bp</span
+										>
+										<span class="ni-field"
+											><span class="ni-key">segments</span>
+											{selectedBubble.nodeCount.toLocaleString()}</span
+										>
+										<span class="ni-field"
+											><span class="ni-key">walks</span>
+											{selectedBubble.coverage.toLocaleString()}</span
+										>
+									</div>
+									{#if selectedBubbleExits}
+										<span class="ni-exit-note">↳ leaves the locus — a strand of this bubble is
+											chopped at the window edge (highlighted dashed).</span
+										>
+										{#if onRequestMoreContext}
+											<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
+												Increase context &amp; re-query
+											</button>
+										{/if}
+									{/if}
+								{:else}
+									<span class="ni-haplo-hint muted">this node is on the reference backbone (not a bubble)</span>
+								{/if}
+							</div>
+						{:else if hoverMode === 'walk'}
+							<div class="ni-bubble">
+								{#if walkModeNeedsLoad}
+									<span class="ni-haplo-hint muted"
+										>{#if discoLoading || walkLoadRequested}loading the full-walk graph…{:else}walk data
+											isn't available for this graph{/if}</span
+									>
+								{:else if selectedWalkCount > 0}
+									<span class="ni-field"
+										><span class="ni-key">walks through here</span>
+										{selectedWalkCount.toLocaleString()}</span
+									>
+									<span class="ni-haplo-hint">hover the node to trace them on the graph</span>
+									{#if selectedWalkExits}
+										<span class="ni-exit-note">↳ leaves the locus — a walk through this node is
+											chopped at the window edge (highlighted dashed).</span
+										>
+										{#if onRequestMoreContext}
+											<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
+												Increase context &amp; re-query
+											</button>
+										{/if}
+									{/if}
+								{:else}
+									<span class="ni-haplo-hint muted">no walk passes through this node</span>
 								{/if}
 							</div>
 						{/if}
@@ -1217,11 +1627,11 @@
 							</div>
 						{/if}
 					</div>
-				{:else if selectedFeature}
+				{:else if selectedFeature && !inspectorDismissed}
 					<div class="inspector">
 						<div class="insp-head">
 							<span class="insp-title">Gene <code>{selectedFeature.symbol}</code></span>
-							<button class="insp-close" onclick={() => (selectedFeature = null)} aria-label="Close"
+							<button class="insp-close" onclick={() => (inspectorDismissed = true)} aria-label="Close"
 								>×</button
 							>
 						</div>
@@ -1245,67 +1655,59 @@
 							>
 						</div>
 					</div>
-				{:else if selectedArc}
+				{:else if selectedSkip && !inspectorDismissed}
 					<div class="inspector">
 						<div class="insp-head">
-							<span class="insp-title">{selectedArc.isSkip ? 'Skip (deletion)' : 'Bubble'}</span>
-							<div class="insp-actions">
-								<button
-									class="insp-info"
-									class:on={arcInfoOpen}
-									onclick={() => (arcInfoOpen = !arcInfoOpen)}
-									aria-label="How these values are calculated"
-									aria-expanded={arcInfoOpen}
-									title="How these values are calculated">ⓘ</button
-								>
-								<button class="insp-close" onclick={() => (selectedArc = null)} aria-label="Close"
-									>×</button
-								>
-							</div>
+							<span class="insp-title">Deletion (skip)</span>
+							<button class="insp-close" onclick={() => (inspectorDismissed = true)} aria-label="Close"
+								>×</button
+							>
 						</div>
-						{#if arcInfoOpen}
-							<p class="insp-explain">
-								A <b>bubble</b> is anything that departs from the reference and survives
-								simplification — a connected set of non-reference segments, or a skip that jumps over
-								reference. It's anchored at the reference coordinates where it attaches (its cut
-								sites). The <b>shortest</b> and <b>longest paths</b> are the fewest and most bases any
-								route takes through it; compare them to the <b>reference span</b> it covers.
-							</p>
-						{/if}
+						<p class="insp-explain">
+							A skip bubble jumps straight over the reference with no alternate node — the
+							alternate path takes <b>0 bp</b>, so it's shown by the reference it deletes.
+						</p>
 						<div class="ni-fields">
 							<span class="ni-field"
-								><span class="ni-key">shortest path</span> {selectedArc.shortest.toLocaleString()} bp</span
+								><span class="ni-key">alternate path</span> 0 bp</span
 							>
 							<span class="ni-field"
-								><span class="ni-key">longest path</span> {selectedArc.longest.toLocaleString()} bp</span
+								><span class="ni-key">reference deleted</span> {selectedSkip.refSpan.toLocaleString()} bp</span
 							>
-							<span class="ni-field"
-								><span class="ni-key">reference span</span> {selectedArc.refSpan.toLocaleString()} bp</span
-							>
-							{#if !selectedArc.isSkip}
+							{#if hoverMode !== 'walk'}
 								<span class="ni-field"
-									><span class="ni-key">segments</span> {selectedArc.nodeCount.toLocaleString()}</span
+									><span class="ni-key">walks</span> {selectedSkip.coverage.toLocaleString()}</span
 								>
 							{/if}
 							<span class="ni-field"
-								><span class="ni-key">haplotypes</span> {selectedArc.coverage.toLocaleString()}</span
-							>
-							<span class="ni-field"
 								><span class="ni-key">coords</span>
 								<span class="coord"
-									>{selectedArc.contig}:{selectedArc.gStart.toLocaleString()}{selectedArc.gStart !==
-									selectedArc.gEnd
-										? '–' + selectedArc.gEnd.toLocaleString()
+									>{selectedSkip.contig}:{selectedSkip.gStart.toLocaleString()}{selectedSkip.gStart !==
+									selectedSkip.gEnd
+										? '–' + selectedSkip.gEnd.toLocaleString()
 										: ''}</span
 								></span
 							>
 						</div>
+						{#if hoverMode === 'walk'}
+							<div class="ni-bubble">
+								{#if selectedSkipWalkCount > 0}
+									<span class="ni-field"
+										><span class="ni-key">walks taking it</span>
+										{selectedSkipWalkCount.toLocaleString()}</span
+									>
+									<span class="ni-haplo-hint">hover the arc to trace them on the graph</span>
+								{:else}
+									<span class="ni-haplo-hint muted">no walk takes this deletion</span>
+								{/if}
+							</div>
+						{/if}
 					</div>
-				{:else if selectedExit}
+				{:else if selectedExit && !inspectorDismissed}
 					<div class="inspector">
 						<div class="insp-head">
 							<span class="insp-title">Off-locus exit</span>
-							<button class="insp-close" onclick={() => (selectedExit = null)} aria-label="Close"
+							<button class="insp-close" onclick={() => (inspectorDismissed = true)} aria-label="Close"
 								>×</button
 							>
 						</div>
@@ -1330,11 +1732,6 @@
 		<div class="foot">
 			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 			<span class="spacer"></span>
-			{#if showVariantArcs && bubbles.length > 0}
-				<span class="legend arc-legend" title="Each bubble hangs below the reference line; the bar spans its shortest to longest path in bp">
-					<span class="al"><span class="asw" style="background:#1d4ed8"></span>bubble: shortest–longest path ↓</span>
-				</span>
-			{/if}
 			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
 			<span class="legend"><span class="sw grad"></span> more walks through node →</span>
 		</div>
@@ -1423,22 +1820,37 @@
 	.tracks-group {
 		background: #fff;
 	}
-	/* Threshold input under the Variant arcs switch. */
-	.thresh {
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.72rem;
-		color: #6b7280;
-		margin-left: 0.15rem;
+	.hover-group {
+		background: #fff;
 	}
-	.thresh input {
-		width: 3.6rem;
+	/* Segmented control (Info / Bubbles / Walks) for the hover mode. */
+	.seg {
+		display: flex;
+		gap: 2px;
+		background: #eef0f4;
+		border: 1px solid #e6e8ec;
+		border-radius: 8px;
+		padding: 2px;
+	}
+	.seg button {
+		flex: 1;
 		font: inherit;
-		font-size: 0.75rem;
-		padding: 0.12rem 0.3rem;
-		border: 1px solid #d3d6dd;
-		border-radius: 5px;
+		font-size: 0.72rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: transparent;
+		border: none;
+		color: #6b7280;
+		padding: 0.3rem 0.2rem;
+		border-radius: 6px;
+	}
+	.seg button:hover {
+		color: #333;
+	}
+	.seg button.active {
+		background: #fff;
+		color: #0e7490;
+		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1);
 	}
 
 	/* Pinned primary controls sit a touch brighter than the tabbed panel below. */
@@ -1721,6 +2133,29 @@
 		line-height: 1.35;
 		color: #9aa0aa;
 	}
+	/* Bubble/walk block in the node inspector. */
+	.ni-bubble {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding-top: 0.35rem;
+		border-top: 1px solid #eceef2;
+	}
+	.ni-bubble-title {
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.03em;
+		text-transform: uppercase;
+		color: #0e7490;
+	}
+	.tb-more {
+		opacity: 0.7;
+	}
+	.ni-exit-note {
+		font-size: 0.7rem;
+		line-height: 1.35;
+		color: #0e7490;
+	}
 	/* Floating "tracing X" badge over the graph while a haplotype is pinned. */
 	.trace-badge {
 		position: absolute;
@@ -1953,22 +2388,6 @@
 		width: 60px;
 		background: linear-gradient(90deg, rgb(255, 214, 10), rgb(214, 30, 30));
 	}
-	.arc-legend {
-		gap: 0.55rem;
-		flex-wrap: wrap;
-	}
-	.arc-legend .al {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		color: #6b7280;
-	}
-	.asw {
-		display: inline-block;
-		width: 14px;
-		height: 3px;
-		border-radius: 2px;
-	}
 	.muted {
 		color: #888;
 	}
@@ -2016,25 +2435,6 @@
 		background: #eef1f5;
 		padding: 0 4px;
 		border-radius: 4px;
-	}
-	.insp-actions {
-		flex: 0 0 auto;
-		display: flex;
-		align-items: center;
-		gap: 0.1rem;
-	}
-	.insp-info {
-		background: none;
-		border: none;
-		font-size: 0.95rem;
-		line-height: 1;
-		color: #98a0ac;
-		cursor: pointer;
-		padding: 0 0.15rem;
-	}
-	.insp-info:hover,
-	.insp-info.on {
-		color: #2563eb;
 	}
 	.insp-explain {
 		margin: 0;
