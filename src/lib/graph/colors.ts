@@ -43,6 +43,7 @@ export interface GraphTheme {
 	geneExonCoding: string;
 	geneExonUtr: string;
 	geneLabel: string;
+	bubbleHighlight: string; // strands of the hovered bubble (bubble mode)
 	discoCore: string; // the bright center line down a spotlit walk
 	discoLightness: number; // HSL lightness % for the cycling disco hue
 	exitCue: string; // dashed "haplotype leaves the locus" cue, solid end
@@ -65,6 +66,7 @@ export const darkTheme: GraphTheme = {
 	geneExonCoding: '#6f9dff',
 	geneExonUtr: 'rgba(111, 157, 255, 0.5)',
 	geneLabel: 'rgba(214, 224, 245, 0.92)',
+	bubbleHighlight: '#67e8f9',
 	discoCore: 'rgba(255, 255, 255, 0.95)',
 	discoLightness: 62,
 	exitCue: 'rgba(154, 163, 178, 0.7)',
@@ -88,6 +90,7 @@ export const lightTheme: GraphTheme = {
 	geneExonCoding: '#2563eb',
 	geneExonUtr: 'rgba(37, 99, 235, 0.5)',
 	geneLabel: 'rgba(30, 41, 59, 0.95)',
+	bubbleHighlight: '#0891b2',
 	discoCore: 'rgba(17, 24, 39, 0.6)',
 	discoLightness: 45,
 	exitCue: 'rgba(100, 116, 139, 0.65)',

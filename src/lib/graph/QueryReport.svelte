@@ -46,9 +46,8 @@
 	});
 
 	// While a query is fetching, the numbers on hand are stale — blank them until the
-	// fresh graph lands (which flips `querying` off and turns on the checks).
+	// fresh graph lands (which flips `querying` off).
 	const pending = $derived(querying);
-	const resolved = $derived(!querying && stats != null);
 
 	// Live elapsed while busy, for the "…1.2 s" readout next to the progress bar.
 	let elapsedMs = $state(0);
@@ -82,77 +81,86 @@
 				{/if}
 			</div>
 
+			<!-- Each row is its own flex line (label left, number right), so a long label
+			     and a long value never collide the way shared grid columns would — every
+			     row fits the narrow panel on its own, with all values flush to the right. -->
 			<div class="rep-grid">
+				<div class="rep-row">
+					<span class="rk">fetched</span>
+					<span class="rv">{pending || !fetchInfo
+							? ''
+							: `${fmtBytes(fetchInfo.bytesFetched)} in ${fetchInfo.requestCount} blocks`}</span>
+				</div>
+
 				<!-- The simplified/raw split only exists on a reduced graph; with Simplify
-				     off the graph is the full one, so show plain single counts instead. -->
+				     off the graph is the full one, so show a single count. When reduced, the
+				     "raw" (pre-simplification) count is its own row. -->
+				<div class="rep-row">
+					<span class="rk">nodes</span>
+					<span class="rv">{pending || !stats ? '' : num(stats.segments)}</span>
+				</div>
 				{#if reduced}
-					<span></span>
-					<span class="col-h">simplified</span>
-					<span class="col-h">raw</span>
-					<span></span>
+					<div class="rep-row">
+						<span class="rk sub">raw nodes</span>
+						<span class="rv sub">{pending ? '' : num(reduced.segmentsBefore)}</span>
+					</div>
 				{/if}
 
-				<span class="rk">fetched</span>
-				<span class="rv span2">{pending || !fetchInfo
-						? ''
-						: `${fmtBytes(fetchInfo.bytesFetched)} · ${fetchInfo.requestCount} blk`}</span>
-				<span class="rc" class:on={resolved && !!fetchInfo}>✓</span>
-
-				<span class="rk">nodes</span>
+				<div class="rep-row">
+					<span class="rk">links</span>
+					<span class="rv">{pending || !stats ? '' : num(stats.links)}</span>
+				</div>
 				{#if reduced}
-					<span class="pv">{pending || !stats ? '' : num(stats.segments)}</span>
-					<span class="pv raw">{pending ? '' : num(reduced.segmentsBefore)}</span>
-				{:else}
-					<span class="rv span2">{pending || !stats ? '' : num(stats.segments)}</span>
-				{/if}
-				<span class="rc" class:on={resolved}>✓</span>
-
-				<span class="rk">links</span>
-				{#if reduced}
-					<span class="pv">{pending || !stats ? '' : num(stats.links)}</span>
-					<span class="pv raw">{pending ? '' : num(reduced.linksBefore)}</span>
-				{:else}
-					<span class="rv span2">{pending || !stats ? '' : num(stats.links)}</span>
-				{/if}
-				<span class="rc" class:on={resolved}>✓</span>
-
-				<span class="rk">haplotype walks</span>
-				<span class="rv span2">{pending || !stats ? '' : num(stats.walks)}</span>
-				<span class="rc" class:on={resolved}>✓</span>
-
-				{#if reduced}
-					<span class="rk">sites collapsed</span>
-					<span class="rv span2">{pending ? '' : num(reduced.sites)}</span>
-					<span class="rc" class:on={resolved}>✓</span>
+					<div class="rep-row">
+						<span class="rk sub">raw links</span>
+						<span class="rv sub">{pending ? '' : num(reduced.linksBefore)}</span>
+					</div>
 				{/if}
 
-				<span class="rk">reference span</span>
-				<span class="rv span2"
-					>{pending || !stats || stats.referencePathBp == null
-						? ''
-						: `${num(stats.referencePathBp)} bp`}</span
-				>
-				<span class="rc" class:on={resolved && stats?.referencePathBp != null}>✓</span>
+				<div class="rep-row">
+					<span class="rk">haplotype walks</span>
+					<span class="rv">{pending || !stats ? '' : num(stats.walks)}</span>
+				</div>
+
+				{#if reduced}
+					<div class="rep-row">
+						<span class="rk">sites collapsed</span>
+						<span class="rv">{pending ? '' : num(reduced.sites)}</span>
+					</div>
+				{/if}
+
+				<div class="rep-row">
+					<span class="rk">reference span</span>
+					<span class="rv"
+						>{pending || !stats || stats.referencePathBp == null
+							? ''
+							: `${num(stats.referencePathBp)} bp`}</span
+					>
+				</div>
 
 				{#if open && !busy && stats}
-					<span class="grid-sep"></span>
+					<div class="rep-sep"></div>
 					{#if reduced}
-						<span class="rk">chains merged</span>
-						<span class="rv span2">{num(reduced.unchopMerges)}</span>
-						<span></span>
+						<div class="rep-row">
+							<span class="rk">chains merged</span>
+							<span class="rv">{num(reduced.unchopMerges)}</span>
+						</div>
 					{/if}
-					<span class="rk">sequence shown</span>
-					<span class="rv span2">{num(stats.totalSequenceBp)} bp</span>
-					<span></span>
+					<div class="rep-row">
+						<span class="rk">sequence shown</span>
+						<span class="rv">{num(stats.totalSequenceBp)} bp</span>
+					</div>
 					{#if fetchInfo}
-						<span class="rk">fetch time</span>
-						<span class="rv span2">{num(fetchInfo.elapsedMs)} ms</span>
-						<span></span>
+						<div class="rep-row">
+							<span class="rk">fetch time</span>
+							<span class="rv">{num(fetchInfo.elapsedMs)} ms</span>
+						</div>
 					{/if}
 					{#if layoutMs}
-						<span class="rk">layout</span>
-						<span class="rv span2">{num(layoutMs)} ms</span>
-						<span></span>
+						<div class="rep-row">
+							<span class="rk">layout</span>
+							<span class="rv">{num(layoutMs)} ms</span>
+						</div>
 					{/if}
 				{/if}
 			</div>
@@ -220,8 +228,9 @@
 	}
 	.rep-caret {
 		margin-left: auto;
-		font-size: 0.6rem;
-		color: #9aa0aa;
+		font-size: 0.85rem;
+		line-height: 1;
+		color: #6b7280;
 	}
 
 	/* Expanded block. */
@@ -264,54 +273,37 @@
 		color: #1f2430;
 	}
 
-	/* Rows: one grid so the simplified/raw columns line up across every row. */
+	/* Rows: each a flex line (label left, number right). Per-row so a long label and a
+	   long value share the panel width independently, never colliding across columns. */
 	.rep-grid {
-		display: grid;
-		grid-template-columns: 1fr auto auto 0.85rem;
-		column-gap: 0.5rem;
-		row-gap: 0.24rem;
-		align-items: baseline;
+		display: flex;
+		flex-direction: column;
+		gap: 0.24rem;
 		font-variant-numeric: tabular-nums;
 	}
-	.col-h {
-		font-size: 0.58rem;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		color: #b0b6c0;
-		text-align: right;
+	.rep-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
 	}
 	.rk {
 		color: #6b7280;
-		white-space: nowrap;
+		/* The label yields first when a row is tight (values must stay legible). */
+		min-width: 0;
 	}
 	.rv {
 		text-align: right;
 		color: #1f2430;
 		white-space: nowrap;
+		flex: 0 0 auto;
 	}
-	.span2 {
-		grid-column: 2 / 4;
-	}
-	.pv {
-		text-align: right;
-		white-space: nowrap;
-		font-weight: 700;
-		color: #1f2430;
-	}
-	.pv.raw {
-		font-weight: 400;
+	/* The pre-simplification "raw nodes/links" rows read as secondary to the shown counts. */
+	.rk.sub,
+	.rv.sub {
 		color: #a7adb8;
 	}
-	.rc {
-		text-align: center;
-		color: transparent;
-		font-size: 0.72rem;
-	}
-	.rc.on {
-		color: #16a34a;
-	}
-	.grid-sep {
-		grid-column: 1 / -1;
+	.rep-sep {
 		border-top: 1px solid #f2f2f5;
 		margin: 0.1rem 0;
 	}

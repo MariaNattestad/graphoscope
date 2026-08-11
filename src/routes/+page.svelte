@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 	import { GbzClient, parseLocus, DEFAULT_CONTEXT, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
-	import RefArcView from '$lib/RefArcView.svelte';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import QueryReport from '$lib/graph/QueryReport.svelte';
@@ -54,8 +53,9 @@
 	let running = $state(false);
 	let error = $state<string | null>(null);
 	// Which visualization fills the main workspace, and whether the About/docs
-	// overlay is open. UI-only, so plain local state.
-	let view = $state<'graph' | 'arcs' | 'data'>('graph');
+	// overlay is open. UI-only, so plain local state. (The variant arcs, once their
+	// own tab, are now an optional track inside the graph layout view.)
+	let view = $state<'graph' | 'data'>('graph');
 	let aboutOpen = $state(false);
 	// The query popover, opened from the header pill: reference graph, locus/gene,
 	// examples, and context — everything needed to compose or change a query. The
@@ -624,9 +624,6 @@
 					<button class="tab" class:active={view === 'graph'} onclick={() => (view = 'graph')}
 						>Graph layout</button
 					>
-					<button class="tab" class:active={view === 'arcs'} onclick={() => (view = 'arcs')}
-						>Variant arcs</button
-					>
 					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
 						>Raw data</button
 					>
@@ -651,8 +648,6 @@
 							{fetchInfo}
 							querying={running}
 						/>
-					{:else if view === 'arcs'}
-						<RefArcView {gfa} referenceSample={graph.referenceSample} refKey={graph.refKey} />
 					{:else if view === 'data'}
 						<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
 					{/if}
@@ -664,7 +659,6 @@
 			<section class="mainview">
 				<nav class="tabs">
 					<button class="tab active">Graph layout</button>
-					<button class="tab" disabled>Variant arcs</button>
 					<button class="tab" disabled>Raw data</button>
 				</nav>
 				<div class="tabbody">
@@ -732,9 +726,9 @@
 				Web Worker and pulls only the few megabytes of database pages a locus actually touches
 				from the file on Cloudflare R2 — an approach inspired by
 				<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
-				The visualizations above (graph layout, variant arcs with a gene track, and the
-				simplification described next) are a few prototypes we built for inspecting a graph's
-				complex patterns around a particular reference locus.
+				The visualizations above (the graph layout, with optional bubble and gene tracks
+				beneath it, and the simplification described next) are a few prototypes we built for
+				inspecting a graph's complex patterns around a particular reference locus.
 			</p>
 			<p>
 				A raw locus can still be far too tangled to read — and, more to the point, far too heavy to
