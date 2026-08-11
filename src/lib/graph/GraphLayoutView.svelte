@@ -14,6 +14,7 @@
 	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
+	import { COLOR_MODES, legendGradientCss, darkTheme, lightTheme, type ColorMode } from './colors';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
@@ -134,6 +135,14 @@
 	// dark screen one. The export button below writes a PNG of the current view.
 	let lightMode = $state(false);
 	let canvasApi = $state<{ exportImage: (filename: string) => void } | null>(null);
+
+	// What each node's fill encodes. Defaults to walk coverage (the original heatmap);
+	// the picker lives in the on-graph legend at the foot of the canvas.
+	let colorMode = $state<ColorMode>('coverage');
+	const colorModeInfo = $derived(COLOR_MODES.find((m) => m.mode === colorMode) ?? COLOR_MODES[0]);
+	// The legend swatch is drawn from the same ramp the canvas uses, so it tracks the
+	// light/dark theme (the picker itself sits on the app's light chrome regardless).
+	const legendTheme = $derived(lightMode ? lightTheme : darkTheme);
 
 	// Which fields to surface about a node — in the hover tooltip and in the panel
 	// under the graph when one is clicked (where the sequence gets room to be read
@@ -711,6 +720,41 @@
 		if (hoverMode !== 'bubble' && hoverMode !== 'walk') return null;
 		return computeBubbles(gfa, referenceSample);
 	});
+
+	// --- node coloring: bubble-based color modes --------------------------------
+	// The two bubble color modes (discrete `bubble` and the `bubbleSize` heatmap)
+	// need the same bubble catalogue, computed independently of the hover mode.
+	// Reuse `bubbleModel` when a bubble hover mode already built it; otherwise build
+	// it here, only while a bubble color mode is actually selected.
+	const colorBubbleModel = $derived.by(() => {
+		if (colorMode !== 'bubble' && colorMode !== 'bubbleSize') return null;
+		if (bubbleModel) return bubbleModel;
+		return computeBubbles(gfa, referenceSample);
+	});
+	// segId → bubble index (discrete color) and segId → the longest bp path through
+	// its bubble (size heatmap). Bubbles are ordered by reference position in the
+	// model, so the discrete hues fall in a stable left-to-right sequence.
+	const bubbleIdBySeg = $derived.by((): Map<string, number> | null => {
+		if (colorMode !== 'bubble' || !colorBubbleModel) return null;
+		const m = new Map<string, number>();
+		colorBubbleModel.bubbles.forEach((b, i) => {
+			for (const id of b.nodeIds) m.set(id, i);
+		});
+		return m;
+	});
+	const bubbleLongestBySeg = $derived.by((): Map<string, number> | null => {
+		if (colorMode !== 'bubbleSize' || !colorBubbleModel) return null;
+		const m = new Map<string, number>();
+		for (const b of colorBubbleModel.bubbles) {
+			for (const id of b.nodeIds) m.set(id, b.longest);
+		}
+		return m;
+	});
+	const maxBubbleLongest = $derived(
+		colorMode === 'bubbleSize' && colorBubbleModel
+			? colorBubbleModel.bubbles.reduce((mx, b) => Math.max(mx, b.longest), 0)
+			: 0
+	);
 
 	// Maps every non-reference segment id to its bubble, so hovering (or selecting)
 	// any one node can light up the whole bubble and read out its path extremes.
@@ -1332,6 +1376,10 @@
 						{lightMode}
 						{nodeTooltip}
 						{showExits}
+						{colorMode}
+						{bubbleIdBySeg}
+						{bubbleLongestBySeg}
+						{maxBubbleLongest}
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
 						onSelectSegment={(id) => {
@@ -1733,7 +1781,28 @@
 			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 			<span class="spacer"></span>
 			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
-			<span class="legend"><span class="sw grad"></span> more walks through node →</span>
+			<label class="legend legend-color" title="What each node's fill encodes">
+				<span class="legend-by">color by</span>
+				<select
+					class="color-select"
+					bind:value={colorMode}
+					onchange={() =>
+						trackEvent('widget_interact', { widget: 'graph_layout', action: 'color_mode' })}
+				>
+					{#each COLOR_MODES as m (m.mode)}
+						<option value={m.mode}>{m.label}</option>
+					{/each}
+				</select>
+				<span
+					class="sw"
+					class:grad={colorModeInfo.kind === 'heatmap'}
+					class:bubbles={colorModeInfo.kind === 'discrete'}
+					style={colorModeInfo.kind === 'heatmap'
+						? `background:${legendGradientCss(colorMode, lightMode, legendTheme)}`
+						: ''}
+				></span>
+				<span class="legend-cap">{colorModeInfo.caption}{colorModeInfo.kind === 'heatmap' ? ' →' : ''}</span>
+			</label>
 		</div>
 	</div>
 	</div>
@@ -2387,6 +2456,42 @@
 	.sw.grad {
 		width: 60px;
 		background: linear-gradient(90deg, rgb(255, 214, 10), rgb(214, 30, 30));
+	}
+	/* Discrete-bubble swatch: a few well-separated golden-angle hues. */
+	.sw.bubbles {
+		width: 60px;
+		background: linear-gradient(
+			90deg,
+			hsl(0, 68%, 55%) 0 25%,
+			hsl(137.5, 68%, 55%) 25% 50%,
+			hsl(275, 68%, 55%) 50% 75%,
+			hsl(52.5, 68%, 55%) 75% 100%
+		);
+	}
+	/* Color-by picker, folded into the on-graph legend at the foot of the canvas. */
+	.legend-color {
+		gap: 5px;
+	}
+	.legend-by {
+		color: #888;
+	}
+	.color-select {
+		font: inherit;
+		font-size: 0.78em;
+		color: #333;
+		background: #fff;
+		border: 1px solid #d7dae0;
+		border-radius: 6px;
+		padding: 1px 4px;
+		cursor: pointer;
+	}
+	.color-select:focus-visible {
+		outline: 2px solid #2563eb;
+		outline-offset: 1px;
+	}
+	.legend-cap {
+		color: #666;
+		white-space: nowrap;
 	}
 	.muted {
 		color: #888;
