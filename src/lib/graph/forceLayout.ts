@@ -101,9 +101,17 @@ export interface LayoutOptions {
 	anchorToReference?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
+	/** Straighten one chosen haplotype: pin its non-backbone segments to a single
+	 * horizontal line above the reference, laid out left-to-right in walk order so
+	 * that walk's alt alleles read as a second genome-browser track anchored near
+	 * their reference attachments — while every other bubble still force-relaxes.
+	 * Steps are *displayed* segment ids (already projected onto the shown graph),
+	 * in traversal order with orientation; backbone segments in the list stay on
+	 * the reference line and only advance the horizontal cursor. */
+	straightenPath?: { id: string; orient: '+' | '-' }[];
 }
 
-const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample'>> = {
+const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'straightenPath'>> = {
 	targetTotalSubNodes: 2500,
 	maxEdgesPerSegment: 60,
 	unitEdgeLength: 18,
@@ -390,6 +398,51 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			}
 			node.targetY = baseY;
 		});
+	}
+
+	// --- Straighten one chosen haplotype above the reference ---
+	// Pin the walk's off-backbone segments to a single horizontal line a clear gap
+	// above the reference, laid out left-to-right in traversal order. Backbone
+	// segments in the walk aren't moved (they belong on the reference line); they
+	// just advance the horizontal cursor to their right edge, so the alt run that
+	// follows starts right at the reference node it branches from — "near its
+	// reference connection". The gap clears the tallest floating bubble so the
+	// straightened track never tangles with the force-relaxed ones.
+	if (opts.straightenPath && opts.straightenPath.length > 0) {
+		const straightenY = -(MAX_DEPTH_OFFSET + 1.5) * bubbleYStep; // component 0 baseline is 0
+		let cursorX = 0;
+		let haveCursor = false;
+		for (const step of opts.straightenPath) {
+			const chain = chainById.get(step.id);
+			if (!chain) continue;
+			if (assignedSegIds.has(step.id)) {
+				// A reference segment the chosen walk shares: stays on the backbone.
+				// Snap the cursor to its right edge so the next alt run hangs off it.
+				let maxX = -Infinity;
+				for (const nodeId of chain.nodeIds) maxX = Math.max(maxX, nodesById.get(nodeId)!.x);
+				if (Number.isFinite(maxX)) {
+					cursorX = maxX;
+					haveCursor = true;
+				}
+				continue;
+			}
+			// An alt segment: pin its chain along the straighten line.
+			const numEdges = chain.nodeIds.length - 1;
+			const spanLength = chainPxLength.get(step.id) ?? Math.max(1, numEdges) * opts.unitEdgeLength;
+			const startX = haveCursor ? cursorX : 0;
+			chain.nodeIds.forEach((nodeId, i) => {
+				const node = nodesById.get(nodeId)!;
+				const t = numEdges === 0 ? 0 : i / numEdges;
+				const localX = step.orient === '+' ? t * spanLength : (1 - t) * spanLength;
+				node.x = startX + localX;
+				node.y = straightenY;
+				node.fx = node.x;
+				node.fy = node.y;
+				node.componentBaselineY = 0;
+			});
+			cursorX = startX + spanLength + opts.unitEdgeLength;
+			haveCursor = true;
+		}
 	}
 
 	// Seed bend nodes at the midpoint of their two endpoints (now that both have
