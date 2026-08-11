@@ -3,7 +3,7 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
-	import { heatmapColor, darkTheme, lightTheme } from './colors';
+	import { heatmapModeColor, discreteColor, darkTheme, lightTheme, type ColorMode } from './colors';
 	import type { Transcript } from '../geneTrack';
 	import { trackEvent } from '../analytics';
 
@@ -16,6 +16,21 @@
 	interface DiscoStep {
 		id: string;
 		orient: '+' | '-';
+	}
+
+	// A deletion-only ("skip") bubble: a reference→reference jump with no alternate
+	// node, so it has nothing to highlight in the graph except the structural link
+	// that draws it. Passed in so that link can be hit-tested and inspected like a
+	// node bubble. Matched to the drawn link by its `from`/`to` segment ids.
+	export interface CanvasSkip {
+		key: string;
+		from: string;
+		to: string;
+		refSpan: number;
+		coverage: number;
+		contig: string;
+		gStart: number;
+		gEnd: number;
 	}
 
 	// A clicked gene-track feature (an exon), surfaced to the inspector.
@@ -40,6 +55,7 @@
 		layout,
 		refCoords,
 		genes = [],
+		showGenes = true,
 		strokeWidth = 3,
 		onSelectSegment,
 		onSelectFeature,
@@ -48,14 +64,28 @@
 		discoColor = '#ff3ce0',
 		discoPaths = null,
 		discoActive = false,
+		highlightSegments = null,
+		onHoverSegment,
+		skipBubbles = [],
+		activeSkipKey = null,
+		onHoverSkip,
+		onSelectSkip,
+		exitHighlightSegments = null,
+		onExitSegments,
 		lightMode = false,
 		showExits = true,
+		colorMode = 'coverage',
+		bubbleIdBySeg = null,
+		bubbleLongestBySeg = null,
+		maxBubbleLongest = 0,
 		onReady,
 		nodeTooltip
 	}: {
 		layout: LayoutResult;
 		refCoords?: Map<string, RefCoord>;
 		genes?: Transcript[];
+		/** Draw the gene track. */
+		showGenes?: boolean;
 		strokeWidth?: number;
 		onSelectSegment?: (segId: string | null) => void;
 		/** A gene-track exon was clicked (or cleared); shown in the inspector. */
@@ -74,10 +104,43 @@
 		discoPaths?: { path: DiscoStep[]; color: string }[] | null;
 		/** When true, dim the base graph so the spotlit walk pops. */
 		discoActive?: boolean;
+		/** Segment ids to spotlight in the base graph itself (bubble mode): when this
+		 * set is non-empty, its members are drawn emphasised and every other strand is
+		 * dimmed, so a whole bubble reads as one unit on node-hover. */
+		highlightSegments?: Set<string> | null;
+		/** The strand under the pointer changed (a segment id, or null off any strand).
+		 * Drives the parent's hover-driven modes (bubble/walk highlighting). */
+		onHoverSegment?: (segId: string | null) => void;
+		/** Deletion-only (skip) bubbles to make hoverable/clickable on their structural
+		 * link, so they can be inspected like node bubbles. */
+		skipBubbles?: CanvasSkip[];
+		/** The skip bubble to draw emphasised (its key), or null. Everything else dims,
+		 * mirroring the node-bubble spotlight. */
+		activeSkipKey?: string | null;
+		/** The skip bubble under the pointer changed (its key, or null). */
+		onHoverSkip?: (key: string | null) => void;
+		/** A skip bubble was clicked (or cleared); shown in the inspector. */
+		onSelectSkip?: (skip: CanvasSkip | null) => void;
+		/** Displayed segment ids whose off-locus exit cue should be emphasised — the
+		 * chopped strands of the active bubble/walk, so a leaving haplotype is visible. */
+		exitHighlightSegments?: Set<string> | null;
+		/** Reports which displayed segments have an off-locus exit cue (loose ends),
+		 * so the parent can note in the inspector when a bubble/walk leaves the locus. */
+		onExitSegments?: (segIds: string[]) => void;
 		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
 		lightMode?: boolean;
 		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
 		showExits?: boolean;
+		/** What each node's fill encodes: walk coverage (default), the size of the
+		 * bubble it belongs to, a discrete per-bubble color, or its own length. */
+		colorMode?: ColorMode;
+		/** segId → its bubble's index, for the discrete `bubble` color mode. Supplied
+		 * by the parent from the bubble model; null when no bubble mode is active. */
+		bubbleIdBySeg?: Map<string, number> | null;
+		/** segId → the longest bp path through its bubble, for the `bubbleSize` heatmap. */
+		bubbleLongestBySeg?: Map<string, number> | null;
+		/** The largest bubble longest-path bp, to normalize the `bubbleSize` heatmap. */
+		maxBubbleLongest?: number;
 		/** Hands the parent a small API (currently just PNG export) once mounted. */
 		onReady?: (api: { exportImage: (filename: string) => void }) => void;
 	} = $props();
@@ -86,6 +149,17 @@
 
 	// segId -> its chain, for tracing a walk's polyline through the layout.
 	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
+
+	// `${from}>${to}` (both orientations) -> the skip bubble that link carries, so the
+	// structural-link draw can recognise a deletion-only bubble and make it inspectable.
+	const skipByLink = $derived.by(() => {
+		const m = new Map<string, CanvasSkip>();
+		for (const s of skipBubbles) {
+			m.set(`${s.from}>${s.to}`, s);
+			m.set(`${s.to}>${s.from}`, s);
+		}
+		return m;
+	});
 
 	// Node ids that a structural link attaches to. A non-backbone chain end that
 	// isn't in here is a strand that just stops — a haplotype chopped at the
@@ -99,15 +173,36 @@
 		return s;
 	});
 
-	// Reserved bottom bands, in screen (CSS) px. The coordinate axis sits directly
-	// under the backbone; the gene track (only when there are genes to show) sits
-	// below that, in the space the one-sided layout keeps clear. fitToView fits the
-	// graph into the height above both, so the backbone never overlaps them.
+	// Displayed segments with an off-locus exit (a non-backbone chain end that no link
+	// attaches to — a strand chopped at the subgraph boundary). Depends only on the
+	// layout, so it's computed once and reported to the parent (which uses it to note
+	// in the inspector when a bubble/walk leaves the locus).
+	const exitSegIds = $derived.by(() => {
+		const s = new Set<string>();
+		for (const chain of layout.chains) {
+			if (layout.backboneSegIds.has(chain.segId)) continue;
+			const ids = chain.nodeIds;
+			const loose =
+				(ids.length > 0 && !linkedNodeIds.has(ids[0])) ||
+				(ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1]));
+			if (loose) s.add(chain.segId);
+		}
+		return s;
+	});
+	$effect(() => {
+		onExitSegments?.([...exitSegIds]);
+	});
+
+	// Reserved bottom bands, in screen (CSS) px, stacked under the backbone: the
+	// coordinate axis directly under it, then the gene track at the very bottom —
+	// each only reserved when it has something to draw. fitToView fits the graph into
+	// the height above all of them, so the backbone never overlaps them. (This uses
+	// the space the one-sided layout keeps clear.)
 	const AXIS_BAND = 22;
 	const GENE_BAND = 84;
 	const GENE_ROW = 15;
 	const GENE_MAX_ROWS = 4;
-	const geneBand = $derived(genes.length > 0 ? GENE_BAND : 0);
+	const geneBand = $derived(showGenes && genes.length > 0 ? GENE_BAND : 0);
 
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let containerEl: HTMLDivElement | undefined = $state();
@@ -171,6 +266,7 @@
 	}
 	let exonHits: ExonHit[] = [];
 
+
 	// Screen-space hit regions for the off-locus exit cues (the dashed lines), so a
 	// click near one can resolve which chopped strand it belongs to. Rebuilt each
 	// draw by drawExitCues, alongside the geometry it strokes.
@@ -182,11 +278,19 @@
 		exit: SelectedExit;
 	}
 	let exitHits: ExitHit[] = [];
+	// Screen-space geometry of each drawn skip-bubble link (a sampled polyline of its
+	// bowed curve), rebuilt each draw so the pointer can resolve which one it's over.
+	interface SkipHit {
+		pts: { x: number; y: number }[];
+		skip: CanvasSkip;
+	}
+	let skipHits: SkipHit[] = [];
 	// Flip the tooltip above the cursor near the bottom of the stage (the gene
 	// track lives there, and a tooltip below would clip against the frame).
 	const tooltipAbove = $derived(hoverPos.y > 360);
 
 	function setHovered(segId: string | null) {
+		if (segId !== hoveredSegment) onHoverSegment?.(segId);
 		hoveredSegment = segId;
 		if (!segId) {
 			hoverLabel = null;
@@ -204,11 +308,44 @@
 		hoverLabel = `${segId} — ${(length ?? 0).toLocaleString()} bp${coordStr}`;
 	}
 
+	// Largest non-backbone node length, so the `length` heatmap normalizes against
+	// the variant nodes rather than the (typically much longer) reference segments.
+	const maxSegmentLength = $derived.by(() => {
+		let max = 0;
+		for (const [segId, len] of layout.segmentLengths) {
+			if (layout.backboneSegIds.has(segId)) continue;
+			if (len > max) max = len;
+		}
+		return max;
+	});
+
+	// A gentle log-scaled ratio so a handful of huge nodes/bubbles don't crush
+	// everything else to the low end of a linear ramp.
+	function logRatio(value: number, max: number): number {
+		if (max <= 0 || value <= 0) return 0;
+		return Math.log1p(value) / Math.log1p(max);
+	}
+
 	function colorForChain(segId: string): string {
 		if (layout.backboneSegIds.has(segId)) return theme.backbone;
-		const coverage = layout.pathCoverage.get(segId) ?? 0;
-		const ratio = layout.maxPathCoverage > 0 ? coverage / layout.maxPathCoverage : 0;
-		return heatmapColor(ratio, theme.heatmapLow, theme.heatmapHigh);
+		const heat = (mode: ColorMode, ratio: number) => heatmapModeColor(mode, ratio, lightMode, theme);
+		switch (colorMode) {
+			case 'bubble': {
+				const id = bubbleIdBySeg?.get(segId);
+				// A node outside any catalogued bubble (shouldn't happen for non-backbone
+				// nodes) falls back to the reference tone rather than a misleading hue.
+				return id === undefined ? theme.backbone : discreteColor(id, lightMode ? 45 : 58);
+			}
+			case 'bubbleSize':
+				return heat('bubbleSize', logRatio(bubbleLongestBySeg?.get(segId) ?? 0, maxBubbleLongest));
+			case 'length':
+				return heat('length', logRatio(layout.segmentLengths.get(segId) ?? 0, maxSegmentLength));
+			case 'coverage':
+			default: {
+				const coverage = layout.pathCoverage.get(segId) ?? 0;
+				return heat('coverage', layout.maxPathCoverage > 0 ? coverage / layout.maxPathCoverage : 0);
+			}
+		}
 	}
 
 	function fitToView(retriesLeft = 5) {
@@ -290,43 +427,101 @@
 		// stroke widths honest screen pixels and drops the old `/transform.k`
 		// compensation everywhere.
 
-		// structural links first, underneath strands. Drawn as a curve through the
-		// (invisible) bend node so a link between two backbone-pinned points —
-		// e.g. a deletion skip edge — doesn't lie exactly on top of the backbone
-		// and disappear against it.
+		// structural links first, underneath strands. A link between two backbone
+		// nodes with no node between them is a *deletion skip edge* — the alt allele
+		// that drops a stretch of reference. Both its endpoints are pinned to the
+		// backbone, so the simulated bend node gets pulled flat onto the line and the
+		// edge vanishes against it. Those we bow explicitly at draw time — upward,
+		// onto the bubble side and clear of the axis labels below, so a deletion reads
+		// as an alternate path like the bubbles — with an amplitude that grows with the
+		// on-screen span. Every other structural link (a bubble's attachment to the
+		// reference) still curves through its bend node.
+		// A node bubble is spotlit (highlightSegments) or a skip bubble is (activeSkipKey):
+		// either way, everything not part of it dims. Computed once so strands, skip
+		// arcs, and exit cues all dim consistently.
+		const hl = highlightSegments && highlightSegments.size > 0 ? highlightSegments : null;
+		const anyHighlight = hl != null || activeSkipKey != null;
+		skipHits = [];
 		ctx.strokeStyle = theme.structuralLink;
-		ctx.lineWidth = 1;
 		for (const link of layout.structuralLinkPaths) {
 			const a = layout.nodesById.get(link.fromNode);
 			const b = layout.nodesById.get(link.toNode);
-			const m = layout.nodesById.get(link.bendNode);
 			if (!a || !b) continue;
+			const isDeletionSkip =
+				layout.backboneSegIds.has(link.from) && layout.backboneSegIds.has(link.to);
+			const skip = isDeletionSkip ? skipByLink.get(`${link.from}>${link.to}`) : undefined;
+			const skipActive = skip != null && skip.key === activeSkipKey;
+			// An edge belonging to the spotlit bubble — either internal to it, or the
+			// link that attaches it to a reference node (only one end is a member). We
+			// don't dim these, so the whole bubble reads as one connected unit; they keep
+			// their normal link colour (not the node highlight) so it stays understated.
+			const inBubble = hl != null && (hl.has(link.from) || hl.has(link.to));
+			const ax = toScreenX(a.x);
+			const ay = toScreenY(a.y);
+			const bx = toScreenX(b.x);
+			const by = toScreenY(b.y);
+			ctx.save();
 			ctx.beginPath();
-			ctx.moveTo(toScreenX(a.x), toScreenY(a.y));
-			if (m)
-				ctx.quadraticCurveTo(
-					toScreenX(m.x),
-					toScreenY(m.y),
-					toScreenX(b.x),
-					toScreenY(b.y)
-				);
-			else ctx.lineTo(toScreenX(b.x), toScreenY(b.y));
+			ctx.moveTo(ax, ay);
+			if (isDeletionSkip) {
+				// Bow amplitude ∝ horizontal span (screen px), clamped so a tiny gap
+				// still bows visibly and a whole-locus deletion doesn't balloon.
+				const span = Math.abs(bx - ax);
+				const amp = Math.min(64, Math.max(16, span * 0.22));
+				const qx = (ax + bx) / 2;
+				const qy = (ay + by) / 2 - 2 * amp;
+				// Quadratic control at 2× amp so the curve's peak sits ~amp above the line.
+				ctx.quadraticCurveTo(qx, qy, bx, by);
+				ctx.lineWidth = skipActive ? 3 : 1.5;
+				if (skipActive) ctx.strokeStyle = theme.bubbleHighlight;
+				else if (anyHighlight) ctx.globalAlpha = 0.15;
+				// Record a sampled polyline of the bow so the pointer can hit-test it.
+				if (skip) {
+					const pts: { x: number; y: number }[] = [];
+					for (let t = 0; t <= 1.0001; t += 1 / 16) {
+						const u = 1 - t;
+						pts.push({
+							x: u * u * ax + 2 * u * t * qx + t * t * bx,
+							y: u * u * ay + 2 * u * t * qy + t * t * by
+						});
+					}
+					skipHits.push({ pts, skip });
+				}
+			} else {
+				const m = layout.nodesById.get(link.bendNode);
+				if (m) ctx.quadraticCurveTo(toScreenX(m.x), toScreenY(m.y), bx, by);
+				else ctx.lineTo(bx, by);
+				ctx.lineWidth = 1;
+				// Dim only the links that aren't part of the spotlit bubble; the bubble's
+				// own links stay at their normal (undimmed) brightness.
+				if (anyHighlight && !inBubble) ctx.globalAlpha = 0.15;
+			}
 			ctx.stroke();
+			ctx.restore();
 		}
 
 		// strands
 		ctx.lineJoin = 'round';
 		ctx.lineCap = 'round';
+		// Bubble-mode spotlight: when a highlight set is active, its members draw at
+		// full brightness and every other strand is dimmed, so the hovered bubble
+		// stands out as one connected unit. A skip bubble has no member strands, so all
+		// strands dim under it. No highlight → every strand at full brightness.
 		for (const chain of layout.chains) {
 			const pts = chain.nodeIds.map((id) => layout.nodesById.get(id)!);
 			if (pts.length === 0) continue;
+			const inHl = hl ? hl.has(chain.segId) : true;
+			const dim = (hl && !inHl) || (activeSkipKey != null && hl == null);
 			ctx.beginPath();
 			ctx.moveTo(toScreenX(pts[0].x), toScreenY(pts[0].y));
 			for (let i = 1; i < pts.length; i++) ctx.lineTo(toScreenX(pts[i].x), toScreenY(pts[i].y));
-			ctx.strokeStyle = colorForChain(chain.segId);
-			ctx.lineWidth = chain.segId === hoveredSegment ? strokeWidth * 1.6 : strokeWidth;
+			ctx.globalAlpha = dim ? 0.15 : 1;
+			ctx.strokeStyle = hl && inHl ? theme.bubbleHighlight : colorForChain(chain.segId);
+			ctx.lineWidth =
+				chain.segId === hoveredSegment || (hl && inHl) ? strokeWidth * 1.6 : strokeWidth;
 			ctx.stroke();
 		}
+		ctx.globalAlpha = 1;
 
 		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
 		drawExitCues(ctx, width);
@@ -526,11 +721,11 @@
 	// Gene models drawn in the reserved bottom band: intron line + strand arrows,
 	// exon boxes (taller where coding), one representative transcript per gene,
 	// packed into rows. Positioned by genomic coordinate through the same anchors
-	// as the axis, so it tracks the backbone under pan/zoom. Display-only — the
-	// arc view is where genes are interactive.
+	// as the axis, so it tracks the backbone under pan/zoom. Exons are clickable
+	// (surfaced to the inspector); everything else in the band is display-only.
 	function drawGeneTrack(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		exonHits = [];
-		if (genes.length === 0) return;
+		if (!showGenes || genes.length === 0) return;
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
 		const gx = (bp: number) => genomicToScreenX(bp, anchors);
@@ -767,6 +962,7 @@
 			const endIdx: number[] = [];
 			if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
 			if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
+			const emph = exitHighlightSegments?.has(chain.segId) ?? false;
 			for (const i of endIdx) {
 				const n = layout.nodesById.get(ids[i]);
 				if (!n) continue;
@@ -774,10 +970,21 @@
 				const ey = toScreenY(n.y);
 				const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
 				const edgeX = side === 'left' ? 0 : width;
-				const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
-				grad.addColorStop(0, theme.exitCue);
-				grad.addColorStop(1, theme.exitCueFade);
-				ctx.strokeStyle = grad;
+				if (emph) {
+					// This strand belongs to the active bubble/walk: draw its cue bright and
+					// solid-cored so the leaving haplotype is unmistakable.
+					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					grad.addColorStop(0, theme.bubbleHighlight);
+					grad.addColorStop(1, theme.exitCueFade);
+					ctx.strokeStyle = grad;
+					ctx.lineWidth = 2.5;
+				} else {
+					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					grad.addColorStop(0, theme.exitCue);
+					grad.addColorStop(1, theme.exitCueFade);
+					ctx.strokeStyle = grad;
+					ctx.lineWidth = 1.5;
+				}
 				ctx.beginPath();
 				ctx.moveTo(ex, ey);
 				ctx.lineTo(edgeX, ey);
@@ -854,15 +1061,28 @@
 		return null;
 	}
 
+	// The skip-bubble arc under the pointer: nearest sampled point on any bow within a
+	// few pixels. Reverse order so a later-drawn arc wins where they overlap.
+	function findSkipAt(px: number, py: number): CanvasSkip | null {
+		const TOL = 6;
+		for (let i = skipHits.length - 1; i >= 0; i--) {
+			const { pts, skip } = skipHits[i];
+			for (const p of pts) {
+				if (Math.abs(px - p.x) <= TOL && Math.abs(py - p.y) <= TOL) return skip;
+			}
+		}
+		return null;
+	}
+
 	$effect(() => {
 		// re-fit and re-draw whenever a new layout is loaded — untrack the body so
 		// that reads of hoveredSegment/transform inside draw()/fitToView() don't
 		// turn every hover/pan into an implicit dependency of this effect (which
 		// was resetting the zoom back to the fitted view on every hover change).
-		// Also re-runs when genes load, since that changes the reserved band height
-		// and so the vertical fit.
+		// Also re-runs when the gene band appears or disappears (the track loading,
+		// emptying, or toggling), since that changes the vertical fit.
 		layout;
-		genes;
+		geneBand;
 		untrack(() => {
 			setHovered(null);
 			fitToView();
@@ -871,15 +1091,21 @@
 	});
 
 	$effect(() => {
-		// Redraw whenever the disco-walks spotlight changes (a new walk in the cycle,
-		// a new glow color, or disco turning on/off) or the theme flips. Untracked so
-		// draw()'s internal reads don't make this effect depend on hover/transform state.
-		discoPath;
-		discoColor;
+		// Redraw whenever the disco-walks spotlight or the bubble-mode highlight
+		// changes, or the theme flips. Untracked so draw()'s internal reads don't make
+		// this effect depend on hover/transform state.
 		discoPaths;
 		discoActive;
+		highlightSegments;
+		skipBubbles;
+		activeSkipKey;
+		exitHighlightSegments;
 		theme;
 		showExits;
+		colorMode;
+		bubbleIdBySeg;
+		bubbleLongestBySeg;
+		maxBubbleLongest;
 		untrack(() => draw());
 	});
 
@@ -939,6 +1165,8 @@
 		}
 
 		let clickStart: { x: number; y: number } | null = null;
+		// Last skip key reported to the parent, so onHoverSkip fires only on a change.
+		let lastSkipKey: string | null = null;
 		function onPointerDown(e: PointerEvent) {
 			clickStart = { x: e.clientX, y: e.clientY };
 		}
@@ -950,14 +1178,16 @@
 			const rect = canvasEl!.getBoundingClientRect();
 			const px = e.clientX - rect.left;
 			const py = e.clientY - rect.top;
-			// Priority: a gene-track exon (bottom band), then a strand, then an
-			// off-locus exit cue (the dashed tail past a chopped strand end). All three
-			// are emitted — with null for the misses — so selecting one clears the rest.
+			// Priority among the bottom-band features and the graph: a gene-track exon,
+			// then a strand, then a skip-bubble arc, then an off-locus exit cue. All are
+			// emitted — with null for the misses — so selecting one clears the rest.
 			const feature = findFeatureAt(px, py);
 			const segId = feature ? null : findSegmentAt(px, py);
-			const exit = feature || segId ? null : findExitAt(px, py);
+			const skip = feature || segId ? null : findSkipAt(px, py);
+			const exit = feature || segId || skip ? null : findExitAt(px, py);
 			onSelectFeature?.(feature);
 			onSelectSegment?.(segId);
+			onSelectSkip?.(skip);
 			onSelectExit?.(exit);
 		}
 		function onPointerMove(e: PointerEvent) {
@@ -985,17 +1215,40 @@
 			}
 			if (segId) {
 				canvasEl!.style.cursor = 'pointer';
+				if (lastSkipKey !== null) {
+					lastSkipKey = null;
+					onHoverSkip?.(null);
+				}
 			} else {
-				// Empty space, or the dashed tail of an off-locus exit (also clickable).
-				if (hoverLabel !== null) hoverLabel = null;
-				canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
+				// A skip-bubble arc bows through the otherwise-empty bubble space, so
+				// probe it before falling back to empty space / the exit-cue tail.
+				const skip = findSkipAt(px, py);
+				if (skip) {
+					hoverLabel = `deletion · ${skip.refSpan.toLocaleString()} bp reference`;
+					canvasEl!.style.cursor = 'pointer';
+					if (lastSkipKey !== skip.key) {
+						lastSkipKey = skip.key;
+						onHoverSkip?.(skip.key);
+					}
+				} else {
+					if (hoverLabel !== null) hoverLabel = null;
+					canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
+					if (lastSkipKey !== null) {
+						lastSkipKey = null;
+						onHoverSkip?.(null);
+					}
+				}
 			}
 		}
 		function onPointerLeave() {
-			const wasStrand = hoveredSegment !== null;
+			const wasEmph = hoveredSegment !== null;
 			setHovered(null); // also clears hoverLabel
+			if (lastSkipKey !== null) {
+				lastSkipKey = null;
+				onHoverSkip?.(null);
+			}
 			canvasEl!.style.cursor = 'grab';
-			if (wasStrand) draw();
+			if (wasEmph) draw();
 		}
 		canvasEl.addEventListener('wheel', onWheelPan, { passive: false });
 		canvasEl.addEventListener('pointerdown', onPointerDown);

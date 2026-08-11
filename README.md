@@ -41,11 +41,41 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 - **Reference-anchored graph layout** (`src/lib/graph/`) — a deterministic,
   reference-pinned force layout, with optional reference-guided simplification
   (small-variant popping + unchop) and reference genomic coordinates drawn along
-  the backbone.
-- **Large non-reference nodes** (`src/lib/RefArcView.svelte`) — arc/lollipop view
-  of insertions/deletions/substitutions on a reference coordinate axis.
-- **Genome browser** (`src/lib/IgvView.svelte`) — an IGV.js track (hg38 / hs1,
-  IGV's built-in id for T2T-CHM13v2.0) of the non-reference nodes.
+  the backbone. A **gene track** (`src/lib/graph/geneTrack.ts`, exon/UTR structure
+  read from UCSC bigBed over HTTP range requests) sits under the backbone on the
+  same reference axis.
+
+  A **hover mode** control ("On node hover") turns the graph itself into the
+  quantitative view — the default is a plain tooltip, and two richer modes are one
+  switch away:
+  - **Bubbles** — a *bubble* is anything that departs from the reference and
+    survives simplification: a connected component of non-reference segments, or a
+    skip edge (a deletion with no alternate node). They're catalogued straight from
+    the reduced graph the viewer draws (`src/lib/graph/bubbles.ts`,
+    `bubbles.test.ts`), anchored purely at the reference coordinates where they
+    attach ("cut sites"). Hovering any node lights up every node of its bubble, and
+    the inspector reads out that bubble's **shortest and longest path** (in bases —
+    Minigraph-Cactus graphs are acyclic, so these are well-defined DAG paths),
+    reference span, segment count and walk coverage. Deletion-only skip bubbles
+    have no nodes, so their structural-link arc is made hoverable/clickable to
+    inspect the same way.
+  - **Walks** — hovering any node traces every walk that passes through it, each in
+    its own colour (a live, hover-driven version of the disco-walks spotlight).
+    Hovering a deletion (skip) arc traces the walks that *take* that deletion —
+    walks don't name their edges, but a walk takes a skip exactly when its projected
+    path steps straight from the skip's two reference nodes with nothing between, so
+    it's a cheap scan of consecutive steps. Walks live only in the full, unsimplified
+    graph, so this loads the full-walk graph on demand (the same source disco uses)
+    and indexes it once. (A *walk* is one W-line; a haplotype can be fragmented
+    across several, so the counts are of walks, not haplotypes.)
+
+  Clicking a node (or a skip arc) **freezes** its highlight, so you can move off and
+  pan/zoom around exploring what's connected. When a highlighted bubble or walk
+  includes a strand chopped at the window edge, its off-locus **exit cue** is
+  brightened and the inspector notes that it leaves the locus. Both modes are opt-in
+  and each builds an index over the graph, so on a large locus the control warns
+  before switching — Graphoscope's general rule is to show context by default unless
+  it would slow the app, then keep it one switch away with a slow-down warning.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
