@@ -455,6 +455,63 @@ fn simplification_is_blind_to_stored_node_orientation() {
     }
 }
 
+/// Regression: a single haplotype that crosses the locus on the strand opposite
+/// the reference — the reference read reverse-complemented, common where a locus
+/// sits in an inverted segmental duplication — used to defeat small-variant
+/// collapse across the whole backbone. Adjacency was recorded by node id in step
+/// order, so the reverse traversal laid down `ref[i] -> ref[i-1]` back-edges that
+/// made every downstream bubble look non-forward: nothing collapsed and the
+/// reference shattered into single nodes (SMN1 jumped 35 -> 748 nodes when a
+/// wider window pulled such a walk in). Adding the walk must not change what
+/// collapses.
+#[test]
+fn a_reverse_strand_copy_of_the_reference_does_not_defeat_collapse() {
+    // Backbone 1>2>4>5>7 with a SNP at 2/3 and another at 5/6.
+    let base = "\
+H\tVN:Z:1.1\tRS:Z:ref
+S\t1\tACGTACGTAC
+S\t2\tT
+S\t3\tA
+S\t4\tCCCCGGGGAA
+S\t5\tG
+S\t6\tC
+S\t7\tTTTTGGGGCC
+L\t1\t+\t2\t+\t0M
+L\t1\t+\t3\t+\t0M
+L\t2\t+\t4\t+\t0M
+L\t3\t+\t4\t+\t0M
+L\t4\t+\t5\t+\t0M
+L\t4\t+\t6\t+\t0M
+L\t5\t+\t7\t+\t0M
+L\t6\t+\t7\t+\t0M
+W\tref\t0\tchr1\t0\t32\t>1>2>4>5>7
+W\tunknown\t1\tchr1\t0\t32\t>1>3>4>6>7
+";
+    // The same panel plus one haplotype that reads the whole backbone on the
+    // opposite strand — visiting the reference nodes in reverse order.
+    let with_rev = format!("{base}W\tunknown\t2\tchr1\t0\t32\t<7<5<4<2<1\n");
+
+    let a = run_reduce(base, 50);
+    let b = run_reduce(&with_rev, 50);
+    let xa = a.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+    let xb = b.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+
+    // Both SNP sites collapse in the base graph (guards against a trivially
+    // equal pass where nothing collapses either way)...
+    assert_eq!(int_tag(xa, "ST"), Some(2), "base: both SNP sites should collapse");
+    // ...and the reverse-strand copy must leave the collapse untouched.
+    for tag in ["ST", "NR", "SA"] {
+        assert_eq!(
+            int_tag(xa, tag),
+            int_tag(xb, tag),
+            "{}: a reverse-strand copy of the reference changed collapse ({:?} vs {:?})",
+            tag,
+            int_tag(xa, tag),
+            int_tag(xb, tag),
+        );
+    }
+}
+
 #[test]
 fn constructed_graphs_collapse_exactly_as_specified() {
     for e in &SYNTHETIC {
