@@ -215,6 +215,7 @@
 		selectedExit = null;
 		// A new graph clears any pinned haplotype traces (its walk keys won't exist).
 		pinnedKeys = [];
+		straightenKey = null;
 		// …and any node-restricted haplotype filter (node ids won't carry over).
 		nodeFilter = null;
 		// A new graph gets a fresh automatic rough/full decision (see effectiveRough)
@@ -352,6 +353,12 @@
 		sample: string;
 		hapIndex: number;
 		seqId: string;
+		/** What the row shows: the real sample name, or "Walk N" for the anonymised
+		 * `unknown` walks a gbz-base subgraph extract produces (the hosted locus
+		 * browser), where every walk is `unknown` and only an ordinal tells them apart.
+		 * "Walk", not "Haplotype", because several of these walks can belong to the
+		 * same haplotype (one haplotype fragmented across W-lines). */
+		label: string;
 		span: number;
 		steps: { id: string; orient: '+' | '-' }[];
 	}
@@ -361,16 +368,20 @@
 		if (!src) return [];
 		const out: NamedWalk[] = [];
 		const seen = new Set<string>();
+		let anonCount = 0;
 		for (const w of src.walks) {
 			if (w.steps.length < 2) continue;
 			const key = `${w.sample}#${w.hapIndex}#${w.seqId}`;
 			if (seen.has(key)) continue;
 			seen.add(key);
+			const anon = w.sample === 'unknown';
+			if (anon) anonCount++;
 			out.push({
 				key,
 				sample: w.sample,
 				hapIndex: w.hapIndex,
 				seqId: w.seqId,
+				label: anon ? `Walk ${anonCount}` : w.sample,
 				span: w.end - w.start,
 				steps: w.steps
 			});
@@ -381,6 +392,11 @@
 	// own colour, so several can be compared side by side. Cleared on a new graph and
 	// when cycling disco starts.
 	let pinnedKeys = $state<string[]>([]);
+	// The one haplotype the layout straightens into a horizontal track above the
+	// reference (see the straightenPath layout option). Distinct from `pinnedKeys`
+	// (a colour-only comparison set): straighten reshapes the layout, so only one
+	// walk can hold it. Cleared on a new graph and when its key drops out of the list.
+	let straightenKey = $state<string | null>(null);
 	let haploFilter = $state('');
 	// A displayed node id the haplotype list is restricted to, set from the node
 	// inspector's "haplotypes through this node" button. Independent of `selected`,
@@ -434,6 +450,33 @@
 		trackEvent('widget_interact', { widget: 'graph_layout', action: 'haplotype_trace' });
 	}
 
+	// Straighten the chosen walk into a horizontal track above the reference (radio:
+	// clicking the active one clears it). Stops auto-cycling — a moving spotlight over
+	// a straightened track reads as noise.
+	function toggleStraighten(key: string) {
+		straightenKey = straightenKey === key ? null : key;
+		if (straightenKey) {
+			disco = false;
+			pendingDisco = false;
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'haplotype_straighten' });
+		}
+	}
+	// Drop the straighten selection if its walk is no longer in the list (e.g. the
+	// list rebuilt after a graph swap, or a node filter that excludes it).
+	$effect(() => {
+		if (straightenKey && !namedWalks.some((w) => w.key === straightenKey)) straightenKey = null;
+	});
+	// The chosen walk projected onto the displayed segments, in traversal order —
+	// the layout's straightenPath. Recomputed when the selection or graph changes.
+	const straightenPath = $derived.by((): DiscoStep[] | null => {
+		if (!straightenKey) return null;
+		const w = namedWalks.find((x) => x.key === straightenKey);
+		return w ? projectWalk(w.steps) : null;
+	});
+	const straightenLabel = $derived(
+		straightenKey ? (namedWalks.find((w) => w.key === straightenKey)?.label ?? 'walk') : ''
+	);
+
 	let disco = $state(false);
 	let pendingDisco = $state(false);
 	let discoIndex = $state(0);
@@ -443,7 +486,9 @@
 			disco = false;
 			return;
 		}
-		// Cycling and pinned haplotype traces are mutually exclusive.
+		// Cycling clears the pinned comparison traces, but keeps any straightened
+		// layout: it's the point — lay the graph out along one walk, then watch every
+		// other walk blink through that arrangement.
 		pinnedKeys = [];
 		if (canDiscoNow) {
 			discoIndex = 0;
@@ -512,25 +557,29 @@
 		orient: '+' | '-';
 	}
 	// The set of coloured paths the canvas draws. Priority: a hover preview (single),
-	// then the pinned comparison set (each in its own colour), then the cycling walk.
+	// then — while disco is cycling — the blinking walk (so straighten + disco shows
+	// every walk sweeping through the straightened layout), otherwise the pinned
+	// comparison set plus the straightened track's own colour.
 	const discoPaths = $derived.by((): { path: DiscoStep[]; color: string }[] => {
 		if (hoverWalk) {
 			const p = projectWalk(hoverWalk.steps);
 			return p ? [{ path: p, color: colorForKey(hoverWalk.key) }] : [];
 		}
-		if (pinnedWalks.length > 0) {
-			const out: { path: DiscoStep[]; color: string }[] = [];
-			for (const w of pinnedWalks) {
-				const p = projectWalk(w.steps);
-				if (p) out.push({ path: p, color: colorForKey(w.key) });
-			}
-			return out;
-		}
 		if (currentDiscoWalk) {
 			const p = projectWalk(currentDiscoWalk.steps);
 			return p ? [{ path: p, color: colorForSeed(discoIndex) }] : [];
 		}
-		return [];
+		const out: { path: DiscoStep[]; color: string }[] = [];
+		for (const w of pinnedWalks) {
+			const p = projectWalk(w.steps);
+			if (p) out.push({ path: p, color: colorForKey(w.key) });
+		}
+		// Always colour the straightened track (unless it's already pinned), so the
+		// walk the layout reshaped around is easy to pick out from the floating rest.
+		if (straightenKey && !pinnedKeys.includes(straightenKey) && straightenPath) {
+			out.push({ path: straightenPath, color: colorForKey(straightenKey) });
+		}
+		return out;
 	});
 	// --- walk mode: walks through the hovered node or deletion arc --------------
 	// Index every displayed segment to the walks that pass through it (mapping each
@@ -666,6 +715,61 @@
 	const traceActive = $derived(overlayPaths.length > 0);
 	// Show the button whenever disco is either already possible or loadable.
 	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
+
+	// The Haplotypes box holds both the disco spotlight and the per-walk list. Before
+	// the full-walk graph is fetched (hosted browser), the list can still be loaded on
+	// demand; `showHaploBox` keeps the box up whenever any of that is available.
+	const canLoadHaplos = $derived(
+		walksGfa == null && (discoAvailable || discoLoading || walkLoadRequested)
+	);
+	const showHaploBox = $derived(
+		showHaplotypes && (showDiscoButton || namedWalks.length > 0 || canLoadHaplos)
+	);
+
+	// Auto-load the walks when the full graph is light enough that fetching + parsing
+	// it costs nothing noticeable — then the haplotype list (and disco) are just there,
+	// no button to hunt for. Only past a size threshold does it stay an explicit "load"
+	// (the full graph is walks ~97% of the payload, tens of MB at a repetitive locus).
+	// The size is known before loading from the reduced graph's stats: node count bounds
+	// the layout/memory cost, walk-record count bounds the fetch/parse cost (it explodes
+	// at repetitive loci where one haplotype fragments into thousands of W-lines).
+	//
+	// Thresholds are provisional — deliberately conservative here, to be tuned app-wide
+	// in a later pass. Mobile gets much lower ceilings: less memory, metered data.
+	let isNarrow = $state(false);
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		const mq = window.matchMedia('(max-width: 768px), (pointer: coarse)');
+		const update = () => (isNarrow = mq.matches);
+		update();
+		mq.addEventListener('change', update);
+		return () => mq.removeEventListener('change', update);
+	});
+	const AUTO_LOAD_MAX_NODES = $derived(isNarrow ? 2000 : 6000);
+	const AUTO_LOAD_MAX_WALK_RECORDS = $derived(isNarrow ? 6000 : 20000);
+	// Full-graph size estimate from the reduced `X` line (0 when not a reduced graph).
+	const fullGraphNodes = $derived(gfa.reduced?.segmentsBefore ?? 0);
+	const fullGraphWalkRecords = $derived(
+		gfa.reduced?.walkRecords ?? gfa.reduced?.totalWalks ?? 0
+	);
+	const haploDataLight = $derived(
+		fullGraphNodes > 0 &&
+			fullGraphNodes <= AUTO_LOAD_MAX_NODES &&
+			fullGraphWalkRecords <= AUTO_LOAD_MAX_WALK_RECORDS
+	);
+	$effect(() => {
+		if (
+			showHaplotypes &&
+			walksGfa == null &&
+			discoAvailable &&
+			!discoLoading &&
+			!walkLoadRequested &&
+			haploDataLight
+		) {
+			walkLoadRequested = true;
+			onRequestDiscoGraph?.();
+		}
+	});
 
 	// Reference genomic coordinates for each reference segment. Walk the reference
 	// sample's path (fall back to the first walk, matching gfaToGraph) and
@@ -1000,8 +1104,11 @@
 		// The rough override only (null = auto); the effective rough decision folds in
 		// each graph's own node count inside layoutOptionsFor.
 		roughOverride: boolean | null;
+		// The chosen haplotype straightened above the reference, or null. Included here
+		// so picking/clearing it re-runs the layout (it changes node positions).
+		straightenPath: DiscoStep[] | null;
 	}
-	const layoutKnobs = $derived<LayoutKnobs>({ mode: layoutMode, roughOverride });
+	const layoutKnobs = $derived<LayoutKnobs>({ mode: layoutMode, roughOverride, straightenPath });
 
 	// Worker options for a graph of this size. The mode carries the whole recipe —
 	// the worker resolves every force knob from it (see layoutModes.ts / forceLayout)
@@ -1010,9 +1117,9 @@
 	// node, cuts iterations and forces straight links — the much faster layout (see
 	// the 62.5s→6.0s note); otherwise the mode's full-quality settings apply.
 	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
-		const { mode, roughOverride } = knobs;
+		const { mode, roughOverride, straightenPath } = knobs;
 		const rough = roughOverride ?? keptSegments > LARGE_LAYOUT_NODE_THRESHOLD;
-		const base = { referenceSample, mode };
+		const base = { referenceSample, mode, straightenPath: straightenPath ?? undefined };
 		return rough
 			? { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
 			: base;
@@ -1145,44 +1252,7 @@
 				{:else if allNodesTooMany}
 					<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
 				{/if}
-				{#if showDiscoButton}
-					<button
-						class="disco"
-						class:on={disco}
-						onclick={toggleDisco}
-						disabled={discoLoading || pendingDisco}
-						title="Spotlight every walk in turn, tracing each one through the graph (uses the full unsimplified graph)"
-					>
-						{#if discoLoading || pendingDisco}
-							🪩 loading walks…
-						{:else if disco}
-							🪩 stop · walk {(discoIndex % discoWalks.length) + 1}/{discoWalks.length}
-						{:else}
-							🪩 disco-walks
-						{/if}
-					</button>
-					{#if disco}
-						<span class="switch-sub">spotlighting each of {discoWalks.length.toLocaleString()} unique walks</span>
-					{/if}
-				{/if}
 			</section>
-
-			<!-- Gene track drawn in a band under the backbone (inside the canvas). Pinned
-			     (not tabbed) since it toggles what's shown rather than shaping the layout.
-			     Hidden for reference-free modes, which have no reference axis to hang it under. -->
-			{#if !referenceFree}
-				<section class="group tracks-group">
-					<span class="group-title">Track under graph</span>
-					<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
-						<input type="checkbox" bind:checked={showGeneTrack} />
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Genes</span>
-							<span class="switch-sub">annotated transcripts</span>
-						</span>
-					</label>
-				</section>
-			{/if}
 
 			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
@@ -1241,71 +1311,145 @@
 				{/if}
 			</section>
 
-			<!-- Named haplotypes (general GFA / the /gfa page): pick one to trace its
-			     path through the graph — a paused disco spotlight on a single walk. -->
-			{#if showHaplotypes && namedWalks.length > 0}
+			<!-- Haplotypes: the disco-walks spotlight and the per-walk list live in one
+			     box. On the hosted locus browser the walks live only in the unsimplified
+			     graph (loaded on demand), so before that's fetched this offers to load
+			     them — the same fetch disco-walks uses. -->
+			{#if showHaploBox}
 				<section class="group haplo">
 					<div class="haplo-head">
 						<span class="switch-label">Haplotypes</span>
-						{#if nodeFilter}
-							<span class="switch-sub"
-								>{throughNodeWalks.length} of {namedWalks.length} through node <code>{nodeFilter}</code
-								></span
-							>
-						{:else if pinnedKeys.length > 0}
-							<span class="switch-sub">{pinnedKeys.length} traced · click more to compare</span>
-						{:else}
-							<span class="switch-sub">{namedWalks.length} named walks · click to trace &amp; compare</span>
+						{#if namedWalks.length > 0}
+							{#if nodeFilter}
+								<span class="switch-sub"
+									>{throughNodeWalks.length} of {namedWalks.length} through node <code>{nodeFilter}</code
+									></span
+								>
+							{:else if straightenKey}
+								<span class="switch-sub">one walk straightened below the reference</span>
+							{:else if pinnedKeys.length > 0}
+								<span class="switch-sub">{pinnedKeys.length} traced · click more to compare</span>
+							{:else}
+								<span class="switch-sub"
+									>{namedWalks.length} walks · click to trace, 📐 to straighten</span
+								>
+							{/if}
 						{/if}
 					</div>
-					{#if nodeFilter}
+
+					{#if showDiscoButton}
 						<button
-							class="haplo-nodefilter"
-							onclick={() => (nodeFilter = null)}
-							title="Show all haplotypes again"
+							class="disco"
+							class:on={disco}
+							onclick={toggleDisco}
+							disabled={discoLoading || pendingDisco}
+							title="Spotlight every walk in turn, tracing each one through the graph (uses the full unsimplified graph)"
 						>
-							<span>filtered to node <code>{nodeFilter}</code></span>
-							<span class="hnf-x">clear ×</span>
+							{#if discoLoading || pendingDisco}
+								🪩 loading walks…
+							{:else if disco}
+								🪩 stop · walk {(discoIndex % discoWalks.length) + 1}/{discoWalks.length}
+							{:else}
+								🪩 disco-walks
+							{/if}
 						</button>
-					{/if}
-					{#if throughNodeWalks.length > 8}
-						<input class="haplo-filter" placeholder="filter…" bind:value={haploFilter} />
-					{/if}
-					<ul class="haplo-list">
-						{#each filteredNamedWalks as w (w.key)}
-							{@const isPinned = pinnedKeys.includes(w.key)}
-							<li>
-								<button
-									class="haplo-item"
-									class:active={isPinned}
-									class:hovering={w.key === hoverKey && !isPinned}
-									onclick={() => togglePin(w.key)}
-									onmouseenter={() => (hoverKey = w.key)}
-									onmouseleave={() => hoverKey === w.key && (hoverKey = null)}
-									onfocus={() => (hoverKey = w.key)}
-									onblur={() => hoverKey === w.key && (hoverKey = null)}
-									title={`${w.sample} · hap ${w.hapIndex} · ${w.seqId}`}
-								>
-									{#if isPinned || w.key === hoverKey}
-										<span class="hl-dot" style="background:{colorForKey(w.key)}"></span>
-									{/if}
-									<span class="hl-name">{w.sample}</span>
-									<span class="hl-hap">hap {w.hapIndex}</span>
-									<span class="hl-span">{w.span > 0 ? `${w.span.toLocaleString()} bp` : ''}</span>
-								</button>
-							</li>
-						{/each}
-						{#if filteredNamedWalks.length === 0}
-							<li class="haplo-empty">
-								{#if haploFilter.trim()}no haplotype matches “{haploFilter}”{:else}no haplotypes through
-									this node{/if}
-							</li>
+						{#if disco}
+							<span class="switch-sub"
+								>spotlighting each of {discoWalks.length.toLocaleString()} unique walks{straightenKey
+									? ' through the straightened layout'
+									: ''}</span
+							>
 						{/if}
-					</ul>
-					{#if pinnedKeys.length > 0}
-						<button class="haplo-clear" onclick={() => (pinnedKeys = [])}
-							>clear {pinnedKeys.length > 1 ? `all ${pinnedKeys.length} traces` : 'trace'}</button
-						>
+					{/if}
+
+					{#if namedWalks.length > 0}
+						{#if nodeFilter}
+							<button
+								class="haplo-nodefilter"
+								onclick={() => (nodeFilter = null)}
+								title="Show all walks again"
+							>
+								<span>filtered to node <code>{nodeFilter}</code></span>
+								<span class="hnf-x">clear ×</span>
+							</button>
+						{/if}
+						{#if throughNodeWalks.length > 8}
+							<input class="haplo-filter" placeholder="filter…" bind:value={haploFilter} />
+						{/if}
+						<ul class="haplo-list">
+							{#each filteredNamedWalks as w (w.key)}
+								{@const isPinned = pinnedKeys.includes(w.key)}
+								{@const isStraight = straightenKey === w.key}
+								<li class="haplo-row">
+									<button
+										class="haplo-item"
+										class:active={isPinned}
+										class:hovering={w.key === hoverKey && !isPinned}
+										onclick={() => togglePin(w.key)}
+										onmouseenter={() => (hoverKey = w.key)}
+										onmouseleave={() => hoverKey === w.key && (hoverKey = null)}
+										onfocus={() => (hoverKey = w.key)}
+										onblur={() => hoverKey === w.key && (hoverKey = null)}
+										title={`${w.sample} · hap ${w.hapIndex} · ${w.seqId}`}
+									>
+										{#if isPinned || isStraight || w.key === hoverKey}
+											<span class="hl-dot" style="background:{colorForKey(w.key)}"></span>
+										{/if}
+										<span class="hl-name">{w.label}</span>
+										{#if w.sample !== 'unknown'}<span class="hl-hap">hap {w.hapIndex}</span>{/if}
+										<span class="hl-span">{w.span > 0 ? `${w.span.toLocaleString()} bp` : ''}</span>
+									</button>
+									<button
+										class="haplo-straighten"
+										class:active={isStraight}
+										onclick={() => toggleStraighten(w.key)}
+										title={isStraight
+											? 'Stop straightening this walk'
+											: 'Straighten this walk into a horizontal track below the reference'}
+										aria-pressed={isStraight}
+										aria-label="Straighten {w.label}">📐</button
+									>
+								</li>
+							{/each}
+							{#if filteredNamedWalks.length === 0}
+								<li class="haplo-empty">
+									{#if haploFilter.trim()}no walk matches “{haploFilter}”{:else}no walks through this
+										node{/if}
+								</li>
+							{/if}
+						</ul>
+						{#if straightenKey}
+							<button
+								class="haplo-clear straighten-clear"
+								onclick={() => (straightenKey = null)}
+								title="Stop straightening and relax the layout back to normal"
+								>📐 clear straightened {straightenLabel}</button
+							>
+						{/if}
+						{#if pinnedKeys.length > 0}
+							<button class="haplo-clear" onclick={() => (pinnedKeys = [])}
+								>clear {pinnedKeys.length > 1 ? `all ${pinnedKeys.length} traces` : 'trace'}</button
+							>
+						{/if}
+					{:else if canLoadHaplos}
+						{#if discoLoading || walkLoadRequested || haploDataLight}
+							<!-- Light loci auto-load (an effect fires as soon as `haploDataLight`),
+							     so this covers both the auto-load and an in-flight manual load. -->
+							<span class="switch-sub">loading haplotypes…</span>
+						{:else}
+							<button
+								class="haplo-load"
+								onclick={() => {
+									walkLoadRequested = true;
+									onRequestDiscoGraph?.();
+								}}
+								title="Fetch the full-walk graph so individual walks can be traced and straightened"
+								>Load haplotypes to inspect</button
+							>
+							<span class="switch-sub"
+								>{fullGraphNodes.toLocaleString()}-node full graph — loaded on request</span
+							>
+						{/if}
 					{/if}
 				</section>
 			{/if}
@@ -1344,6 +1488,16 @@
 							<p class="mode-blurb">{modeCfg.blurb}</p>
 						</div>
 					{:else if ctlTab === 'view'}
+						{#if !referenceFree}
+							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
+								<input type="checkbox" bind:checked={showGeneTrack} />
+								<span class="track"><span class="thumb"></span></span>
+								<span class="switch-text">
+									<span class="switch-label">Gene track</span>
+									<span class="switch-sub">annotated transcripts under the graph</span>
+								</span>
+							</label>
+						{/if}
 						<label class="switch" title="Render on a white background for figures and publication screenshots">
 							<input type="checkbox" bind:checked={lightMode} />
 							<span class="track"><span class="thumb"></span></span>
@@ -1635,7 +1789,7 @@
 							</div>
 						{/if}
 
-						{#if showHaplotypes}
+						{#if showHaplotypes && namedWalks.length > 0}
 							<div class="ni-haplo">
 								{#if selectedThroughCount > 0}
 									<button
@@ -1923,9 +2077,6 @@
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
 		color: #9aa0aa;
-	}
-	.tracks-group {
-		background: #fff;
 	}
 	.hover-group {
 		background: #fff;
@@ -2218,11 +2369,17 @@
 		max-height: 260px;
 		overflow-y: auto;
 	}
+	.haplo-row {
+		display: flex;
+		align-items: stretch;
+		gap: 2px;
+	}
 	.haplo-item {
 		display: flex;
 		align-items: baseline;
 		gap: 0.4rem;
-		width: 100%;
+		flex: 1 1 auto;
+		min-width: 0;
 		font: inherit;
 		font-size: 0.78rem;
 		text-align: left;
@@ -2245,6 +2402,47 @@
 	.haplo-item.hovering {
 		border-color: #c7b8ec;
 		background: #faf7ff;
+	}
+	.haplo-straighten {
+		flex: 0 0 auto;
+		font-size: 0.8rem;
+		line-height: 1;
+		cursor: pointer;
+		border: 1px solid #eee;
+		background: #fff;
+		border-radius: 6px;
+		padding: 0 0.35rem;
+		filter: grayscale(1);
+		opacity: 0.55;
+	}
+	.haplo-straighten:hover {
+		border-color: #c7b8ec;
+		background: #faf7ff;
+		filter: none;
+		opacity: 1;
+	}
+	.haplo-straighten.active {
+		border-color: #7c3aed;
+		background: #f3ecff;
+		box-shadow: inset 0 0 0 1px rgba(124, 58, 237, 0.35);
+		filter: none;
+		opacity: 1;
+	}
+	.haplo-load {
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 600;
+		cursor: pointer;
+		border: 1px solid #d1c4f0;
+		background: #f6f2ff;
+		color: #5b21b6;
+		padding: 0.35rem 0.5rem;
+		border-radius: 7px;
+		text-align: left;
+	}
+	.haplo-load:hover {
+		background: #efe7ff;
+		border-color: #c7b8ec;
 	}
 	.hl-dot {
 		flex: 0 0 auto;
@@ -2287,6 +2485,17 @@
 	.haplo-clear:hover {
 		background: #f6f2ff;
 		border-color: #c7b8ec;
+	}
+	/* Straighten clear — tinted to match the active 📐 toggle so it's clearly its
+	   companion (the list can be long, so this is how you undo without hunting). */
+	.straighten-clear {
+		border-color: #c7b8ec;
+		background: #f3ecff;
+		font-weight: 600;
+	}
+	.straighten-clear:hover {
+		background: #e9dcff;
+		border-color: #7c3aed;
 	}
 	/* Active node-filter chip at the top of the haplotype panel. */
 	.haplo-nodefilter {
