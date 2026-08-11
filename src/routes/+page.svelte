@@ -645,6 +645,7 @@
 							onToggleSimplify={toggleUnsimplified}
 							onRequestMoreContext={requestMoreContext}
 							locusLabel={queriedGene ?? locusText}
+							showHaplotypes={true}
 							{fetchInfo}
 							querying={running}
 						/>
