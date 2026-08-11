@@ -69,17 +69,23 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
     and indexes it once. (A *walk* is one W-line; a haplotype can be fragmented
     across several, so the counts are of walks, not haplotypes.)
 
-  A **Haplotypes** panel lists every walk once the full-walk graph is loaded (on the
-  hosted locus browser the walks are anonymised to `unknown`, so they show as
-  "Haplotype 1, 2, …"; on the `/gfa` viewer their real sample names
-  are kept). It's the paused counterpart to disco-walks: hover a row to preview its
-  path, click to pin one or several in their own colours for side-by-side comparison,
-  or from the node inspector restrict the list to the walks through a clicked node.
-  Each row also has a **straighten** (📐) toggle — a layout mode that pins that one
-  walk's off-reference segments to a single horizontal track a clear gap above the
-  reference, laid out left-to-right in walk order so its alt alleles read as a second
-  genome-browser track anchored near the reference nodes they branch from, while every
-  other bubble keeps force-relaxing as usual (`straightenPath` in `forceLayout.ts`).
+  A **Haplotypes** box holds the disco-walks spotlight and a per-walk list (loaded on
+  demand — the same full-walk graph disco uses). On the hosted locus browser the walks
+  are anonymised to `unknown`, so they show as "Walk 1, 2, …" ("Walk", not
+  "Haplotype", since several of these fragments can belong to the same haplotype); on
+  the `/gfa` viewer their real sample names are kept. It's the paused counterpart to
+  disco-walks: hover a row to preview its path, click to pin one or several in their
+  own colours for side-by-side comparison, or from the node inspector restrict the list
+  to the walks through a clicked node. Each row also has a **straighten** (📐) toggle —
+  a layout mode that pins that one walk's off-reference segments to a single horizontal
+  track a clear gap *below* the reference, laid out left-to-right in walk order so its
+  alt alleles read as a second genome-browser track anchored near the reference nodes
+  they branch from. The bubbles hanging directly off that walk get permission to settle
+  down beside the track (a bounded BFS through non-backbone neighbours, exempt from the
+  usual "stay above the line" push), while every unrelated bubble keeps force-relaxing
+  above the reference (`straightenPath` in `forceLayout.ts`). Straightening and
+  disco-walks compose: straighten by one walk, then start disco to watch every other
+  walk blink through that fixed arrangement.
 
   Clicking a node (or a skip arc) **freezes** its highlight, so you can move off and
   pan/zoom around exploring what's connected. When a highlighted bubble or walk

@@ -368,10 +368,57 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	}
 
+	// --- Straighten one chosen haplotype into a track below the reference ---
+	// The chosen walk's off-backbone segments are pinned to a single horizontal line
+	// a clear gap *below* the reference. `straightenY` is that line (component 0's
+	// baseline is 0); `straightenSet` is the segments that land on it. The bubbles
+	// hanging directly off the walk (a bounded BFS through non-backbone neighbours)
+	// get *permission to settle down beside it* — seeded and pulled toward the track
+	// rather than being held above with every other bubble — so the walk reads as a
+	// self-contained lower track with its own local variation, while unrelated bubbles
+	// keep force-relaxing above the reference as usual.
+	const straightenY = (MAX_DEPTH_OFFSET + 1.5) * bubbleYStep;
+	const straightenSet = new Set<string>();
+	if (opts.straightenPath) {
+		for (const step of opts.straightenPath) {
+			if (chainById.has(step.id) && !assignedSegIds.has(step.id)) straightenSet.add(step.id);
+		}
+	}
+	const belowLineSegs = new Set<string>();
+	if (straightenSet.size > 0) {
+		const BELOW_MAX_HOPS = 6;
+		const BELOW_MAX_SEGS = 3000;
+		const q: string[] = [];
+		const hop = new Map<string, number>();
+		for (const s of straightenSet) {
+			hop.set(s, 0);
+			q.push(s);
+		}
+		let head = 0;
+		while (head < q.length && belowLineSegs.size < BELOW_MAX_SEGS) {
+			const cur = q[head++];
+			const d = hop.get(cur)!;
+			if (d >= BELOW_MAX_HOPS) continue;
+			for (const nb of adjacency.get(cur) ?? []) {
+				// Don't cross the reference (its nodes are the fixed anchors) and don't
+				// re-file a straightened segment or one already reached.
+				if (assignedSegIds.has(nb) || straightenSet.has(nb) || hop.has(nb)) continue;
+				hop.set(nb, d + 1);
+				belowLineSegs.add(nb);
+				q.push(nb);
+				if (belowLineSegs.size >= BELOW_MAX_SEGS) break;
+			}
+		}
+	}
+	// Node ids seeded on the lower side, exempt from the one-sided "stay above" push.
+	const belowLineNodeIds = new Set<string>();
+
 	for (const chain of chains) {
 		if (assignedSegIds.has(chain.segId)) continue;
+		if (straightenSet.has(chain.segId)) continue; // pinned onto the track below (later)
 		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
-		const sign = opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
+		const below = belowLineSegs.has(chain.segId);
+		const sign = below ? 1 : opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
 		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
 		// Depth has to grow the offset sub-linearly and stop growing at some point.
 		// Multiplying by hops directly meant a deep BFS (routine in an
@@ -380,7 +427,9 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		// else into a band. sqrt spaces the first few levels clearly and the cap
 		// keeps the tail bounded.
 		const depth = Math.min(Math.sqrt(anchor.hops), MAX_DEPTH_OFFSET);
-		const baseY = anchor.y + sign * depth * bubbleYStep;
+		// Below-line bubbles seed at the straighten track and are pulled to it; every
+		// other bubble fans out from the reference by BFS depth as before.
+		const baseY = below ? straightenY : anchor.y + sign * depth * bubbleYStep;
 
 		chain.nodeIds.forEach((nodeId, i) => {
 			const node = nodesById.get(nodeId)!;
@@ -397,22 +446,19 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				node.anchorX = anchor.x + i * opts.unitEdgeLength;
 			}
 			node.targetY = baseY;
+			if (below) belowLineNodeIds.add(nodeId);
 		});
 	}
 
-	// --- Straighten one chosen haplotype above the reference ---
-	// Pin the walk's off-backbone segments to a single horizontal line a clear gap
-	// above the reference, laid out left-to-right in traversal order. Backbone
-	// segments in the walk aren't moved (they belong on the reference line); they
-	// just advance the horizontal cursor to their right edge, so the alt run that
-	// follows starts right at the reference node it branches from — "near its
-	// reference connection". The gap clears the tallest floating bubble so the
-	// straightened track never tangles with the force-relaxed ones.
-	if (opts.straightenPath && opts.straightenPath.length > 0) {
-		const straightenY = -(MAX_DEPTH_OFFSET + 1.5) * bubbleYStep; // component 0 baseline is 0
+	if (straightenSet.size > 0) {
+		// Pin the walk's off-backbone segments along the track, left-to-right in
+		// traversal order. Backbone segments in the walk aren't moved (they belong on
+		// the reference line); they just advance the horizontal cursor to their right
+		// edge, so the alt run that follows starts right at the reference node it
+		// branches from — "near its reference connection".
 		let cursorX = 0;
 		let haveCursor = false;
-		for (const step of opts.straightenPath) {
+		for (const step of opts.straightenPath!) {
 			const chain = chainById.get(step.id);
 			if (!chain) continue;
 			if (assignedSegIds.has(step.id)) {
@@ -426,7 +472,6 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				}
 				continue;
 			}
-			// An alt segment: pin its chain along the straighten line.
 			const numEdges = chain.nodeIds.length - 1;
 			const spanLength = chainPxLength.get(step.id) ?? Math.max(1, numEdges) * opts.unitEdgeLength;
 			const startX = haveCursor ? cursorX : 0;
@@ -472,6 +517,15 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			if (node.fy != null) continue; // backbone nodes are fixed, exempt
 			const dy = node.y - node.componentBaselineY;
 			const absDy = Math.abs(dy);
+			// Bubbles that belong to the straightened lower track are held below the
+			// reference (off the line), not pushed back up through it.
+			if (belowLineNodeIds.has(node.id)) {
+				if (dy < minBaselineClearance) {
+					const target = node.componentBaselineY + minBaselineClearance;
+					node.vy = (node.vy ?? 0) + (target - node.y) * BASELINE_PUSH_GAIN * alpha;
+				}
+				continue;
+			}
 			// One-sided: anything that has drifted below the line is pushed back up
 			// through it, not away from it, so the space below stays clear.
 			if (opts.bubblesAbove && dy > -minBaselineClearance) {
