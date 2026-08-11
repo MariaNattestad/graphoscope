@@ -149,8 +149,10 @@ const MAX_DEPTH_OFFSET = 3;
 /** Pull back toward the reference x a bubble attaches to (stops long sideways
  * drift). Kept gentle: too strong and every node in a bubble collapses onto the
  * single attachment x, stacking them into one vertical line instead of letting
- * the link forces open the bubble out horizontally. */
-const ANCHOR_X_STRENGTH = 0.07;
+ * charge repulsion and the link forces open the bubble out horizontally where
+ * there's room. Lowered from 0.07 so a bubble fans out into its available space
+ * rather than reading as a hard vertical stack over its reference node. */
+const ANCHOR_X_STRENGTH = 0.03;
 /** Only nodes this close to the backbone get that pull — see where it's set. */
 const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
@@ -518,12 +520,17 @@ function makeBubbleRepelForce(ctx: BubbleRepelCtx): (alpha: number) => void {
 		}
 	}
 	const active = clusterNodes.filter((g) => g.length > 0);
-	// Target separation between bubble centroids scales with bubble size.
-	const minGap = ctx.unit * 14;
+	const minGap = ctx.unit * 6;
 	return (alpha: number) => {
 		if (active.length < 2) return;
+		// Each tick, recompute each bubble's centroid and its *radius* — the mean
+		// distance of its nodes from that centroid. Using the real radius (not a
+		// node-count proxy) is what stops a small bubble settling inside a big one:
+		// the target gap between two bubbles is r_i + r_j + minGap, so a small
+		// cluster is pushed clear of a large cluster's actual footprint.
 		const cx: number[] = [];
 		const cy: number[] = [];
+		const radius: number[] = [];
 		for (const group of active) {
 			let sx = 0;
 			let sy = 0;
@@ -531,26 +538,35 @@ function makeBubbleRepelForce(ctx: BubbleRepelCtx): (alpha: number) => void {
 				sx += n.x;
 				sy += n.y;
 			}
-			cx.push(sx / group.length);
-			cy.push(sy / group.length);
+			const mx = sx / group.length;
+			const my = sy / group.length;
+			let sr = 0;
+			for (const n of group) sr += Math.hypot(n.x - mx, n.y - my);
+			cx.push(mx);
+			cy.push(my);
+			radius.push(sr / group.length);
 		}
 		for (let i = 0; i < active.length; i++) {
 			for (let j = i + 1; j < active.length; j++) {
 				let dx = cx[i] - cx[j];
 				let dy = cy[i] - cy[j];
 				let dist = Math.hypot(dx, dy) || 0.01;
-				const want = minGap + Math.sqrt(active[i].length + active[j].length) * ctx.unit;
+				const want = radius[i] + radius[j] + minGap;
 				if (dist >= want) continue;
-				const push = ((want - dist) / dist) * alpha * 0.5;
-				dx *= push;
-				dy *= push;
+				// Split the correction between the two bubbles, weighted lightly toward
+				// moving the smaller one (fewer nodes) so the layout stays stable.
+				const push = ((want - dist) / dist) * alpha * 0.9;
+				const wi = active[j].length / (active[i].length + active[j].length);
+				const wj = 1 - wi;
+				const ux = dx * push;
+				const uy = dy * push;
 				for (const n of active[i]) {
-					n.vx = (n.vx ?? 0) + dx;
-					n.vy = (n.vy ?? 0) + dy;
+					n.vx = (n.vx ?? 0) + ux * wi;
+					n.vy = (n.vy ?? 0) + uy * wi;
 				}
 				for (const n of active[j]) {
-					n.vx = (n.vx ?? 0) - dx;
-					n.vy = (n.vy ?? 0) - dy;
+					n.vx = (n.vx ?? 0) - ux * wj;
+					n.vy = (n.vy ?? 0) - uy * wj;
 				}
 			}
 		}

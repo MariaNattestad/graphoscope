@@ -24,7 +24,6 @@ export type LayoutFamily = 'anchored' | 'free';
 export type LayoutMode =
 	// reference-anchored
 	| 'classic'
-	| 'ribbon'
 	| 'naive'
 	| 'bubble-repel'
 	// reference-free
@@ -92,22 +91,10 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bendNodes: false
 	},
 	{
-		id: 'ribbon',
-		label: 'Ribbon',
-		family: 'anchored',
-		blurb: 'Classic, but with smooth curved strands. For clean publication figures.',
-		bubblesAbove: true,
-		anchorToReference: true,
-		avoidBaseline: true,
-		bubbleRepel: false,
-		bendNodes: true
-	},
-	{
 		id: 'naive',
-		label: 'Naive',
+		label: 'Naïve',
 		family: 'anchored',
-		blurb:
-			'The reference on a straight axis, but bubbles left to spread freely on both sides — not stacked, not pushed off the line. Graphoscope’s original look.',
+		blurb: 'The reference on a straight axis, but otherwise a simple force-directed layout.',
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
@@ -119,7 +106,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Bubble-repel',
 		family: 'anchored',
 		blurb: 'Anchored to the reference, but neighbouring bubbles push apart so each reads on its own.',
-		bubblesAbove: false,
+		bubblesAbove: true,
 		anchorToReference: false,
 		avoidBaseline: true,
 		bubbleRepel: true,

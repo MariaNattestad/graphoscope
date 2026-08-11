@@ -266,6 +266,11 @@
 		const e = seg?.walkEnds ?? 0;
 		return s === 0 && e === 0 ? null : { starts: s, ends: e };
 	});
+	// The endpoints panel (walks starting/ending here) carries its own "Increase
+	// context & re-query" button plus the fuller explanation, so when it's showing
+	// the bubble/walk exit notes above it drop their duplicate button and keep just
+	// the note text.
+	const hasEndpointSection = $derived(!!endpointCounts || endpoints.length > 0);
 
 	const adapted = $derived(gfaToGraph(gfa, { referenceSample }));
 
@@ -1587,7 +1592,7 @@
 										<span class="ni-exit-note">↳ leaves the locus — a strand of this bubble is
 											chopped at the window edge (highlighted dashed).</span
 										>
-										{#if onRequestMoreContext}
+										{#if onRequestMoreContext && !hasEndpointSection}
 											<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
 												Increase context &amp; re-query
 											</button>
@@ -1614,7 +1619,7 @@
 										<span class="ni-exit-note">↳ leaves the locus — a walk through this node is
 											chopped at the window edge (highlighted dashed).</span
 										>
-										{#if onRequestMoreContext}
+										{#if onRequestMoreContext && !hasEndpointSection}
 											<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
 												Increase context &amp; re-query
 											</button>
