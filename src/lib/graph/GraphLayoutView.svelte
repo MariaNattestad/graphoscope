@@ -596,6 +596,10 @@
 		if (hoverMode !== 'walk') return null;
 		if (hoveredSkip) return { type: 'skip', key: hoveredSkip };
 		if (hoveredNode) return { type: 'node', id: hoveredNode };
+		// While disco is cycling, don't keep the *frozen* (clicked) selection lit —
+		// its static walk highlight would sit on top of and hide the disco spotlight.
+		// A live hover above still previews, so you can still inspect during disco.
+		if (disco) return null;
 		if (selectedSkip) return { type: 'skip', key: selectedSkip.key };
 		if (selected) return { type: 'node', id: selected };
 		return null;
