@@ -19,7 +19,14 @@
 	const fixture = $derived<Fixture>(
 		ALL_FIXTURES.find((f) => f.id === selectedId) ?? ALL_FIXTURES[0]
 	);
-	const parsed = $derived(parseGfa(fixture.gfaText));
+	// Held raw (not $state/$derived) so the parsed graph stays plain objects: the
+	// layout worker structured-clones it, and a deep-proxied graph (reused walk
+	// step objects become Proxies) throws DataCloneError on postMessage — the same
+	// reason the main route holds its gfa as $state.raw.
+	let parsed = $state.raw<Gfa>(parseGfa(ALL_FIXTURES[0].gfaText));
+	$effect(() => {
+		parsed = parseGfa(fixture.gfaText);
+	});
 
 	// The reduced GFA text itself, capped for display.
 	let reducedText = $state('');
@@ -29,7 +36,7 @@
 			(reducedText.split('\n').length > REDUCED_LINES ? '\n…' : '')
 	);
 
-	let reduced = $state<Gfa | null>(null);
+	let reduced = $state.raw<Gfa | null>(null);
 	let running = $state(false);
 	let error = $state<string | null>(null);
 	let elapsedMs = $state<number | null>(null);
@@ -165,14 +172,21 @@
 	<div class="compare">
 		<section class="panel">
 			<h2 class="panel-title">Original · {parsed.segments.size} nodes</h2>
-			<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} />
+			<!-- GraphLayoutView fills its parent's height (height:100% chain), so it
+			     needs a height-bounded box here — the app shell provides one, the
+			     playground's normal document flow doesn't. -->
+			<div class="graph-embed">
+				<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} />
+			</div>
 		</section>
 		<section class="panel">
 			<h2 class="panel-title">
 				Simplified · {reduced ? reduced.segments.size : '…'} nodes
 			</h2>
 			{#if reduced}
-				<GraphLayoutView gfa={reduced} referenceSample={fixture.referenceSample} />
+				<div class="graph-embed">
+					<GraphLayoutView gfa={reduced} referenceSample={fixture.referenceSample} />
+				</div>
 			{:else}
 				<p class="muted small">{running ? 'reducing…' : 'no result'}</p>
 			{/if}
@@ -273,6 +287,10 @@
 	.compare .panel {
 		margin-bottom: 1rem;
 		min-width: 0;
+	}
+	/* Height-bounded box so the embedded GraphLayoutView's height:100% resolves. */
+	.graph-embed {
+		height: 560px;
 	}
 	.pass {
 		color: #15803d;

@@ -1,7 +1,8 @@
-import { forceCollide, forceLink, forceManyBody, forceSimulation } from 'd3-force';
+import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX } from 'd3-force';
 import type { GfaGraph } from './types';
-import { buildAdjacency, computeBackbones } from './backbone';
+import { buildAdjacency, computeBackbones, type Backbone } from './backbone';
 import { stableUnit } from './prng';
+import { getModeConfig, type LayoutMode, type RefFreeParams } from './layoutModes';
 
 /**
  * Layout approach: each segment becomes a *chain* of sub-nodes whose total
@@ -38,6 +39,9 @@ export interface SimNode {
 	 * up against the baseline. Undefined for backbone nodes (which are pinned). */
 	anchorX?: number;
 	targetY?: number;
+	/** Free-layout 'flow' mode only: the x this node is pulled toward, derived from
+	 * its graph distance from a component endpoint (see seedLayered). */
+	targetX?: number;
 }
 
 interface SimLink {
@@ -99,8 +103,21 @@ export interface LayoutOptions {
 	 * default; turning it off gives the older, freer relaxation where the link
 	 * forces open bubbles out into more organic shapes. */
 	anchorToReference?: boolean;
+	/** (Anchored modes) push bubble nodes clear of the reference line so nothing
+	 * overlaps it. On by default; off lets the relaxation drift across the line —
+	 * part of the freer, older "naive" look. */
+	avoidBaseline?: boolean;
+	/** (Anchored modes) let alt bubbles fan out horizontally into the space over
+	 * their neighbouring reference nodes instead of stacking into a tight column
+	 * above their attachment point. */
+	spread?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
+	/** Which named layout mode to use. Anchored modes ('classic', 'spread', 'naive')
+	 * lay out along the reference backbone; free modes ('simple-force', 'stringy',
+	 * 'flow', 'layered', 'radial') ignore the backbone for positioning and run a
+	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'classic'. */
+	mode?: LayoutMode;
 	/** Straighten one chosen haplotype: pin its non-backbone segments to a single
 	 * horizontal line above the reference, laid out left-to-right in walk order so
 	 * that walk's alt alleles read as a second genome-browser track anchored near
@@ -111,14 +128,16 @@ export interface LayoutOptions {
 	straightenPath?: { id: string; orient: '+' | '-' }[];
 }
 
-const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'straightenPath'>> = {
+const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'straightenPath'>> = {
 	targetTotalSubNodes: 2500,
 	maxEdgesPerSegment: 60,
 	unitEdgeLength: 18,
 	iterations: 350,
 	bendNodes: true,
 	bubblesAbove: false,
-	anchorToReference: true
+	anchorToReference: true,
+	avoidBaseline: true,
+	spread: false
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -142,19 +161,457 @@ const STRAIGHTEN_GAP_STEPS = 1.35;
 /** Pull back toward the reference x a bubble attaches to (stops long sideways
  * drift). Kept gentle: too strong and every node in a bubble collapses onto the
  * single attachment x, stacking them into one vertical line instead of letting
- * the link forces open the bubble out horizontally. */
-const ANCHOR_X_STRENGTH = 0.07;
+ * charge repulsion and the link forces open the bubble out horizontally where
+ * there's room. Lowered from 0.07 so a bubble fans out into its available space
+ * rather than reading as a hard vertical stack over its reference node. */
+const ANCHOR_X_STRENGTH = 0.03;
 /** Only nodes this close to the backbone get that pull — see where it's set. */
 const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
 const SPREAD_Y_STRENGTH = 0.15;
+/** 'spread' mode only: how wide a horizontal band, as a multiple of the attached
+ * reference node's own on-screen span, each bubble's alt segments are scattered
+ * across — 1.0 reaches ~halfway across the neighbouring reference nodes. */
+const SPREAD_BAND_FACTOR = 1.0;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
 /** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
 const BASELINE_PUSH_GAIN = 0.3;
 
+// ============================================================================
+// Reference-free layout
+//
+// The anchored path below pins a backbone to a straight axis and hangs
+// everything off it. The free modes instead give the force simulation a
+// mode-specific seed and force mix and let the graph settle into its own shape,
+// with no reference axis. They reuse the same segment chains, structural links
+// and bend nodes — only the seeding and the forces differ.
+// ============================================================================
+
+interface FreeCtx {
+	graph: GfaGraph;
+	nodesById: Map<string, SimNode>;
+	chains: SegmentChain[];
+	chainById: Map<string, SegmentChain>;
+	structuralLinkPaths: LayoutResult['structuralLinkPaths'];
+	links: SimLink[];
+	chainPxLength: Map<string, number>;
+	unit: number;
+	iterations: number;
+	params: RefFreeParams;
+}
+
+/** Lay a segment's sub-node chain out as a short strand of its true length
+ * through `center`, oriented along `angle`, so the simulation starts from a
+ * strand with real extent instead of a collapsed point it then has to unfold. */
+function placeChain(
+	chain: SegmentChain,
+	cx: number,
+	cy: number,
+	angle: number,
+	span: number,
+	unit: number,
+	nodesById: Map<string, SimNode>
+) {
+	const numEdges = chain.nodeIds.length - 1;
+	const dx = Math.cos(angle);
+	const dy = Math.sin(angle);
+	chain.nodeIds.forEach((id, i) => {
+		const t = numEdges === 0 ? 0 : i / numEdges - 0.5;
+		const node = nodesById.get(id)!;
+		node.x = cx + dx * t * span + stableUnit(id) * 4;
+		node.y = cy + dy * t * span + stableUnit(id + ':y') * 4;
+		node.componentBaselineY = cy;
+	});
+}
+
+function spanOf(ctx: FreeCtx, chain: SegmentChain): number {
+	return ctx.chainPxLength.get(chain.segId) ?? (chain.nodeIds.length - 1) * ctx.unit;
+}
+
+/** Unweighted BFS from `start` over the adjacency, returning hop distance to
+ * every reachable node and the parent tree. */
+function bfsHops(
+	start: string,
+	adjacency: Map<string, Set<string>>
+): { dist: Map<string, number>; parent: Map<string, string | null> } {
+	const dist = new Map<string, number>([[start, 0]]);
+	const parent = new Map<string, string | null>([[start, null]]);
+	const queue = [start];
+	let head = 0;
+	while (head < queue.length) {
+		const node = queue[head++];
+		const d = dist.get(node)!;
+		for (const nb of adjacency.get(node) ?? []) {
+			if (dist.has(nb)) continue;
+			dist.set(nb, d + 1);
+			parent.set(nb, node);
+			queue.push(nb);
+		}
+	}
+	return { dist, parent };
+}
+
+/** Farthest key in a distance map (breaks ties by id for determinism). */
+function farthest(dist: Map<string, number>): string {
+	let best = '';
+	let bestD = -1;
+	for (const [id, d] of dist) {
+		if (d > bestD || (d === bestD && id < best)) {
+			bestD = d;
+			best = id;
+		}
+	}
+	return best;
+}
+
+// --- Seeding strategies ------------------------------------------------------
+
+/** Scatter each chain over a square whose side grows with node count, so a big
+ * graph starts spread out (a tiny box would pack everything into one dense knot
+ * that charge repulsion then has to slowly blow apart). Used by simple-force /
+ * stringy. */
+function seedScatter(ctx: FreeCtx) {
+	const n = Math.max(1, ctx.chains.length);
+	const spread = Math.max(ctx.unit * 20, ctx.unit * 3 * Math.sqrt(n));
+	for (const chain of ctx.chains) {
+		const cx = stableUnit(chain.segId + ':cx') * 2 * spread;
+		const cy = stableUnit(chain.segId + ':cy') * 2 * spread;
+		const angle = stableUnit(chain.segId + ':ang') * 2 * Math.PI;
+		placeChain(chain, cx, cy, angle, spanOf(ctx, chain), ctx.unit, ctx.nodesById);
+	}
+}
+
+/** Left-to-right layering by graph distance: a double BFS sweep finds a
+ * diameter endpoint per component, and each segment's x is its hop-distance from
+ * that endpoint. A forceX (added in runFreeLayout) then holds that x while
+ * charge/collide spread the layers vertically. Reference-free direction. */
+function seedLayered(ctx: FreeCtx) {
+	const adjacency = buildAdjacency(ctx.graph);
+	const seen = new Set<string>();
+	const xStep = ctx.unit * 7;
+	// Process one connected component at a time, stacking them vertically.
+	let componentRow = 0;
+	for (const startSeg of adjacency.keys()) {
+		if (seen.has(startSeg)) continue;
+		// Double sweep: arbitrary -> farthest A -> distances from A across this component.
+		const sweep1 = bfsHops(startSeg, adjacency);
+		const endA = farthest(sweep1.dist);
+		const { dist } = bfsHops(endA, adjacency);
+		let maxHop = 0;
+		for (const [id, d] of dist) {
+			seen.add(id);
+			if (d > maxHop) maxHop = d;
+		}
+		const rowY = componentRow * ctx.unit * 40;
+		for (const chain of ctx.chains) {
+			const hop = dist.get(chain.segId);
+			if (hop === undefined) continue;
+			const cx = hop * xStep;
+			const cy = rowY + stableUnit(chain.segId + ':ly') * ctx.unit * 12;
+			placeChain(chain, cx, cy, 0, spanOf(ctx, chain), ctx.unit, ctx.nodesById);
+			for (const id of chain.nodeIds) ctx.nodesById.get(id)!.targetX = cx;
+		}
+		componentRow++;
+	}
+}
+
+/** Sugiyama-style layered ("DAG") seeding. Three classic phases:
+ *
+ *  1. Rank assignment — each segment's x is its longest incoming path in bp
+ *     (cycle-safe: a back-edge into a node still on the DFS stack contributes 0).
+ *     This is the reference-free analogue of a genomic axis: left-to-right by
+ *     sequence distance, but with no chosen reference path.
+ *  2. Crossing minimisation — bucket segments into layers by rank, then run the
+ *     barycenter heuristic (repeatedly reorder each layer by the mean row of its
+ *     neighbours in the adjacent layer), which is the standard, cheap way to cut
+ *     edge crossings in layered drawings.
+ *  3. Coordinate assignment — place each chain horizontally across its rank at the
+ *     row the ordering earned it. A light relaxation afterwards only resolves
+ *     overlaps; forceX holds the ranks (see runFreeLayout).
+ */
+function seedDag(ctx: FreeCtx) {
+	const unit = ctx.unit;
+	const has = (id: string) => ctx.chainById.has(id);
+	const span = (id: string) => ctx.chainPxLength.get(id) ?? unit;
+
+	// Directed predecessors/successors over the segments we're laying out.
+	const pred = new Map<string, string[]>();
+	const succ = new Map<string, string[]>();
+	for (const chain of ctx.chains) {
+		pred.set(chain.segId, []);
+		succ.set(chain.segId, []);
+	}
+	for (const link of ctx.graph.links) {
+		if (link.from === link.to || !has(link.from) || !has(link.to)) continue;
+		succ.get(link.from)!.push(link.to);
+		pred.get(link.to)!.push(link.from);
+	}
+
+	// (1) Rank x = longest incoming path in bp. DFS with a visiting stack breaks
+	// cycles by treating an edge back into an in-progress node as distance 0.
+	const xOf = new Map<string, number>();
+	const state = new Map<string, 0 | 1 | 2>();
+	const longestX = (seg: string): number => {
+		const s = state.get(seg) ?? 0;
+		if (s === 2) return xOf.get(seg)!;
+		if (s === 1) return 0;
+		state.set(seg, 1);
+		let x = 0;
+		for (const p of pred.get(seg) ?? []) x = Math.max(x, longestX(p) + span(p));
+		xOf.set(seg, x);
+		state.set(seg, 2);
+		return x;
+	};
+	for (const chain of ctx.chains) longestX(chain.segId);
+
+	// (2) Bucket into layers by rank, then barycenter-order each layer.
+	const sortedSpans = ctx.chains.map((c) => span(c.segId)).sort((a, b) => a - b);
+	const bucket = Math.max(unit * 4, sortedSpans[sortedSpans.length >> 1] ?? unit * 4);
+	const layerOf = new Map<string, number>();
+	const layers = new Map<number, string[]>();
+	for (const chain of ctx.chains) {
+		const L = Math.round((xOf.get(chain.segId) ?? 0) / bucket);
+		layerOf.set(chain.segId, L);
+		(layers.get(L) ?? layers.set(L, []).get(L)!).push(chain.segId);
+	}
+	const layerKeys = [...layers.keys()].sort((a, b) => a - b);
+	for (const k of layerKeys) layers.get(k)!.sort(); // deterministic start
+	const rowOf = new Map<string, number>();
+	const reindex = () => {
+		for (const k of layerKeys) layers.get(k)!.forEach((s, i) => rowOf.set(s, i));
+	};
+	reindex();
+	const barycenter = (seg: string, neigh: Map<string, string[]>): number => {
+		let sum = 0;
+		let n = 0;
+		for (const m of neigh.get(seg) ?? []) {
+			const r = rowOf.get(m);
+			if (r !== undefined) {
+				sum += r;
+				n++;
+			}
+		}
+		return n ? sum / n : (rowOf.get(seg) ?? 0);
+	};
+	for (let iter = 0; iter < 8; iter++) {
+		const down = iter % 2 === 0;
+		const order = down ? layerKeys : [...layerKeys].reverse();
+		const from = down ? pred : succ;
+		for (const k of order) {
+			const arr = layers.get(k)!;
+			const key = new Map(arr.map((s) => [s, barycenter(s, from)]));
+			arr.sort((a, b) => key.get(a)! - key.get(b)! || (a < b ? -1 : 1));
+			arr.forEach((s, i) => rowOf.set(s, i));
+		}
+	}
+
+	// (3) Lay each chain out horizontally across its rank, at its ordered row.
+	const rowGap = unit * 5;
+	for (const chain of ctx.chains) {
+		const L = layerOf.get(chain.segId)!;
+		const layerArr = layers.get(L)!;
+		const cy = (rowOf.get(chain.segId)! - (layerArr.length - 1) / 2) * rowGap;
+		const x0 = xOf.get(chain.segId) ?? 0;
+		const sp = span(chain.segId);
+		const numEdges = chain.nodeIds.length - 1;
+		chain.nodeIds.forEach((id, i) => {
+			const t = numEdges === 0 ? 0 : i / numEdges;
+			const node = ctx.nodesById.get(id)!;
+			node.x = x0 + t * sp + stableUnit(id) * 2;
+			node.y = cy + stableUnit(id + ':y') * 2;
+			node.componentBaselineY = cy;
+			node.targetX = node.x; // forceX holds the rank during relaxation
+		});
+	}
+}
+
+/** Grow outward from a central node: BFS depth becomes radius, and each node's
+ * angle is fixed by its order of first discovery, so the graph fans out into a
+ * radial overview of its topology. */
+function seedRadial(ctx: FreeCtx) {
+	const adjacency = buildAdjacency(ctx.graph);
+	const seen = new Set<string>();
+	const ringGap = ctx.unit * 14;
+	let clusterCenterX = 0;
+	for (const startSeg of adjacency.keys()) {
+		if (seen.has(startSeg)) continue;
+		// Center = midpoint of the diameter (farthest-from-farthest), a stable hub.
+		const sweep1 = bfsHops(startSeg, adjacency);
+		const endA = farthest(sweep1.dist);
+		const sweepA = bfsHops(endA, adjacency);
+		const endB = farthest(sweepA.dist);
+		// Walk halfway back along A->B to find a central node.
+		let center = endB;
+		const halfWay = Math.floor((sweepA.dist.get(endB) ?? 0) / 2);
+		while ((sweepA.dist.get(center) ?? 0) > halfWay) {
+			const p = sweepA.parent.get(center);
+			if (!p) break;
+			center = p;
+		}
+		const { dist } = bfsHops(center, adjacency);
+		const members: string[] = [];
+		let maxDepth = 0;
+		for (const [id, d] of dist) {
+			seen.add(id);
+			members.push(id);
+			if (d > maxDepth) maxDepth = d;
+		}
+		members.sort();
+		const total = members.length;
+		const radius = (maxDepth + 1) * ringGap;
+		const originX = clusterCenterX;
+		members.forEach((segId, i) => {
+			const chain = ctx.chainById.get(segId);
+			if (!chain) return;
+			const depth = dist.get(segId) ?? 0;
+			const angle = (i / total) * 2 * Math.PI;
+			const r = depth * ringGap;
+			const cx = originX + Math.cos(angle) * r;
+			const cy = Math.sin(angle) * r;
+			placeChain(chain, cx, cy, angle + Math.PI / 2, spanOf(ctx, chain), ctx.unit, ctx.nodesById);
+		});
+		clusterCenterX += radius * 2 + ringGap * 4;
+	}
+}
+
+/** Bend nodes seed at the midpoint of their (now-positioned) endpoints, nudged
+ * off the straight line so the simulation has a direction to bow the curve. */
+function seedBendNodes(ctx: FreeCtx) {
+	for (const path of ctx.structuralLinkPaths) {
+		if (!path.bendNode) continue;
+		const bend = ctx.nodesById.get(path.bendNode)!;
+		const a = ctx.nodesById.get(path.fromNode)!;
+		const b = ctx.nodesById.get(path.toNode)!;
+		bend.x = (a.x + b.x) / 2 + stableUnit(path.bendNode) * ctx.unit;
+		bend.y = (a.y + b.y) / 2 + stableUnit(path.bendNode + ':y') * ctx.unit;
+	}
+}
+
+/** Seed + relax a reference-free layout in place, mutating node positions. */
+function runFreeLayout(ctx: FreeCtx) {
+	const { params } = ctx;
+
+	if (params.seeding === 'layered') seedLayered(ctx);
+	else if (params.seeding === 'radial') seedRadial(ctx);
+	else if (params.seeding === 'dag') seedDag(ctx);
+	else seedScatter(ctx);
+
+	seedBendNodes(ctx);
+
+	// Loosen (or tighten) the structural links per mode. Chain links keep their
+	// bp-proportional distance and full strength, so segments stay their true
+	// length; only the links *between* segments get the mode's spread treatment.
+	for (const link of ctx.links) {
+		if (link.kind !== 'structural') continue;
+		link.distance *= params.linkDistanceScale;
+		link.strength = params.linkStrength;
+	}
+
+	const nodeArray = Array.from(ctx.nodesById.values());
+
+	const simulation = forceSimulation(nodeArray)
+		.force(
+			'link',
+			forceLink<SimNode, SimLink>(ctx.links)
+				.id((d) => d.id)
+				.distance((d) => d.distance)
+				.strength((d) => d.strength)
+		)
+		.force('charge', forceManyBody().strength(params.charge).distanceMax(params.chargeDistanceMax))
+		.force('collide', forceCollide(params.collide))
+		.force(
+			'flowX',
+			// Both the force-relaxed 'flow' (layered) and the deterministic 'layered'
+			// (dag) modes pin each node's rank on x while the sim tidies the rows.
+			params.seeding === 'layered' || params.seeding === 'dag'
+				? forceX<SimNode>((d) => d.targetX ?? d.x).strength((d) =>
+						d.targetX != null ? (params.seeding === 'dag' ? 0.6 : 0.35) : 0
+					)
+				: null
+		)
+		.stop();
+
+	const n = Math.max(1, ctx.iterations);
+	for (let i = 0; i < n; i++) simulation.tick();
+}
+
+/** Build the LayoutResult from finished node positions. Shared by the anchored
+ * and free paths: only how the nodes got their positions differs; the coverage
+ * heatmap, segment lengths and backbone metadata are computed the same way.
+ * `backboneSegIds` is the set of segments to draw as the reference axis — the
+ * anchored path fills it; free modes pass an empty set so nothing is singled out
+ * as a backbone. */
+function assembleResult(
+	graph: GfaGraph,
+	backbones: Backbone[],
+	backboneSegIds: Set<string>,
+	nodesById: Map<string, SimNode>,
+	chains: SegmentChain[],
+	structuralLinkPaths: LayoutResult['structuralLinkPaths']
+): LayoutResult {
+	const backboneInfo: BackboneInfo[] = backbones.map((b, i) => ({
+		componentId: i,
+		source: b.source,
+		totalLength: b.totalLength
+	}));
+
+	const segmentLengths = new Map<string, number>();
+	for (const seg of graph.segments.values()) segmentLengths.set(seg.id, seg.length);
+
+	// Coverage heatmap: distinct non-reference walks per segment. In reduced mode
+	// this is precomputed server-side (segment.coverage from the `WC` tag), since
+	// the non-reference walks were aggregated away to save memory. Otherwise (full
+	// GFA / playground fixtures) count it from the walks directly, excluding
+	// whichever path was picked as the backbone for its component.
+	const pathCoverage = new Map<string, number>();
+	const hasReducedCoverage = [...graph.segments.values()].some((s) => s.coverage !== undefined);
+	if (hasReducedCoverage) {
+		for (const seg of graph.segments.values()) pathCoverage.set(seg.id, seg.coverage ?? 0);
+	} else {
+		const backboneSourceNames = new Set(
+			backbones.filter((b) => b.source !== 'synthetic').map((b) => b.source)
+		);
+		for (const path of graph.paths) {
+			if (backboneSourceNames.has(path.name)) continue;
+			const seenInThisPath = new Set<string>();
+			for (const step of path.steps) {
+				if (seenInThisPath.has(step.id)) continue; // count each path once per segment
+				seenInThisPath.add(step.id);
+				pathCoverage.set(step.id, (pathCoverage.get(step.id) ?? 0) + 1);
+			}
+		}
+	}
+	let maxPathCoverage = 0;
+	for (const count of pathCoverage.values()) maxPathCoverage = Math.max(maxPathCoverage, count);
+
+	return {
+		nodesById,
+		chains,
+		structuralLinkPaths,
+		backbones: backboneInfo,
+		backboneSegIds,
+		segmentLengths,
+		pathCoverage,
+		maxPathCoverage
+	};
+}
+
 export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}): LayoutResult {
-	const opts = { ...DEFAULTS, ...options };
+	// The mode config supplies the defaults for the anchored primitives (one-sided,
+	// anchoring, bendiness), so calling with just `{ mode }` already gives that
+	// mode's look. Explicit options still win — that's how the UI's advanced
+	// overrides and rough-mode's straight-strand force apply on top.
+	const modeCfg = getModeConfig(options.mode);
+	const opts = {
+		...DEFAULTS,
+		bubblesAbove: modeCfg.bubblesAbove,
+		anchorToReference: modeCfg.anchorToReference,
+		avoidBaseline: modeCfg.avoidBaseline,
+		spread: modeCfg.spread,
+		bendNodes: modeCfg.bendNodes,
+		...options
+	};
 
 	// Pixels-per-bp is fixed from the REFERENCE backbone's own bp total, not the
 	// whole graph's summed segment length. Keying it to all segments meant the
@@ -266,6 +723,27 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		structuralLinkPaths.push({ from: link.from, to: link.to, fromNode, toNode, bendNode });
 	}
 
+	// --- Mode dispatch ---
+	// Free modes ignore the backbone for positioning: seed + relax the same nodes
+	// under a mode-specific force mix, and report an empty backboneSegIds so
+	// nothing is drawn as the reference axis. Anchored modes fall through to the
+	// backbone-anchored path below. (modeCfg resolved above.)
+	if (modeCfg.family === 'free' && modeCfg.refFree) {
+		runFreeLayout({
+			graph,
+			nodesById,
+			chains,
+			chainById,
+			structuralLinkPaths,
+			links,
+			chainPxLength,
+			unit: opts.unitEdgeLength,
+			iterations: opts.iterations,
+			params: modeCfg.refFree
+		});
+		return assembleResult(graph, backbones, new Set(), nodesById, chains, structuralLinkPaths);
+	}
+
 	// --- Backbone anchoring ---
 	const assignedSegIds = new Set<string>();
 	const anchors = new Map<string, { x: number; y: number }>(); // segId -> midpoint, for BFS seeding
@@ -325,31 +803,41 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// midpoint to every bubble. Using the real link endpoint instead removes the
 	// systematic leftward lean. fromNode/toNode were resolved above and now carry
 	// real positions from backbone assignment.
-	const attach = new Map<string, { x: number; y: number; n: number }>();
+	// `refSpan` is the on-screen length of the reference node this bubble hangs off,
+	// carried along so 'spread' mode can fan the bubble across a band sized to the
+	// local reference spacing (see the seeding loop).
+	const attach = new Map<string, { x: number; y: number; refSpan: number; n: number }>();
 	for (const path of structuralLinkPaths) {
 		const fromBB = assignedSegIds.has(path.from);
 		const toBB = assignedSegIds.has(path.to);
 		if (fromBB === toBB) continue; // both or neither on backbone → no direct anchor
 		const bbNode = nodesById.get(fromBB ? path.fromNode : path.toNode)!;
 		const seg = fromBB ? path.to : path.from;
+		const refSegId = fromBB ? path.from : path.to;
+		const refSpan = chainPxLength.get(refSegId) ?? opts.unitEdgeLength;
 		const a = attach.get(seg);
 		if (a) {
 			a.x += bbNode.x;
 			a.y += bbNode.y;
+			a.refSpan += refSpan;
 			a.n++;
 		} else {
-			attach.set(seg, { x: bbNode.x, y: bbNode.y, n: 1 });
+			attach.set(seg, { x: bbNode.x, y: bbNode.y, refSpan, n: 1 });
 		}
 	}
 
 	// --- Seed off-backbone (bubble) nodes near their nearest backbone attachment ---
 	const adjacency = buildAdjacency(graph);
-	const nearestAnchor = new Map<string, { x: number; y: number; hops: number }>();
+	const nearestAnchor = new Map<string, { x: number; y: number; refSpan: number; hops: number }>();
 	const bfsQueue: string[] = [];
 	for (const segId of assignedSegIds) {
 		const anchor = anchors.get(segId);
 		if (!anchor) continue;
-		nearestAnchor.set(segId, { ...anchor, hops: 0 });
+		nearestAnchor.set(segId, {
+			...anchor,
+			refSpan: chainPxLength.get(segId) ?? opts.unitEdgeLength,
+			hops: 0
+		});
 		bfsQueue.push(segId);
 	}
 	// Directly-attached bubbles get their true attachment point (mean, if a
@@ -358,7 +846,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// overwrite them — it only fills in segments deeper than one hop.
 	for (const [segId, a] of attach) {
 		if (nearestAnchor.has(segId)) continue;
-		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, hops: 1 });
+		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, refSpan: a.refSpan / a.n, hops: 1 });
 		bfsQueue.push(segId);
 	}
 	let qHead = 0;
@@ -367,7 +855,12 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const currentInfo = nearestAnchor.get(current)!;
 		for (const neighbor of adjacency.get(current) ?? []) {
 			if (nearestAnchor.has(neighbor)) continue;
-			nearestAnchor.set(neighbor, { x: currentInfo.x, y: currentInfo.y, hops: currentInfo.hops + 1 });
+			nearestAnchor.set(neighbor, {
+				x: currentInfo.x,
+				y: currentInfo.y,
+				refSpan: currentInfo.refSpan,
+				hops: currentInfo.hops + 1
+			});
 			bfsQueue.push(neighbor);
 		}
 	}
@@ -420,10 +913,22 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	for (const chain of chains) {
 		if (assignedSegIds.has(chain.segId)) continue;
 		if (straightenSet.has(chain.segId)) continue; // pinned onto the track below (later)
-		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
+		const anchor = nearestAnchor.get(chain.segId) ?? {
+			x: 0,
+			y: 0,
+			refSpan: opts.unitEdgeLength,
+			hops: 1
+		};
 		const below = belowLineSegs.has(chain.segId);
 		const sign = below ? 1 : opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
-		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
+		// 'spread' mode gives each alt segment a deterministic horizontal slot within a
+		// band ~as wide as the neighbouring reference nodes, so a bubble's parallel
+		// strands fan out across that space instead of stacking over one x. The slot
+		// biases both the seed and the x-anchor below; charge repulsion fills the rest.
+		const spreadOffset = opts.spread
+			? stableUnit(chain.segId + ':spread') * anchor.refSpan * SPREAD_BAND_FACTOR
+			: 0;
+		const baseX = anchor.x + spreadOffset + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
 		// Depth has to grow the offset sub-linearly and stop growing at some point.
 		// Multiplying by hops directly meant a deep BFS (routine in an
 		// unsimplified graph) flung a handful of nodes thousands of units out —
@@ -447,7 +952,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			// single x and left their links stretching across the canvas. Past a
 			// hop or two, the link forces place a node better than its anchor can.
 			if (anchor.hops <= ANCHOR_X_MAX_HOPS) {
-				node.anchorX = anchor.x + i * opts.unitEdgeLength;
+				node.anchorX = anchor.x + spreadOffset + i * opts.unitEdgeLength;
 			}
 			node.targetY = baseY;
 			if (below) belowLineNodeIds.add(nodeId);
@@ -578,58 +1083,22 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				.distance((d) => d.distance)
 				.strength((d) => d.strength)
 		)
-		.force('charge', forceManyBody().strength(-40).distanceMax(400))
+		// 'spread' mode wants bubbles to fan wider, so it repels harder and reaches
+		// further than the tight default.
+		.force(
+			'charge',
+			forceManyBody()
+				.strength(opts.spread ? -70 : -40)
+				.distanceMax(opts.spread ? 600 : 400)
+		)
 		.force('collide', forceCollide(8))
 		.force('anchor', opts.anchorToReference ? anchorForce : null)
-		.force('avoidBaseline', avoidBaselineForce)
+		// 'naive' turns this off, letting bubbles drift across the reference line.
+		.force('avoidBaseline', opts.avoidBaseline ? avoidBaselineForce : null)
 		.stop();
 
 	const n = Math.max(1, opts.iterations);
 	for (let i = 0; i < n; i++) simulation.tick();
 
-	const backboneInfo: BackboneInfo[] = backbones.map((b, i) => ({
-		componentId: i,
-		source: b.source,
-		totalLength: b.totalLength
-	}));
-
-	const segmentLengths = new Map<string, number>();
-	for (const seg of graph.segments.values()) segmentLengths.set(seg.id, seg.length);
-
-	// Coverage heatmap: distinct non-reference walks per segment. In reduced mode
-	// this is precomputed server-side (segment.coverage from the `WC` tag), since
-	// the non-reference walks were aggregated away to save memory. Otherwise (full
-	// GFA / playground fixtures) count it from the walks directly, excluding
-	// whichever path was picked as the backbone for its component.
-	const pathCoverage = new Map<string, number>();
-	const hasReducedCoverage = [...graph.segments.values()].some((s) => s.coverage !== undefined);
-	if (hasReducedCoverage) {
-		for (const seg of graph.segments.values()) pathCoverage.set(seg.id, seg.coverage ?? 0);
-	} else {
-		const backboneSourceNames = new Set(
-			backbones.filter((b) => b.source !== 'synthetic').map((b) => b.source)
-		);
-		for (const path of graph.paths) {
-			if (backboneSourceNames.has(path.name)) continue;
-			const seenInThisPath = new Set<string>();
-			for (const step of path.steps) {
-				if (seenInThisPath.has(step.id)) continue; // count each path once per segment
-				seenInThisPath.add(step.id);
-				pathCoverage.set(step.id, (pathCoverage.get(step.id) ?? 0) + 1);
-			}
-		}
-	}
-	let maxPathCoverage = 0;
-	for (const count of pathCoverage.values()) maxPathCoverage = Math.max(maxPathCoverage, count);
-
-	return {
-		nodesById,
-		chains,
-		structuralLinkPaths,
-		backbones: backboneInfo,
-		backboneSegIds: assignedSegIds,
-		segmentLengths,
-		pathCoverage,
-		maxPathCoverage
-	};
+	return assembleResult(graph, backbones, assignedSegIds, nodesById, chains, structuralLinkPaths);
 }

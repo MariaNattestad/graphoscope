@@ -246,9 +246,18 @@
 	let prevK = 1;
 	let prevY = 0;
 
-	// World -> screen (CSS px). x rides the zoom, y rides the fixed fit.
+	// The anisotropic (x-only) zoom above is a genome-browser convenience: it only
+	// makes sense when x *is* a genomic axis. Reference-free layouts have no such
+	// axis (no refCoords) and read as ordinary 2-D graphs, where the expected
+	// gesture is a uniform zoom of both axes together. In that mode y rides the same
+	// transform as x, and d3-zoom's transform.y is used directly.
+	const uniformZoom = $derived(!refCoords || refCoords.size === 0);
+
+	// World -> screen (CSS px). x always rides the zoom; y rides the zoom too in
+	// uniform mode, or the fixed vertical fit in the anisotropic (reference) mode.
 	const toScreenX = (wx: number) => transform.x + wx * transform.k;
-	const toScreenY = (wy: number) => panY + wy * baseScaleY;
+	const toScreenY = (wy: number) =>
+		uniformZoom ? transform.y + wy * transform.k : panY + wy * baseScaleY;
 
 	let hoveredSegment: string | null = $state(null);
 	let hoverPos: { x: number; y: number } = $state({ x: 0, y: 0 });
@@ -385,6 +394,18 @@
 		// playground graphs have none), and the gene band only when there are genes.
 		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
 		const fitH = Math.max(1, height - axisBand - geneBand);
+
+		// Reference-free: one scale fits both axes, and the whole transform (x, y, k)
+		// comes straight from d3-zoom — no separate vertical fit to track.
+		if (uniformZoom) {
+			const k = Math.min((width / graphWidth) * padding, (fitH / graphHeight) * padding, 8);
+			const next = zoomIdentity.translate(width / 2 - cx * k, fitH / 2 - cy * k).scale(k);
+			prevK = k;
+			prevY = next.y;
+			select(canvasEl).call(zoomBehavior.transform, next);
+			return;
+		}
+
 		const scaleX = Math.min((width / graphWidth) * padding, 8);
 		baseScaleY = Math.min((fitH / graphHeight) * padding, 8);
 		panY = fitH / 2 - cy * baseScaleY;
@@ -605,6 +626,10 @@
 	// in telemetry) if a locus ever violates them, since it would silently corrupt
 	// the axis and gene-track positions rather than crash.
 	function checkRefInvariants() {
+		// Reference-free layout modes don't draw a coordinate axis (no backbone), and
+		// deliberately don't place segments in genomic order — so the monotonicity /
+		// coverage invariants below don't apply and would just spam the console.
+		if (layout.backboneSegIds.size === 0) return;
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
 
@@ -1123,10 +1148,11 @@
 		const sel = select(canvasEl);
 		zoomBehavior.on('zoom', (event) => {
 			const t = event.transform;
-			// A gesture that changed k is a zoom, and zoom must not move the graph
-			// vertically. Anything else is a pan, and d3's y delta there is already
-			// in screen pixels, so it carries over to panY as-is.
-			if (t.k === prevK) panY += t.y - prevY;
+			// Uniform mode uses d3's transform (x, y, k) verbatim. In the anisotropic
+			// reference mode, a gesture that changed k is a zoom, and zoom must not move
+			// the graph vertically; anything else is a pan, and d3's y delta there is
+			// already in screen pixels, so it carries over to panY as-is.
+			if (!uniformZoom && t.k === prevK) panY += t.y - prevY;
 			prevK = t.k;
 			prevY = t.y;
 			transform = t;

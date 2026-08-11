@@ -11,6 +11,13 @@
 	import type { GfaGraph } from './types';
 	import type { LayoutResult, SimNode, SegmentChain } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
+	import {
+		LAYOUT_MODES,
+		DEFAULT_LAYOUT_MODE,
+		getModeConfig,
+		type LayoutMode,
+		type LayoutFamily
+	} from './layoutModes';
 	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
@@ -82,16 +89,22 @@
 		onRequestMoreContext?: () => void;
 	} = $props();
 
-	// Keep all non-reference bubbles on one side (above the reference line). This
-	// halves the vertical spread and, more importantly, leaves the space below the
-	// backbone free for the gene track. On by default; the toggle restores the
-	// symmetric two-sided layout.
-	let bubblesAbove = $state(true);
+	// The primary layout control: a named mode that picks a whole recipe (family +
+	// all the per-mode force tuning, resolved in the worker). Persists across graphs
+	// so the user can keep comparing the same view. See layoutModes.ts.
+	let layoutMode = $state<LayoutMode>(DEFAULT_LAYOUT_MODE);
+	const modeCfg = $derived(getModeConfig(layoutMode));
+	// Reference-free modes have no backbone, so they show no coordinate axis and no
+	// gene track (see the GraphCanvas props below).
+	const referenceFree = $derived(modeCfg.family === 'free');
 
-	// Pull bubbles horizontally onto their reference node's x, so each stacks into a
-	// tidy vertical column (on by default). Off gives the older, freer relaxation
-	// where the link forces open bubbles out into more organic sideways shapes.
-	let anchorToReference = $state(true);
+	// Switch layout family from the segmented control, landing on that family's
+	// first mode (so "Reference-free" always has a sensible default selected).
+	function selectFamily(fam: LayoutFamily) {
+		if (modeCfg.family === fam) return;
+		const first = LAYOUT_MODES.find((m) => m.family === fam);
+		if (first) layoutMode = first.id;
+	}
 
 	// Mark strands chopped at the subgraph boundary with a fading cue toward the
 	// frame edge (the direction the haplotype leaves the locus), so they don't read
@@ -129,7 +142,7 @@
 
 	// The two most-used controls (Simplify + disco) stay pinned; everything else
 	// lives behind these sidebar tabs so the panel stays short as options grow.
-	let ctlTab = $state<'layout' | 'nodes' | 'view'>('layout');
+	let ctlTab = $state<'layout' | 'view'>('layout');
 
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
@@ -144,13 +157,15 @@
 	// light/dark theme (the picker itself sits on the app's light chrome regardless).
 	const legendTheme = $derived(lightMode ? lightTheme : darkTheme);
 
-	// Which fields to surface about a node — in the hover tooltip and in the panel
-	// under the graph when one is clicked (where the sequence gets room to be read
-	// and copied). Sequence is off by default since it can be long.
+	// Which fields to surface about a node — in the hover tooltip and in the floating
+	// inspector opened by clicking one. Configured from the gear menu inside that
+	// inspector. Sequence is off by default since it can be long.
 	let showNodeId = $state(true);
 	let showLength = $state(true);
 	let showCoords = $state(true);
 	let showSequence = $state(false);
+	// Whether the inspector's field-settings popover (the gear menu) is open.
+	let nodeFieldsOpen = $state(false);
 
 	let selected = $state<string | null>(null);
 
@@ -203,7 +218,8 @@
 		straightenKey = null;
 		// …and any node-restricted haplotype filter (node ids won't carry over).
 		nodeFilter = null;
-		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
+		// A new graph gets a fresh automatic rough/full decision (see effectiveRough)
+		// and drops any per-graph layout overrides back to the mode's defaults.
 		roughOverride = null;
 		// Hover highlighting doesn't carry across graphs (node ids won't match), and the
 		// walk-graph load is per-graph.
@@ -251,6 +267,11 @@
 		const e = seg?.walkEnds ?? 0;
 		return s === 0 && e === 0 ? null : { starts: s, ends: e };
 	});
+	// The endpoints panel (walks starting/ending here) carries its own "Increase
+	// context & re-query" button plus the fuller explanation, so when it's showing
+	// the bubble/walk exit notes above it drop their duplicate button and keep just
+	// the note text.
+	const hasEndpointSection = $derived(!!endpointCounts || endpoints.length > 0);
 
 	const adapted = $derived(gfaToGraph(gfa, { referenceSample }));
 
@@ -624,6 +645,10 @@
 		if (hoverMode !== 'walk') return null;
 		if (hoveredSkip) return { type: 'skip', key: hoveredSkip };
 		if (hoveredNode) return { type: 'node', id: hoveredNode };
+		// While disco is cycling, don't keep the *frozen* (clicked) selection lit —
+		// its static walk highlight would sit on top of and hide the disco spotlight.
+		// A live hover above still previews, so you can still inspect during disco.
+		if (disco) return null;
 		if (selectedSkip) return { type: 'skip', key: selectedSkip.key };
 		if (selected) return { type: 'node', id: selected };
 		return null;
@@ -1075,8 +1100,7 @@
 	// The layout-shaping options the user controls — anything here changes the
 	// computed layout, so it's the worker's options.
 	interface LayoutKnobs {
-		bubblesAbove: boolean;
-		anchorToReference: boolean;
+		mode: LayoutMode;
 		// The rough override only (null = auto); the effective rough decision folds in
 		// each graph's own node count inside layoutOptionsFor.
 		roughOverride: boolean | null;
@@ -1084,25 +1108,18 @@
 		// so picking/clearing it re-runs the layout (it changes node positions).
 		straightenPath: DiscoStep[] | null;
 	}
-	const layoutKnobs = $derived<LayoutKnobs>({
-		bubblesAbove,
-		anchorToReference,
-		roughOverride,
-		straightenPath
-	});
+	const layoutKnobs = $derived<LayoutKnobs>({ mode: layoutMode, roughOverride, straightenPath });
 
-	// Worker options for a graph of this size. Rough mode (past the threshold unless
-	// overridden) collapses each segment to one node, cuts iterations and drops bend
-	// nodes — the much faster layout (see the 62.5s→6.0s note); otherwise full quality.
+	// Worker options for a graph of this size. The mode carries the whole recipe —
+	// the worker resolves every force knob from it (see layoutModes.ts / forceLayout)
+	// — so all we add here is the reference sample and the rough/quality decision.
+	// Rough mode (past the threshold unless overridden) collapses each segment to one
+	// node, cuts iterations and forces straight links — the much faster layout (see
+	// the 62.5s→6.0s note); otherwise the mode's full-quality settings apply.
 	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
-		const { bubblesAbove, anchorToReference, roughOverride, straightenPath } = knobs;
+		const { mode, roughOverride, straightenPath } = knobs;
 		const rough = roughOverride ?? keptSegments > LARGE_LAYOUT_NODE_THRESHOLD;
-		const base = {
-			referenceSample,
-			bubblesAbove,
-			anchorToReference,
-			straightenPath: straightenPath ?? undefined
-		};
+		const base = { referenceSample, mode, straightenPath: straightenPath ?? undefined };
 		return rough
 			? { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
 			: base;
@@ -1174,7 +1191,7 @@
 		const parts: string[] = [];
 		if (showNodeId) parts.push(segId);
 		if (showLength) parts.push(`${(seg?.length ?? 0).toLocaleString()} bp`);
-		if (showCoords) {
+		if (showCoords && !referenceFree) {
 			const c = refCoords.get(segId);
 			if (c) parts.push(fmtCoord(c));
 		}
@@ -1440,84 +1457,70 @@
 			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
 			<nav class="ctl-tabs">
 				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
-				<button class:active={ctlTab === 'nodes'} onclick={() => (ctlTab = 'nodes')}>Nodes</button>
 				<button class:active={ctlTab === 'view'} onclick={() => (ctlTab = 'view')}>View</button>
 			</nav>
 			<section class="group ctl-panel">
 				{#if ctlTab === 'layout'}
-					<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
-						<input type="checkbox" bind:checked={bubblesAbove} />
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">One-sided</span>
-							<span class="switch-sub">bubbles above the line</span>
-						</span>
-					</label>
-					<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
-						<input type="checkbox" bind:checked={anchorToReference} />
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Anchor to reference</span>
-							<span class="switch-sub">stack bubbles over their ref nodes</span>
-						</span>
-					</label>
-					<label
-						class="switch"
-						title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
-					>
-						<input
-							type="checkbox"
-							checked={!effectiveRough}
-							onchange={() => (roughOverride = !effectiveRough)}
-						/>
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Bendy nodes</span>
-							<span class="switch-sub">
-								{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
-									? ' · auto'
-									: ''}
+						<div class="mode-picker">
+							<div class="family-toggle" role="group" aria-label="Layout family">
+								<button
+									type="button"
+									class:active={modeCfg.family === 'anchored'}
+									onclick={() => selectFamily('anchored')}
+									title="Lay the graph out along the reference — a coordinate axis with variant bubbles hanging off it."
+								>
+									Reference-based
+								</button>
+								<button
+									type="button"
+									class:active={modeCfg.family === 'free'}
+									onclick={() => selectFamily('free')}
+									title="Ignore the reference and let the graph settle into its own shape. No coordinates or gene track."
+								>
+									Reference-free
+								</button>
+							</div>
+							<select class="mode-select" bind:value={layoutMode} aria-label="Layout mode">
+								{#each LAYOUT_MODES.filter((m) => m.family === modeCfg.family) as m (m.id)}
+									<option value={m.id}>{m.label}</option>
+								{/each}
+							</select>
+							<p class="mode-blurb">{modeCfg.blurb}</p>
+						</div>
+					{:else if ctlTab === 'view'}
+						{#if !referenceFree}
+							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
+								<input type="checkbox" bind:checked={showGeneTrack} />
+								<span class="track"><span class="thumb"></span></span>
+								<span class="switch-text">
+									<span class="switch-label">Gene track</span>
+									<span class="switch-sub">annotated transcripts under the graph</span>
+								</span>
+							</label>
+						{/if}
+						<label class="switch" title="Render on a white background for figures and publication screenshots">
+							<input type="checkbox" bind:checked={lightMode} />
+							<span class="track"><span class="thumb"></span></span>
+							<span class="switch-text">
+								<span class="switch-label">Light mode</span>
+								<span class="switch-sub">white background for figures</span>
 							</span>
-						</span>
-					</label>
-					<label
-						class="switch"
-						title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
-					>
-						<input type="checkbox" bind:checked={showExits} />
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Off-locus exits</span>
-							<span class="switch-sub">cue chopped-off haplotypes</span>
-						</span>
-					</label>
-				{:else if ctlTab === 'nodes'}
-					<span class="group-hint">shown on hover, and under the graph when clicked</span>
-					<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
-					<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
-					<label class="check"><input type="checkbox" bind:checked={showCoords} /> Coordinates</label>
-					<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
-				{:else if ctlTab === 'view'}
-					<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
-						<input type="checkbox" bind:checked={showGeneTrack} />
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Gene track</span>
-							<span class="switch-sub">annotated transcripts under the graph</span>
-						</span>
-					</label>
-					<label class="switch" title="Render on a white background for figures and publication screenshots">
-						<input type="checkbox" bind:checked={lightMode} />
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Light mode</span>
-							<span class="switch-sub">white background for figures</span>
-						</span>
-					</label>
-					<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
-						⬇ Export PNG
-					</button>
-				{/if}
+						</label>
+						<label
+							class="switch"
+							title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
+						>
+							<input type="checkbox" bind:checked={showExits} />
+							<span class="track"><span class="thumb"></span></span>
+							<span class="switch-text">
+								<span class="switch-label">Off-locus exits</span>
+								<span class="switch-sub">cue chopped-off haplotypes</span>
+							</span>
+						</label>
+						<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
+							⬇ Export PNG
+						</button>
+					{/if}
 			</section>
 			</div>
 		</aside>
@@ -1527,9 +1530,9 @@
 				{#if displayLayout}
 					<GraphCanvas
 						layout={displayLayout}
-						{refCoords}
-						{genes}
-						showGenes={showGeneTrack}
+						refCoords={referenceFree ? undefined : refCoords}
+						genes={referenceFree ? [] : genes}
+						showGenes={showGeneTrack && !referenceFree}
 						discoPaths={overlayPaths}
 						highlightSegments={bubbleHighlight}
 						onHoverSegment={(id) => (hoveredNode = id)}
@@ -1667,17 +1670,46 @@
 							<span class="insp-title">
 								{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
 							</span>
-							<button class="insp-close" onclick={() => (inspectorDismissed = true)} aria-label="Close">×</button>
+							<div class="insp-actions">
+								<button
+									class="insp-gear"
+									class:active={nodeFieldsOpen}
+									onclick={() => (nodeFieldsOpen = !nodeFieldsOpen)}
+									aria-label="Node fields"
+									aria-expanded={nodeFieldsOpen}
+									title="Choose which fields to show about a node"
+								>
+									⚙
+								</button>
+								<button class="insp-close" onclick={() => (inspectorDismissed = true)} aria-label="Close">×</button>
+							</div>
 						</div>
 
-						{#if showLength || showCoords}
+						{#if nodeFieldsOpen}
+							<!-- The old "Nodes" tab, now a per-inspector settings popover: picks which
+							     fields appear here and in the hover tooltip. -->
+							<div class="ni-settings">
+								<span class="ni-settings-title">Show fields</span>
+								<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
+								<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
+								<label class="check" class:disabled={referenceFree}>
+									<input type="checkbox" bind:checked={showCoords} disabled={referenceFree} /> Coordinates
+								</label>
+								<label class="check"><input type="checkbox" bind:checked={showSequence} /> Sequence</label>
+								{#if referenceFree}
+									<span class="ni-settings-note">Coordinates need a reference-based layout.</span>
+								{/if}
+							</div>
+						{/if}
+
+						{#if showLength || (showCoords && !referenceFree)}
 							<div class="ni-fields">
 								{#if showLength}
 									<span class="ni-field"
 										><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
 									>
 								{/if}
-								{#if showCoords}
+								{#if showCoords && !referenceFree}
 									<span class="ni-field"
 										><span class="ni-key">coords</span>
 										{#if selectedCoord}<span class="coord">{fmtCoord(selectedCoord)}</span>{:else}<span
@@ -1718,7 +1750,7 @@
 										<span class="ni-exit-note">↳ leaves the locus — a strand of this bubble is
 											chopped at the window edge (highlighted dashed).</span
 										>
-										{#if onRequestMoreContext}
+										{#if onRequestMoreContext && !hasEndpointSection}
 											<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
 												Increase context &amp; re-query
 											</button>
@@ -1745,7 +1777,7 @@
 										<span class="ni-exit-note">↳ leaves the locus — a walk through this node is
 											chopped at the window edge (highlighted dashed).</span
 										>
-										{#if onRequestMoreContext}
+										{#if onRequestMoreContext && !hasEndpointSection}
 											<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
 												Increase context &amp; re-query
 											</button>
@@ -2039,11 +2071,6 @@
 		border: 1px solid #eee;
 		border-radius: 8px;
 	}
-	.group-hint {
-		font-size: 0.7rem;
-		color: #9aa0aa;
-		margin-top: -0.2rem;
-	}
 	.group-title {
 		font-size: 0.68rem;
 		font-weight: 700;
@@ -2196,6 +2223,117 @@
 	}
 	.switch-sub.note {
 		color: #b45309;
+	}
+	/* A disabled switch (a reference-anchored knob while a free mode is active). */
+	.switch:has(input:disabled) {
+		cursor: default;
+		opacity: 0.45;
+	}
+
+	/* Layout-mode picker — the primary layout control. */
+	.mode-picker {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	/* Segmented control that splits the two layout families apart. */
+	.family-toggle {
+		display: flex;
+		gap: 2px;
+		padding: 2px;
+		background: #eef0f3;
+		border-radius: 8px;
+	}
+	.family-toggle button {
+		flex: 1;
+		font: inherit;
+		font-size: 0.72rem;
+		font-weight: 600;
+		padding: 0.35rem 0.3rem;
+		border: none;
+		border-radius: 6px;
+		background: transparent;
+		color: #6b7280;
+		cursor: pointer;
+	}
+	.family-toggle button.active {
+		background: #fff;
+		color: #1a1a1a;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+	}
+	.family-toggle button:focus-visible {
+		outline: 2px solid #2563eb;
+		outline-offset: 1px;
+	}
+	.mode-select {
+		font: inherit;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid #cbd0d8;
+		border-radius: 7px;
+		background: #fff;
+		color: #222;
+		cursor: pointer;
+	}
+	.mode-select:focus-visible {
+		outline: 2px solid #2563eb;
+		outline-offset: 1px;
+	}
+	.mode-blurb {
+		margin: 0;
+		font-size: 0.74rem;
+		line-height: 1.35;
+		color: #6b7280;
+	}
+
+	/* Node-inspector header actions (gear + close) and the gear settings popover. */
+	.insp-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.15rem;
+	}
+	.insp-gear {
+		border: none;
+		background: transparent;
+		color: #9aa0aa;
+		font-size: 0.9rem;
+		line-height: 1;
+		padding: 0.1rem 0.2rem;
+		border-radius: 5px;
+		cursor: pointer;
+	}
+	.insp-gear:hover,
+	.insp-gear.active {
+		color: #e5e7eb;
+		background: rgba(255, 255, 255, 0.08);
+	}
+	.ni-settings {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		margin: 0.1rem 0 0.5rem;
+		padding: 0.5rem;
+		border-radius: 7px;
+		background: rgba(255, 255, 255, 0.05);
+	}
+	.ni-settings-title {
+		font-size: 0.68rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		color: #9aa0aa;
+	}
+	.ni-settings .check {
+		color: #d7dae0;
+		font-size: 0.8rem;
+	}
+	.ni-settings .check.disabled {
+		opacity: 0.45;
+		cursor: default;
+	}
+	.ni-settings-note {
+		font-size: 0.68rem;
+		line-height: 1.3;
+		color: #8b909a;
 	}
 
 	/* Named-haplotype panel (the /gfa page). */
