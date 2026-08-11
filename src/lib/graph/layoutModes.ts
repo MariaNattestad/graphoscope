@@ -24,8 +24,8 @@ export type LayoutFamily = 'anchored' | 'free';
 export type LayoutMode =
 	// reference-anchored
 	| 'classic'
+	| 'spread'
 	| 'naive'
-	| 'bubble-repel'
 	// reference-free
 	| 'simple-force'
 	| 'stringy'
@@ -47,8 +47,6 @@ export interface RefFreeParams {
 	collide: number;
 	/** Initial placement strategy before relaxation. */
 	seeding: 'scatter' | 'layered' | 'radial' | 'dag';
-	/** Add an inter-bubble repulsion force that pushes distinct bubble clusters apart. */
-	bubbleRepel: boolean;
 	/** Simulation iterations (defaults to the layout's own default when omitted). */
 	iterations?: number;
 }
@@ -69,8 +67,10 @@ export interface LayoutModeConfig {
 	/** Push bubbles clear of the reference line so nothing overlaps it. Off lets the
 	 * relaxation drift across the line (part of the "naive" older look). */
 	avoidBaseline: boolean;
-	/** Add an inter-bubble repulsion force so distinct variant bubbles keep apart. */
-	bubbleRepel: boolean;
+	/** Let alt bubbles fan out horizontally into the space over their neighbouring
+	 * reference nodes (up to ~halfway across each) instead of stacking into a tight
+	 * column above their attachment point. */
+	spread: boolean;
 	/** Whether to draw curved strands through bend nodes (both families honor this). */
 	bendNodes: boolean;
 	/** Tuning for free modes (undefined for anchored modes). */
@@ -81,13 +81,25 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 	// --- reference-anchored ---
 	{
 		id: 'classic',
-		label: 'Graphoscope classic',
+		label: 'Recommended',
 		family: 'anchored',
 		blurb: 'Straight reference axis, variant bubbles stacked above it. The genome-browser view.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
-		bubbleRepel: false,
+		spread: false,
+		bendNodes: false
+	},
+	{
+		id: 'spread',
+		label: 'Spread',
+		family: 'anchored',
+		blurb:
+			'Like Recommended, but bubbles fan out horizontally into the space over their neighbouring reference nodes instead of stacking into a tight column.',
+		bubblesAbove: true,
+		anchorToReference: true,
+		avoidBaseline: true,
+		spread: true,
 		bendNodes: false
 	},
 	{
@@ -98,19 +110,8 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		bubbleRepel: false,
+		spread: false,
 		bendNodes: false
-	},
-	{
-		id: 'bubble-repel',
-		label: 'Bubble-repel',
-		family: 'anchored',
-		blurb: 'Anchored to the reference, but neighbouring bubbles push apart so each reads on its own.',
-		bubblesAbove: true,
-		anchorToReference: false,
-		avoidBaseline: true,
-		bubbleRepel: true,
-		bendNodes: true
 	},
 	// --- reference-free ---
 	{
@@ -121,7 +122,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		bubbleRepel: false,
+		spread: false,
 		bendNodes: false,
 		refFree: {
 			charge: -34,
@@ -130,7 +131,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkStrength: 0.5,
 			collide: 8,
 			seeding: 'scatter',
-			bubbleRepel: false
 		}
 	},
 	{
@@ -141,7 +141,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		bubbleRepel: false,
+		spread: false,
 		bendNodes: true,
 		refFree: {
 			charge: -90,
@@ -150,7 +150,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkStrength: 0.12,
 			collide: 11,
 			seeding: 'scatter',
-			bubbleRepel: false
 		}
 	},
 	{
@@ -161,7 +160,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		bubbleRepel: false,
+		spread: false,
 		bendNodes: true,
 		refFree: {
 			charge: -40,
@@ -170,7 +169,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkStrength: 0.25,
 			collide: 9,
 			seeding: 'layered',
-			bubbleRepel: false
 		}
 	},
 	{
@@ -182,7 +180,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		bubbleRepel: false,
+		spread: false,
 		bendNodes: true,
 		refFree: {
 			charge: -14,
@@ -191,7 +189,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkStrength: 0.15,
 			collide: 8,
 			seeding: 'dag',
-			bubbleRepel: false,
 			iterations: 70
 		}
 	},
@@ -203,7 +200,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		bubbleRepel: false,
+		spread: false,
 		bendNodes: true,
 		refFree: {
 			charge: -50,
@@ -212,7 +209,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkStrength: 0.2,
 			collide: 9,
 			seeding: 'radial',
-			bubbleRepel: false
 		}
 	}
 ];

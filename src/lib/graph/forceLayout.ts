@@ -107,16 +107,16 @@ export interface LayoutOptions {
 	 * overlaps it. On by default; off lets the relaxation drift across the line —
 	 * part of the freer, older "naive" look. */
 	avoidBaseline?: boolean;
-	/** (Anchored modes) add an inter-bubble repulsion force so neighbouring variant
-	 * bubbles push apart instead of piling on top of one another. */
-	bubbleRepel?: boolean;
+	/** (Anchored modes) let alt bubbles fan out horizontally into the space over
+	 * their neighbouring reference nodes instead of stacking into a tight column
+	 * above their attachment point. */
+	spread?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
-	/** Which named layout mode to use. Anchored modes ('classic', 'ribbon',
-	 * 'naive', 'bubble-repel') lay out along the reference backbone; free modes
-	 * ('simple-force', 'stringy', 'flow', 'radial') ignore the backbone for
-	 * positioning and run a force simulation tuned per mode (see layoutModes.ts).
-	 * Defaults to 'classic'. */
+	/** Which named layout mode to use. Anchored modes ('classic', 'spread', 'naive')
+	 * lay out along the reference backbone; free modes ('simple-force', 'stringy',
+	 * 'flow', 'layered', 'radial') ignore the backbone for positioning and run a
+	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'classic'. */
 	mode?: LayoutMode;
 }
 
@@ -129,7 +129,7 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode'>> = {
 	bubblesAbove: false,
 	anchorToReference: true,
 	avoidBaseline: true,
-	bubbleRepel: false
+	spread: false
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -157,6 +157,10 @@ const ANCHOR_X_STRENGTH = 0.03;
 const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
 const SPREAD_Y_STRENGTH = 0.15;
+/** 'spread' mode only: how wide a horizontal band, as a multiple of the attached
+ * reference node's own on-screen span, each bubble's alt segments are scattered
+ * across — 1.0 reaches ~halfway across the neighbouring reference nodes. */
+const SPREAD_BAND_FACTOR = 1.0;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
 /** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
@@ -183,7 +187,6 @@ interface FreeCtx {
 	unit: number;
 	iterations: number;
 	params: RefFreeParams;
-	backboneSegIds: Set<string>;
 }
 
 /** Lay a segment's sub-node chain out as a short strand of its true length
@@ -254,8 +257,8 @@ function farthest(dist: Map<string, number>): string {
 
 /** Scatter each chain over a square whose side grows with node count, so a big
  * graph starts spread out (a tiny box would pack everything into one dense knot
- * that charge repulsion then has to slowly blow apart). Used by naive / stringy
- * / bubble-repel. */
+ * that charge repulsion then has to slowly blow apart). Used by simple-force /
+ * stringy. */
 function seedScatter(ctx: FreeCtx) {
 	const n = Math.max(1, ctx.chains.length);
 	const spread = Math.max(ctx.unit * 20, ctx.unit * 3 * Math.sqrt(n));
@@ -473,106 +476,6 @@ function seedBendNodes(ctx: FreeCtx) {
 	}
 }
 
-// --- Bubble-repel force ------------------------------------------------------
-
-/** Groups off-spine segments into "bubbles" (connected components once the
- * backbone segments are removed) and returns a d3 force that pushes each
- * bubble's centroid away from every other, so distinct variant bubbles don't
- * pile on top of one another. The backbone is used only to identify what a
- * bubble *is* — it doesn't anchor any position. Shared by the reference-free
- * bubble modes and the anchored 'bubble-repel' mode (where the backbone nodes
- * are pinned via fx/fy, so the force can't move them anyway). */
-interface BubbleRepelCtx {
-	graph: GfaGraph;
-	nodesById: Map<string, SimNode>;
-	chains: SegmentChain[];
-	backboneSegIds: Set<string>;
-	unit: number;
-}
-function makeBubbleRepelForce(ctx: BubbleRepelCtx): (alpha: number) => void {
-	const adjacency = buildAdjacency(ctx.graph);
-	// Cluster non-backbone segments over the non-backbone subgraph.
-	const clusterOf = new Map<string, number>();
-	let clusterCount = 0;
-	for (const segId of adjacency.keys()) {
-		if (ctx.backboneSegIds.has(segId) || clusterOf.has(segId)) continue;
-		const id = clusterCount++;
-		const queue = [segId];
-		clusterOf.set(segId, id);
-		let head = 0;
-		while (head < queue.length) {
-			const node = queue[head++];
-			for (const nb of adjacency.get(node) ?? []) {
-				if (ctx.backboneSegIds.has(nb) || clusterOf.has(nb)) continue;
-				clusterOf.set(nb, id);
-				queue.push(nb);
-			}
-		}
-	}
-	// Simulation nodes grouped by their segment's cluster (bend nodes excluded).
-	const clusterNodes: SimNode[][] = Array.from({ length: clusterCount }, () => []);
-	for (const chain of ctx.chains) {
-		const c = clusterOf.get(chain.segId);
-		if (c === undefined) continue;
-		for (const id of chain.nodeIds) {
-			const node = ctx.nodesById.get(id);
-			if (node) clusterNodes[c].push(node);
-		}
-	}
-	const active = clusterNodes.filter((g) => g.length > 0);
-	const minGap = ctx.unit * 6;
-	return (alpha: number) => {
-		if (active.length < 2) return;
-		// Each tick, recompute each bubble's centroid and its *radius* — the mean
-		// distance of its nodes from that centroid. Using the real radius (not a
-		// node-count proxy) is what stops a small bubble settling inside a big one:
-		// the target gap between two bubbles is r_i + r_j + minGap, so a small
-		// cluster is pushed clear of a large cluster's actual footprint.
-		const cx: number[] = [];
-		const cy: number[] = [];
-		const radius: number[] = [];
-		for (const group of active) {
-			let sx = 0;
-			let sy = 0;
-			for (const n of group) {
-				sx += n.x;
-				sy += n.y;
-			}
-			const mx = sx / group.length;
-			const my = sy / group.length;
-			let sr = 0;
-			for (const n of group) sr += Math.hypot(n.x - mx, n.y - my);
-			cx.push(mx);
-			cy.push(my);
-			radius.push(sr / group.length);
-		}
-		for (let i = 0; i < active.length; i++) {
-			for (let j = i + 1; j < active.length; j++) {
-				let dx = cx[i] - cx[j];
-				let dy = cy[i] - cy[j];
-				let dist = Math.hypot(dx, dy) || 0.01;
-				const want = radius[i] + radius[j] + minGap;
-				if (dist >= want) continue;
-				// Split the correction between the two bubbles, weighted lightly toward
-				// moving the smaller one (fewer nodes) so the layout stays stable.
-				const push = ((want - dist) / dist) * alpha * 0.9;
-				const wi = active[j].length / (active[i].length + active[j].length);
-				const wj = 1 - wi;
-				const ux = dx * push;
-				const uy = dy * push;
-				for (const n of active[i]) {
-					n.vx = (n.vx ?? 0) + ux * wi;
-					n.vy = (n.vy ?? 0) + uy * wi;
-				}
-				for (const n of active[j]) {
-					n.vx = (n.vx ?? 0) - ux * wj;
-					n.vy = (n.vy ?? 0) - uy * wj;
-				}
-			}
-		}
-	};
-}
-
 /** Seed + relax a reference-free layout in place, mutating node positions. */
 function runFreeLayout(ctx: FreeCtx) {
 	const { params } = ctx;
@@ -594,7 +497,6 @@ function runFreeLayout(ctx: FreeCtx) {
 	}
 
 	const nodeArray = Array.from(ctx.nodesById.values());
-	const bubbleRepel = params.bubbleRepel ? makeBubbleRepelForce(ctx) : null;
 
 	const simulation = forceSimulation(nodeArray)
 		.force(
@@ -616,7 +518,6 @@ function runFreeLayout(ctx: FreeCtx) {
 					)
 				: null
 		)
-		.force('bubbleRepel', bubbleRepel)
 		.stop();
 
 	const n = Math.max(1, ctx.iterations);
@@ -695,7 +596,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		bubblesAbove: modeCfg.bubblesAbove,
 		anchorToReference: modeCfg.anchorToReference,
 		avoidBaseline: modeCfg.avoidBaseline,
-		bubbleRepel: modeCfg.bubbleRepel,
+		spread: modeCfg.spread,
 		bendNodes: modeCfg.bendNodes,
 		...options
 	};
@@ -826,9 +727,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			chainPxLength,
 			unit: opts.unitEdgeLength,
 			iterations: opts.iterations,
-			params: modeCfg.refFree,
-			// Used only to tell bubbles apart in bubble-repel — never to anchor.
-			backboneSegIds: new Set(backbones.flatMap((b) => b.steps.map((s) => s.id)))
+			params: modeCfg.refFree
 		});
 		return assembleResult(graph, backbones, new Set(), nodesById, chains, structuralLinkPaths);
 	}
@@ -892,31 +791,41 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// midpoint to every bubble. Using the real link endpoint instead removes the
 	// systematic leftward lean. fromNode/toNode were resolved above and now carry
 	// real positions from backbone assignment.
-	const attach = new Map<string, { x: number; y: number; n: number }>();
+	// `refSpan` is the on-screen length of the reference node this bubble hangs off,
+	// carried along so 'spread' mode can fan the bubble across a band sized to the
+	// local reference spacing (see the seeding loop).
+	const attach = new Map<string, { x: number; y: number; refSpan: number; n: number }>();
 	for (const path of structuralLinkPaths) {
 		const fromBB = assignedSegIds.has(path.from);
 		const toBB = assignedSegIds.has(path.to);
 		if (fromBB === toBB) continue; // both or neither on backbone → no direct anchor
 		const bbNode = nodesById.get(fromBB ? path.fromNode : path.toNode)!;
 		const seg = fromBB ? path.to : path.from;
+		const refSegId = fromBB ? path.from : path.to;
+		const refSpan = chainPxLength.get(refSegId) ?? opts.unitEdgeLength;
 		const a = attach.get(seg);
 		if (a) {
 			a.x += bbNode.x;
 			a.y += bbNode.y;
+			a.refSpan += refSpan;
 			a.n++;
 		} else {
-			attach.set(seg, { x: bbNode.x, y: bbNode.y, n: 1 });
+			attach.set(seg, { x: bbNode.x, y: bbNode.y, refSpan, n: 1 });
 		}
 	}
 
 	// --- Seed off-backbone (bubble) nodes near their nearest backbone attachment ---
 	const adjacency = buildAdjacency(graph);
-	const nearestAnchor = new Map<string, { x: number; y: number; hops: number }>();
+	const nearestAnchor = new Map<string, { x: number; y: number; refSpan: number; hops: number }>();
 	const bfsQueue: string[] = [];
 	for (const segId of assignedSegIds) {
 		const anchor = anchors.get(segId);
 		if (!anchor) continue;
-		nearestAnchor.set(segId, { ...anchor, hops: 0 });
+		nearestAnchor.set(segId, {
+			...anchor,
+			refSpan: chainPxLength.get(segId) ?? opts.unitEdgeLength,
+			hops: 0
+		});
 		bfsQueue.push(segId);
 	}
 	// Directly-attached bubbles get their true attachment point (mean, if a
@@ -925,7 +834,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// overwrite them — it only fills in segments deeper than one hop.
 	for (const [segId, a] of attach) {
 		if (nearestAnchor.has(segId)) continue;
-		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, hops: 1 });
+		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, refSpan: a.refSpan / a.n, hops: 1 });
 		bfsQueue.push(segId);
 	}
 	let qHead = 0;
@@ -934,16 +843,33 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const currentInfo = nearestAnchor.get(current)!;
 		for (const neighbor of adjacency.get(current) ?? []) {
 			if (nearestAnchor.has(neighbor)) continue;
-			nearestAnchor.set(neighbor, { x: currentInfo.x, y: currentInfo.y, hops: currentInfo.hops + 1 });
+			nearestAnchor.set(neighbor, {
+				x: currentInfo.x,
+				y: currentInfo.y,
+				refSpan: currentInfo.refSpan,
+				hops: currentInfo.hops + 1
+			});
 			bfsQueue.push(neighbor);
 		}
 	}
 
 	for (const chain of chains) {
 		if (assignedSegIds.has(chain.segId)) continue;
-		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
+		const anchor = nearestAnchor.get(chain.segId) ?? {
+			x: 0,
+			y: 0,
+			refSpan: opts.unitEdgeLength,
+			hops: 1
+		};
 		const sign = opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
-		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
+		// 'spread' mode gives each alt segment a deterministic horizontal slot within a
+		// band ~as wide as the neighbouring reference nodes, so a bubble's parallel
+		// strands fan out across that space instead of stacking over one x. The slot
+		// biases both the seed and the x-anchor below; charge repulsion fills the rest.
+		const spreadOffset = opts.spread
+			? stableUnit(chain.segId + ':spread') * anchor.refSpan * SPREAD_BAND_FACTOR
+			: 0;
+		const baseX = anchor.x + spreadOffset + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
 		// Depth has to grow the offset sub-linearly and stop growing at some point.
 		// Multiplying by hops directly meant a deep BFS (routine in an
 		// unsimplified graph) flung a handful of nodes thousands of units out —
@@ -965,7 +891,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			// single x and left their links stretching across the canvas. Past a
 			// hop or two, the link forces place a node better than its anchor can.
 			if (anchor.hops <= ANCHOR_X_MAX_HOPS) {
-				node.anchorX = anchor.x + i * opts.unitEdgeLength;
+				node.anchorX = anchor.x + spreadOffset + i * opts.unitEdgeLength;
 			}
 			node.targetY = baseY;
 		});
@@ -1038,19 +964,6 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	}
 
-	// The anchored 'bubble-repel' mode adds inter-bubble repulsion on top of the
-	// pinned backbone; the backbone nodes are fixed (fx/fy) so the force can only
-	// move the bubbles apart, never the reference axis.
-	const bubbleRepel = opts.bubbleRepel
-		? makeBubbleRepelForce({
-				graph,
-				nodesById,
-				chains,
-				backboneSegIds: assignedSegIds,
-				unit: opts.unitEdgeLength
-			})
-		: null;
-
 	const simulation = forceSimulation(nodeArray)
 		.force(
 			'link',
@@ -1059,12 +972,18 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				.distance((d) => d.distance)
 				.strength((d) => d.strength)
 		)
-		.force('charge', forceManyBody().strength(-40).distanceMax(400))
+		// 'spread' mode wants bubbles to fan wider, so it repels harder and reaches
+		// further than the tight default.
+		.force(
+			'charge',
+			forceManyBody()
+				.strength(opts.spread ? -70 : -40)
+				.distanceMax(opts.spread ? 600 : 400)
+		)
 		.force('collide', forceCollide(8))
 		.force('anchor', opts.anchorToReference ? anchorForce : null)
 		// 'naive' turns this off, letting bubbles drift across the reference line.
 		.force('avoidBaseline', opts.avoidBaseline ? avoidBaselineForce : null)
-		.force('bubbleRepel', bubbleRepel)
 		.stop();
 
 	const n = Math.max(1, opts.iterations);
