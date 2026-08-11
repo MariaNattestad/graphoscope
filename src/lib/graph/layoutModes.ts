@@ -31,6 +31,7 @@ export type LayoutMode =
 	| 'simple-force'
 	| 'stringy'
 	| 'flow'
+	| 'layered'
 	| 'radial';
 
 /** How reference-free modes place and relax nodes. */
@@ -46,7 +47,7 @@ export interface RefFreeParams {
 	/** forceCollide radius (hard minimum separation between any two nodes). */
 	collide: number;
 	/** Initial placement strategy before relaxation. */
-	seeding: 'scatter' | 'layered' | 'radial';
+	seeding: 'scatter' | 'layered' | 'radial' | 'dag';
 	/** Add an inter-bubble repulsion force that pushes distinct bubble clusters apart. */
 	bubbleRepel: boolean;
 	/** Simulation iterations (defaults to the layout's own default when omitted). */
@@ -183,6 +184,28 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			collide: 9,
 			seeding: 'layered',
 			bubbleRepel: false
+		}
+	},
+	{
+		id: 'layered',
+		label: 'Layered (DAG)',
+		family: 'free',
+		blurb:
+			'Sugiyama-style layered drawing: ranks by graph distance with the rows ordered to minimise edge crossings. Best for DAG-like graphs.',
+		bubblesAbove: false,
+		anchorToReference: false,
+		avoidBaseline: false,
+		bubbleRepel: false,
+		bendNodes: true,
+		refFree: {
+			charge: -14,
+			chargeDistanceMax: 240,
+			linkDistanceScale: 1,
+			linkStrength: 0.15,
+			collide: 8,
+			seeding: 'dag',
+			bubbleRepel: false,
+			iterations: 70
 		}
 	},
 	{

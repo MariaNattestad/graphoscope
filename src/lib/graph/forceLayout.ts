@@ -299,6 +299,116 @@ function seedLayered(ctx: FreeCtx) {
 	}
 }
 
+/** Sugiyama-style layered ("DAG") seeding. Three classic phases:
+ *
+ *  1. Rank assignment — each segment's x is its longest incoming path in bp
+ *     (cycle-safe: a back-edge into a node still on the DFS stack contributes 0).
+ *     This is the reference-free analogue of a genomic axis: left-to-right by
+ *     sequence distance, but with no chosen reference path.
+ *  2. Crossing minimisation — bucket segments into layers by rank, then run the
+ *     barycenter heuristic (repeatedly reorder each layer by the mean row of its
+ *     neighbours in the adjacent layer), which is the standard, cheap way to cut
+ *     edge crossings in layered drawings.
+ *  3. Coordinate assignment — place each chain horizontally across its rank at the
+ *     row the ordering earned it. A light relaxation afterwards only resolves
+ *     overlaps; forceX holds the ranks (see runFreeLayout).
+ */
+function seedDag(ctx: FreeCtx) {
+	const unit = ctx.unit;
+	const has = (id: string) => ctx.chainById.has(id);
+	const span = (id: string) => ctx.chainPxLength.get(id) ?? unit;
+
+	// Directed predecessors/successors over the segments we're laying out.
+	const pred = new Map<string, string[]>();
+	const succ = new Map<string, string[]>();
+	for (const chain of ctx.chains) {
+		pred.set(chain.segId, []);
+		succ.set(chain.segId, []);
+	}
+	for (const link of ctx.graph.links) {
+		if (link.from === link.to || !has(link.from) || !has(link.to)) continue;
+		succ.get(link.from)!.push(link.to);
+		pred.get(link.to)!.push(link.from);
+	}
+
+	// (1) Rank x = longest incoming path in bp. DFS with a visiting stack breaks
+	// cycles by treating an edge back into an in-progress node as distance 0.
+	const xOf = new Map<string, number>();
+	const state = new Map<string, 0 | 1 | 2>();
+	const longestX = (seg: string): number => {
+		const s = state.get(seg) ?? 0;
+		if (s === 2) return xOf.get(seg)!;
+		if (s === 1) return 0;
+		state.set(seg, 1);
+		let x = 0;
+		for (const p of pred.get(seg) ?? []) x = Math.max(x, longestX(p) + span(p));
+		xOf.set(seg, x);
+		state.set(seg, 2);
+		return x;
+	};
+	for (const chain of ctx.chains) longestX(chain.segId);
+
+	// (2) Bucket into layers by rank, then barycenter-order each layer.
+	const sortedSpans = ctx.chains.map((c) => span(c.segId)).sort((a, b) => a - b);
+	const bucket = Math.max(unit * 4, sortedSpans[sortedSpans.length >> 1] ?? unit * 4);
+	const layerOf = new Map<string, number>();
+	const layers = new Map<number, string[]>();
+	for (const chain of ctx.chains) {
+		const L = Math.round((xOf.get(chain.segId) ?? 0) / bucket);
+		layerOf.set(chain.segId, L);
+		(layers.get(L) ?? layers.set(L, []).get(L)!).push(chain.segId);
+	}
+	const layerKeys = [...layers.keys()].sort((a, b) => a - b);
+	for (const k of layerKeys) layers.get(k)!.sort(); // deterministic start
+	const rowOf = new Map<string, number>();
+	const reindex = () => {
+		for (const k of layerKeys) layers.get(k)!.forEach((s, i) => rowOf.set(s, i));
+	};
+	reindex();
+	const barycenter = (seg: string, neigh: Map<string, string[]>): number => {
+		let sum = 0;
+		let n = 0;
+		for (const m of neigh.get(seg) ?? []) {
+			const r = rowOf.get(m);
+			if (r !== undefined) {
+				sum += r;
+				n++;
+			}
+		}
+		return n ? sum / n : (rowOf.get(seg) ?? 0);
+	};
+	for (let iter = 0; iter < 8; iter++) {
+		const down = iter % 2 === 0;
+		const order = down ? layerKeys : [...layerKeys].reverse();
+		const from = down ? pred : succ;
+		for (const k of order) {
+			const arr = layers.get(k)!;
+			const key = new Map(arr.map((s) => [s, barycenter(s, from)]));
+			arr.sort((a, b) => key.get(a)! - key.get(b)! || (a < b ? -1 : 1));
+			arr.forEach((s, i) => rowOf.set(s, i));
+		}
+	}
+
+	// (3) Lay each chain out horizontally across its rank, at its ordered row.
+	const rowGap = unit * 5;
+	for (const chain of ctx.chains) {
+		const L = layerOf.get(chain.segId)!;
+		const layerArr = layers.get(L)!;
+		const cy = (rowOf.get(chain.segId)! - (layerArr.length - 1) / 2) * rowGap;
+		const x0 = xOf.get(chain.segId) ?? 0;
+		const sp = span(chain.segId);
+		const numEdges = chain.nodeIds.length - 1;
+		chain.nodeIds.forEach((id, i) => {
+			const t = numEdges === 0 ? 0 : i / numEdges;
+			const node = ctx.nodesById.get(id)!;
+			node.x = x0 + t * sp + stableUnit(id) * 2;
+			node.y = cy + stableUnit(id + ':y') * 2;
+			node.componentBaselineY = cy;
+			node.targetX = node.x; // forceX holds the rank during relaxation
+		});
+	}
+}
+
 /** Grow outward from a central node: BFS depth becomes radius, and each node's
  * angle is fixed by its order of first discovery, so the graph fans out into a
  * radial overview of its topology. */
@@ -453,6 +563,7 @@ function runFreeLayout(ctx: FreeCtx) {
 
 	if (params.seeding === 'layered') seedLayered(ctx);
 	else if (params.seeding === 'radial') seedRadial(ctx);
+	else if (params.seeding === 'dag') seedDag(ctx);
 	else seedScatter(ctx);
 
 	seedBendNodes(ctx);
@@ -481,8 +592,12 @@ function runFreeLayout(ctx: FreeCtx) {
 		.force('collide', forceCollide(params.collide))
 		.force(
 			'flowX',
-			params.seeding === 'layered'
-				? forceX<SimNode>((d) => d.targetX ?? d.x).strength((d) => (d.targetX != null ? 0.35 : 0))
+			// Both the force-relaxed 'flow' (layered) and the deterministic 'layered'
+			// (dag) modes pin each node's rank on x while the sim tidies the rows.
+			params.seeding === 'layered' || params.seeding === 'dag'
+				? forceX<SimNode>((d) => d.targetX ?? d.x).strength((d) =>
+						d.targetX != null ? (params.seeding === 'dag' ? 0.6 : 0.35) : 0
+					)
 				: null
 		)
 		.force('bubbleRepel', bubbleRepel)
