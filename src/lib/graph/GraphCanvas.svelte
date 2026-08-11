@@ -410,6 +410,10 @@
 	// in telemetry) if a locus ever violates them, since it would silently corrupt
 	// the axis and gene-track positions rather than crash.
 	function checkRefInvariants() {
+		// Reference-free layout modes don't draw a coordinate axis (no backbone), and
+		// deliberately don't place segments in genomic order — so the monotonicity /
+		// coverage invariants below don't apply and would just spam the console.
+		if (layout.backboneSegIds.size === 0) return;
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
 

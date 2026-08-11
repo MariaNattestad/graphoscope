@@ -11,6 +11,7 @@
 	import type { GfaGraph } from './types';
 	import type { LayoutResult } from './forceLayout';
 	import type { LayoutRequest, LayoutResponse } from './layout.worker';
+	import { LAYOUT_MODES, DEFAULT_LAYOUT_MODE, getModeConfig, type LayoutMode } from './layoutModes';
 	import GraphCanvas from './GraphCanvas.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { trackEvent } from '../analytics';
@@ -80,16 +81,23 @@
 		onRequestMoreContext?: () => void;
 	} = $props();
 
-	// Keep all non-reference bubbles on one side (above the reference line). This
-	// halves the vertical spread and, more importantly, leaves the space below the
-	// backbone free for the gene track. On by default; the toggle restores the
-	// symmetric two-sided layout.
-	let bubblesAbove = $state(true);
+	// The primary layout control: a named mode that picks a whole recipe (which
+	// family, and the anchored-mode primitives). Persists across graphs so the user
+	// can keep comparing the same view. See layoutModes.ts.
+	let layoutMode = $state<LayoutMode>(DEFAULT_LAYOUT_MODE);
+	const modeCfg = $derived(getModeConfig(layoutMode));
 
-	// Pull bubbles horizontally onto their reference node's x, so each stacks into a
-	// tidy vertical column (on by default). Off gives the older, freer relaxation
-	// where the link forces open bubbles out into more organic sideways shapes.
-	let anchorToReference = $state(true);
+	// Advanced overrides of the anchored-mode primitives (null = follow the mode).
+	// Exposed under an expander for power tweaking; reset per graph so each new
+	// query starts from its mode's defaults.
+	//  · bubblesAbove: keep bubbles on one side, freeing the space below for the
+	//    gene track (vs. the symmetric two-sided layout).
+	//  · anchorToReference: pull bubbles onto their ref node's x so each stacks into
+	//    a tidy column (vs. the freer relaxation into organic sideways shapes).
+	let bubblesAboveOverride = $state<boolean | null>(null);
+	let anchorOverride = $state<boolean | null>(null);
+	const effBubblesAbove = $derived(bubblesAboveOverride ?? modeCfg.bubblesAbove);
+	const effAnchor = $derived(anchorOverride ?? modeCfg.anchorToReference);
 
 	// Mark strands chopped at the subgraph boundary with a fading cue toward the
 	// frame edge (the direction the haplotype leaves the locus), so they don't read
@@ -147,8 +155,11 @@
 		pinnedKeys = [];
 		// …and any node-restricted haplotype filter (node ids won't carry over).
 		nodeFilter = null;
-		// A new graph gets a fresh automatic rough/full decision (see effectiveRough).
+		// A new graph gets a fresh automatic rough/full decision (see effectiveRough)
+		// and drops any per-graph layout overrides back to the mode's defaults.
 		roughOverride = null;
+		bubblesAboveOverride = null;
+		anchorOverride = null;
 	});
 
 	// Walks that start or end exactly at the selected node — the tell for a
@@ -567,21 +578,31 @@
 	// The layout-shaping options the user controls — anything here changes the
 	// computed layout, so it's the worker's options.
 	interface LayoutKnobs {
+		mode: LayoutMode;
 		bubblesAbove: boolean;
 		anchorToReference: boolean;
 		// The rough override only (null = auto); the effective rough decision folds in
 		// each graph's own node count inside layoutOptionsFor.
 		roughOverride: boolean | null;
 	}
-	const layoutKnobs = $derived<LayoutKnobs>({ bubblesAbove, anchorToReference, roughOverride });
+	const layoutKnobs = $derived<LayoutKnobs>({
+		mode: layoutMode,
+		bubblesAbove: effBubblesAbove,
+		anchorToReference: effAnchor,
+		roughOverride
+	});
 
-	// Worker options for a graph of this size. Rough mode (past the threshold unless
-	// overridden) collapses each segment to one node, cuts iterations and drops bend
-	// nodes — the much faster layout (see the 62.5s→6.0s note); otherwise full quality.
+	// Worker options for a graph of this size. The mode picks the algorithm family
+	// and (for anchored modes) whether strands curve; the effective bubblesAbove /
+	// anchorToReference fold in the advanced overrides. Rough mode (past the
+	// threshold unless overridden) collapses each segment to one node, cuts
+	// iterations and forces straight links — the much faster layout (see the
+	// 62.5s→6.0s note); otherwise full quality with the mode's own bendiness.
 	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
-		const { bubblesAbove, anchorToReference, roughOverride } = knobs;
+		const { mode, bubblesAbove, anchorToReference, roughOverride } = knobs;
 		const rough = roughOverride ?? keptSegments > LARGE_LAYOUT_NODE_THRESHOLD;
-		const base = { referenceSample, bubblesAbove, anchorToReference };
+		const cfg = getModeConfig(mode);
+		const base = { referenceSample, mode, bubblesAbove, anchorToReference, bendNodes: cfg.bendNodes };
 		return rough
 			? { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
 			: base;
@@ -813,8 +834,35 @@
 			</nav>
 			<section class="group ctl-panel">
 				{#if ctlTab === 'layout'}
-					<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
-						<input type="checkbox" bind:checked={bubblesAbove} />
+					<div class="mode-picker">
+							<span class="mode-picker-label">Layout mode</span>
+							<select class="mode-select" bind:value={layoutMode} aria-label="Layout mode">
+								<optgroup label="Reference-anchored">
+									{#each LAYOUT_MODES.filter((m) => m.family === 'anchored') as m (m.id)}
+										<option value={m.id}>{m.label}</option>
+									{/each}
+								</optgroup>
+								<optgroup label="Reference-free">
+									{#each LAYOUT_MODES.filter((m) => m.family === 'free') as m (m.id)}
+										<option value={m.id}>{m.label}</option>
+									{/each}
+								</optgroup>
+							</select>
+							<p class="mode-blurb">{modeCfg.blurb}</p>
+						</div>
+
+						<details class="advanced">
+							<summary>Advanced tuning</summary>
+							{#if modeCfg.family === 'free'}
+								<p class="adv-note">One-sided and anchor apply to reference-anchored modes only.</p>
+							{/if}
+							<label class="switch" title="Keep variant bubbles on one side, freeing the space below the reference line for the gene track">
+						<input
+								type="checkbox"
+								checked={effBubblesAbove}
+								disabled={modeCfg.family === 'free'}
+								onchange={() => (bubblesAboveOverride = !effBubblesAbove)}
+							/>
 						<span class="track"><span class="thumb"></span></span>
 						<span class="switch-text">
 							<span class="switch-label">One-sided</span>
@@ -822,7 +870,12 @@
 						</span>
 					</label>
 					<label class="switch" title="Pull each bubble onto its reference node's position so it stacks straight up. Off lets bubbles relax into freer, more organic shapes.">
-						<input type="checkbox" bind:checked={anchorToReference} />
+						<input
+								type="checkbox"
+								checked={effAnchor}
+								disabled={modeCfg.family === 'free'}
+								onchange={() => (anchorOverride = !effAnchor)}
+							/>
 						<span class="track"><span class="thumb"></span></span>
 						<span class="switch-text">
 							<span class="switch-label">Anchor to reference</span>
@@ -831,18 +884,18 @@
 					</label>
 					<label
 						class="switch"
-						title="Draw smooth, curved strands (full quality). Off is a faster, straighter layout, chosen automatically for very large graphs; toggle to override it for this graph."
+						title="Force the faster straight-strand layout — chosen automatically for very large graphs. On strips the mode's curves and detail for speed; off restores full quality."
 					>
 						<input
 							type="checkbox"
-							checked={!effectiveRough}
+							checked={effectiveRough}
 							onchange={() => (roughOverride = !effectiveRough)}
 						/>
 						<span class="track"><span class="thumb"></span></span>
 						<span class="switch-text">
-							<span class="switch-label">Bendy nodes</span>
+							<span class="switch-label">Rough layout</span>
 							<span class="switch-sub">
-								{effectiveRough ? 'straight, faster' : 'smooth, full quality'}{roughOverride === null
+								{effectiveRough ? 'straight & fast' : 'full quality'}{roughOverride === null
 									? ' · auto'
 									: ''}
 							</span>
@@ -859,7 +912,8 @@
 							<span class="switch-sub">cue chopped-off haplotypes</span>
 						</span>
 					</label>
-				{:else if ctlTab === 'nodes'}
+					</details>
+					{:else if ctlTab === 'nodes'}
 					<span class="group-hint">shown on hover, and under the graph when clicked</span>
 					<label class="check"><input type="checkbox" bind:checked={showNodeId} /> Node ID</label>
 					<label class="check"><input type="checkbox" bind:checked={showLength} /> Length (bp)</label>
@@ -1314,6 +1368,82 @@
 	}
 	.switch-sub.note {
 		color: #b45309;
+	}
+	/* A disabled switch (a reference-anchored knob while a free mode is active). */
+	.switch:has(input:disabled) {
+		cursor: default;
+		opacity: 0.45;
+	}
+
+	/* Layout-mode picker — the primary layout control. */
+	.mode-picker {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.mode-picker-label {
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: #6b7280;
+	}
+	.mode-select {
+		font: inherit;
+		padding: 0.4rem 0.5rem;
+		border: 1px solid #cbd0d8;
+		border-radius: 7px;
+		background: #fff;
+		color: #222;
+		cursor: pointer;
+	}
+	.mode-select:focus-visible {
+		outline: 2px solid #2563eb;
+		outline-offset: 1px;
+	}
+	.mode-blurb {
+		margin: 0;
+		font-size: 0.74rem;
+		line-height: 1.35;
+		color: #6b7280;
+	}
+
+	/* Advanced-tuning expander holding the raw layout switches. */
+	.advanced {
+		border-top: 1px solid #ececf0;
+		padding-top: 0.5rem;
+	}
+	.advanced > summary {
+		cursor: pointer;
+		font-size: 0.75rem;
+		font-weight: 600;
+		color: #6b7280;
+		list-style: none;
+		user-select: none;
+	}
+	.advanced > summary::-webkit-details-marker {
+		display: none;
+	}
+	.advanced > summary::before {
+		content: '▸';
+		display: inline-block;
+		margin-right: 0.35rem;
+		transition: transform 0.15s ease;
+	}
+	.advanced[open] > summary::before {
+		transform: rotate(90deg);
+	}
+	.advanced[open] > summary {
+		margin-bottom: 0.6rem;
+	}
+	.advanced > :not(summary) {
+		margin-top: 0.6rem;
+	}
+	.adv-note {
+		margin: 0;
+		font-size: 0.72rem;
+		line-height: 1.3;
+		color: #9aa0aa;
 	}
 
 	/* Named-haplotype panel (the /gfa page). */
