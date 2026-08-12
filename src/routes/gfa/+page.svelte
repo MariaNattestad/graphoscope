@@ -310,13 +310,10 @@
 							</div>
 						</div>
 
-						<p class="gfa-pop-note">
-							Reads GFA 1.1 <code>W</code>-line walks and GFA 1.0 <code>P</code>-line paths — each
-							becomes a clickable trace. A graph with no walks or paths still opens: a reference is
-							recovered from rGFA <code>SN/SO/SR</code> tags if present, else a longest path is
-							computed; assembly-style graphs also get a structure &amp; depth report. All examples
-							but the first are fetched from the test data of odgi, gfatools and Bandage.
-						</p>
+						<div class="gfa-foot">
+							<span>Looking for HPRC pangenome loci?</span>
+							<a href="{base}/" data-sveltekit-reload>Open the locus browser →</a>
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -577,11 +574,24 @@
 		font-size: 0.7rem;
 		color: #7a828f;
 	}
-	.gfa-pop-note {
-		margin: 0;
-		font-size: 0.74rem;
-		line-height: 1.5;
-		color: #9aa0aa;
+	/* Reverse of the locus picker's GFA-viewer pointer: back to the locus browser. */
+	.gfa-foot {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+		font-size: 0.78rem;
+		color: #8a94a6;
+	}
+	.gfa-foot a {
+		color: #6d28d9;
+		font-weight: 600;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.gfa-foot a:hover {
+		text-decoration: underline;
 	}
 
 	.error-banner {
