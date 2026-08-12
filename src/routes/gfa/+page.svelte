@@ -67,10 +67,6 @@
 		return out;
 	});
 
-	// What to call the traversals in the UI: paths for a P-line graph, walks otherwise.
-	const traversalNoun = $derived(backboneKind === 'path' ? 'paths' : 'walks');
-	// Real traversals only (a computed / rGFA backbone isn't one of the file's own).
-	const realWalkCount = $derived(gfa ? gfa.walks.filter((w) => w.kind !== 'synthetic').length : 0);
 	// Whether the file carries its own selectable references (W/P lines).
 	const hasReference = $derived(backboneKind === 'walk' || backboneKind === 'path');
 	// A graph with no W/P reference — the assembly / raw-graph case. Gets the graph
@@ -84,6 +80,17 @@
 	);
 	const initialLayoutMode = $derived<LayoutMode | undefined>(
 		backboneKind === 'none' ? 'simple-force' : undefined
+	);
+	// The backbone picker (moved into GraphLayoutView's reference-based options) gets
+	// the real sample/path names when the file has its own reference; otherwise a note
+	// explaining where the backbone came from is shown in its place.
+	const backboneOptions = $derived<string[]>(hasReference ? samples : []);
+	const backboneNote = $derived<string | null>(
+		backboneKind === 'rgfa'
+			? `Backbone from rGFA tags${rgfaContig ? ` · ${rgfaContig}` : ''} (not a chosen reference)`
+			: backboneKind === 'synthetic'
+				? 'Backbone: a computed longest path (this file has no reference)'
+				: null
 	);
 
 	const stats = $derived(gfa ? gfaStats(gfa, referenceSample) : null);
@@ -258,57 +265,22 @@
 	<div class="workspace">
 		{#if gfa && stats}
 			<section class="mainview">
-				<div class="subbar">
-					<div class="stat-row">
-						<span class="stat"><b>{stats.segments.toLocaleString()}</b> nodes</span>
-						<span class="stat"><b>{stats.links.toLocaleString()}</b> links</span>
-						{#if hasReference}
-							<span class="stat"
-								><b>{realWalkCount.toLocaleString()}</b> {traversalNoun}</span
-							>
-							{#if backboneKind === 'walk'}
-								<span class="stat"><b>{samples.length.toLocaleString()}</b> samples</span>
-							{/if}
-						{/if}
-						<span class="stat"
-							><b>{stats.totalSequenceBp.toLocaleString()}</b> bp total sequence</span
-						>
-					</div>
-					{#if hasReference}
-						<label class="backbone">
-							backbone
-							<select bind:value={referenceSample}>
-								{#each samples as s (s)}
-									<option value={s}>{s}</option>
-								{/each}
-							</select>
-						</label>
-					{:else if backboneKind === 'rgfa'}
-						<div class="ref-note" title="Reference recovered from rGFA SN/SO/SR tags.">
-							⌖ Reference backbone from <b>rGFA tags</b>{rgfaContig ? ` · ${rgfaContig}` : ''}
-						</div>
-					{:else if backboneKind === 'synthetic'}
-						<div class="no-ref" title="This graph has no W-line or P-line reference.">
-							⚠︎ No walks or paths — anchored to a <b>computed longest path</b> (not a reference).
-						</div>
-					{:else}
-						<div class="no-ref">
-							⚠︎ No walks or paths, and too large to compute a backbone — showing a
-							<b>reference-free</b> layout.
-						</div>
-					{/if}
-				</div>
+				<!-- The node/link/bp counts that used to sit in a bar here now live in the
+				     info box inside GraphLayoutView (shared with the locus browser), and the
+				     backbone picker moved into that view’s reference-based layout options. -->
 				{#if assembly && gfa}
 					<AssemblyReport {assembly} {gfa} />
 				{/if}
 				<div class="tabbody">
 					<GraphLayoutView
 						{gfa}
-						{referenceSample}
+						bind:referenceSample
 						locusLabel={fileName}
 						showHaplotypes={hasReference}
 						{initialLayoutMode}
 						{walkNoun}
+						{backboneOptions}
+						{backboneNote}
 					/>
 				</div>
 			</section>
@@ -433,71 +405,6 @@
 		border-radius: 10px;
 		overflow: hidden;
 		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
-	}
-	.subbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		flex-wrap: wrap;
-		padding: 0.5rem 0.8rem;
-		border-bottom: 1px solid #e3e7ee;
-		background: #fafbfc;
-	}
-	.stat-row {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		flex-wrap: wrap;
-		font-size: 0.82rem;
-		color: #6b7280;
-	}
-	.stat b {
-		color: #1f2430;
-		font-weight: 700;
-	}
-	.backbone {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		font-size: 0.78rem;
-		color: #6b7280;
-	}
-	.backbone select {
-		font: inherit;
-		font-size: 0.8rem;
-		padding: 0.2rem 0.4rem;
-		border: 1px solid #d3d9e2;
-		border-radius: 6px;
-		background: #fff;
-		color: #1f2430;
-	}
-	/* Shown in place of the backbone picker when the file names no reference. */
-	.no-ref {
-		font-size: 0.76rem;
-		color: #92580a;
-		background: #fef6e7;
-		border: 1px solid #f5d9a0;
-		border-radius: 6px;
-		padding: 0.3rem 0.55rem;
-		max-width: 34rem;
-	}
-	.no-ref b {
-		color: #7a4906;
-		font-weight: 700;
-	}
-	/* Positive variant, for a real reference recovered from rGFA tags. */
-	.ref-note {
-		font-size: 0.76rem;
-		color: #3730a3;
-		background: #eef2ff;
-		border: 1px solid #c7d2fe;
-		border-radius: 6px;
-		padding: 0.3rem 0.55rem;
-	}
-	.ref-note b {
-		color: #312e81;
-		font-weight: 700;
 	}
 	.tabbody {
 		flex: 1;

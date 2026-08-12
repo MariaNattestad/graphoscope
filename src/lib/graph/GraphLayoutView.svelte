@@ -29,7 +29,7 @@
 
 	let {
 		gfa,
-		referenceSample,
+		referenceSample = $bindable(),
 		refKey,
 		discoAvailable = false,
 		discoLoading = false,
@@ -45,11 +45,21 @@
 		querying = false,
 		showHaplotypes = false,
 		initialLayoutMode,
-		walkNoun = 'haplotype walks'
+		walkNoun = 'haplotype walks',
+		backboneOptions = [],
+		backboneNote = null
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
 		refKey?: RefKey;
+		/** Selectable backbone/reference names. When more than one is given, the
+		 * Reference-based layout options show a picker bound to `referenceSample`
+		 * (the /gfa page, where the backbone is user-choosable). Empty on the hosted
+		 * locus browser, whose reference is fixed — so no picker appears there. */
+		backboneOptions?: string[];
+		/** A one-line note shown in place of the picker when the backbone isn't a
+		 * chosen reference — e.g. "computed longest path" or an rGFA reference. */
+		backboneNote?: string | null;
 		/** Layout mode to open on (before the user touches the control). The /gfa page
 		 * uses this to start a no-reference graph in a reference-free mode. Omitted →
 		 * the default anchored mode. */
@@ -1577,6 +1587,24 @@
 								{/each}
 							</select>
 							<p class="mode-blurb">{modeCfg.blurb}</p>
+							<!-- Backbone picker / note: only meaningful for a reference-anchored
+							     layout, so it lives here (and only when the parent supplies choices —
+							     the /gfa page). More than one option → a picker bound to the chosen
+							     reference; otherwise the note explaining a computed/rGFA backbone. -->
+							{#if modeCfg.family === 'anchored'}
+								{#if backboneOptions.length > 1}
+									<label class="backbone-pick">
+										<span class="backbone-label">Backbone</span>
+										<select bind:value={referenceSample} aria-label="Reference backbone">
+											{#each backboneOptions as s (s)}
+												<option value={s}>{s}</option>
+											{/each}
+										</select>
+									</label>
+								{:else if backboneNote}
+									<p class="backbone-note">{backboneNote}</p>
+								{/if}
+							{/if}
 						</div>
 						<!-- Bendy nodes: the single biggest speed lever, phrased as the pretty
 						     option so it reads as a choice, not a downgrade. On means the
@@ -2402,6 +2430,40 @@
 		font-size: 0.74rem;
 		line-height: 1.35;
 		color: #6b7280;
+	}
+	/* Backbone picker inside the reference-based layout options (the /gfa page). */
+	.backbone-pick {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin-top: 0.5rem;
+		font-size: 0.76rem;
+		color: #6b7280;
+	}
+	.backbone-label {
+		flex: 0 0 auto;
+	}
+	.backbone-pick select {
+		flex: 1 1 auto;
+		min-width: 0;
+		font: inherit;
+		font-size: 0.78rem;
+		padding: 0.3rem 0.4rem;
+		border: 1px solid #cbd0d8;
+		border-radius: 6px;
+		background: #fff;
+		color: #222;
+		cursor: pointer;
+	}
+	.backbone-note {
+		margin: 0.5rem 0 0;
+		font-size: 0.74rem;
+		line-height: 1.35;
+		color: #5b6472;
+		background: #f4f6fa;
+		border: 1px solid #e3e7ee;
+		border-radius: 6px;
+		padding: 0.35rem 0.5rem;
 	}
 
 	/* Node-inspector header actions (gear + close) and the gear settings popover. */
