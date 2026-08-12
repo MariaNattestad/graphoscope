@@ -146,7 +146,13 @@ export interface LayoutOptions {
 
 const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'straightenPath'>> = {
 	targetTotalSubNodes: 2500,
-	maxEdgesPerSegment: 60,
+	// Even the longest segment is only split into a handful of sub-nodes: the chain
+	// exists so a strand can *bend* around bubbles, not to trace fine detail, and
+	// past ~6 edges the extra nodes just wiggle independently under charge repulsion
+	// and read as jagged. The canvas smooths the few points it does get into a curve
+	// (see traceSmooth in GraphCanvas), so a short, gently-curved chain looks better
+	// than a long, noisy one — and costs far less to simulate.
+	maxEdgesPerSegment: 6,
 	unitEdgeLength: 18,
 	iterations: 350,
 	bendNodes: true,
