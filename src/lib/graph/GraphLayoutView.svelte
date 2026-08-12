@@ -1480,7 +1480,7 @@
 											<span class="hl-dot" style="background:{colorForKey(w.key)}"></span>
 										{/if}
 										<span class="hl-name">{w.label}</span>
-										{#if w.sample !== 'unknown'}<span class="hl-hap">hap {w.hapIndex}</span>{/if}
+										{#if w.sample !== 'unknown' && !traversalsArePaths}<span class="hl-hap">hap {w.hapIndex}</span>{/if}
 										<span class="hl-span">{w.span > 0 ? `${w.span.toLocaleString()} bp` : ''}</span>
 									</button>
 									<button
@@ -2633,12 +2633,22 @@
 	.hl-name {
 		font-weight: 600;
 		color: #1f2430;
+		/* Long path names (e.g. rGFA/odgi "gi|568815592:32578768-32589835") must
+		   truncate rather than shove the hap/span columns out of the box; the full
+		   name stays in the row's title tooltip. */
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.hl-hap {
+		flex: 0 0 auto;
 		color: #9aa0aa;
 		font-size: 0.7rem;
 	}
 	.hl-span {
+		flex: 0 0 auto;
 		margin-left: auto;
 		color: #9aa0aa;
 		font-size: 0.7rem;

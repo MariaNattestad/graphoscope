@@ -89,12 +89,17 @@
 			     and a long value never collide the way shared grid columns would — every
 			     row fits the narrow panel on its own, with all values flush to the right. -->
 			<div class="rep-grid">
-				<div class="rep-row">
-					<span class="rk">fetched</span>
-					<span class="rv">{pending || !fetchInfo
-							? ''
-							: `${fmtBytes(fetchInfo.bytesFetched)} in ${fetchInfo.requestCount} blocks`}</span>
-				</div>
+				<!-- The "fetched" row is about the network round-trip, which only the hosted
+				     locus browser has. The /gfa viewer parses a local file (no fetchInfo,
+				     not querying), so the row is dropped entirely rather than left blank. -->
+				{#if fetchInfo || querying}
+					<div class="rep-row">
+						<span class="rk">fetched</span>
+						<span class="rv">{pending || !fetchInfo
+								? ''
+								: `${fmtBytes(fetchInfo.bytesFetched)} in ${fetchInfo.requestCount} blocks`}</span>
+					</div>
+				{/if}
 
 				<!-- The simplified/raw split only exists on a reduced graph; with Simplify
 				     off the graph is the full one, so show a single count. When reduced, the
