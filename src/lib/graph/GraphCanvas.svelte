@@ -529,13 +529,15 @@
 		// stands out as one connected unit. A skip bubble has no member strands, so all
 		// strands dim under it. No highlight → every strand at full brightness.
 		for (const chain of layout.chains) {
-			const pts = chain.nodeIds.map((id) => layout.nodesById.get(id)!);
+			const pts = chain.nodeIds.map((id) => {
+				const n = layout.nodesById.get(id)!;
+				return { x: toScreenX(n.x), y: toScreenY(n.y) };
+			});
 			if (pts.length === 0) continue;
 			const inHl = hl ? hl.has(chain.segId) : true;
 			const dim = (hl && !inHl) || (activeSkipKey != null && hl == null);
 			ctx.beginPath();
-			ctx.moveTo(toScreenX(pts[0].x), toScreenY(pts[0].y));
-			for (let i = 1; i < pts.length; i++) ctx.lineTo(toScreenX(pts[i].x), toScreenY(pts[i].y));
+			traceSmooth(ctx, pts);
 			ctx.globalAlpha = dim ? 0.15 : 1;
 			ctx.strokeStyle = hl && inHl ? theme.bubbleHighlight : colorForChain(chain.segId);
 			ctx.lineWidth =
@@ -930,10 +932,7 @@
 			linkPath.lineTo(b.x, b.y);
 		}
 		const strandPath = new Path2D();
-		for (const pts of strands) {
-			strandPath.moveTo(pts[0].x, pts[0].y);
-			for (let i = 1; i < pts.length; i++) strandPath.lineTo(pts[i].x, pts[i].y);
-		}
+		for (const pts of strands) traceSmooth(strandPath, pts);
 
 		ctx.save();
 		ctx.lineJoin = 'round';
@@ -1048,6 +1047,30 @@
 			}
 		}
 		return best?.segId ?? null;
+	}
+
+	// Trace a polyline as a smooth curve into a Path2D / canvas context, using each
+	// interior point as a quadratic control and the midpoints between them as the
+	// on-curve anchors (the classic cheap midpoint smoothing). First and last points
+	// stay exact, so a strand still meets its links precisely; the few bend points in
+	// between round off instead of reading as sharp corners. Under 3 points there's
+	// nothing to smooth, so fall back to straight lines.
+	function traceSmooth(p: CanvasRenderingContext2D | Path2D, pts: { x: number; y: number }[]) {
+		const n = pts.length;
+		if (n === 0) return;
+		p.moveTo(pts[0].x, pts[0].y);
+		if (n < 3) {
+			for (let i = 1; i < n; i++) p.lineTo(pts[i].x, pts[i].y);
+			return;
+		}
+		let i;
+		for (i = 1; i < n - 2; i++) {
+			const xc = (pts[i].x + pts[i + 1].x) / 2;
+			const yc = (pts[i].y + pts[i + 1].y) / 2;
+			p.quadraticCurveTo(pts[i].x, pts[i].y, xc, yc);
+		}
+		// Final curve runs through the last two points.
+		p.quadraticCurveTo(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
 	}
 
 	function distToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
