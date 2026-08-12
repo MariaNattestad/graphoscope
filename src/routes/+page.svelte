@@ -588,6 +588,11 @@
 							>
 						</div>
 					</div>
+
+					<div class="qp-foot">
+						<span>Have your own graph, not an HPRC locus?</span>
+						<a href="{base}/gfa" data-sveltekit-reload>Open the GFA viewer →</a>
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -909,6 +914,29 @@
 		font-size: 0.76rem;
 		line-height: 1.4;
 		color: #6b7280;
+	}
+	/* A quiet pointer to the standalone GFA viewer, tucked at the foot of the query
+	   popover — seen only when someone opens the picker wondering what they can load. */
+	.qp-foot {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.6rem;
+		flex-wrap: wrap;
+		margin-top: 0.9rem;
+		padding-top: 0.7rem;
+		border-top: 1px solid #eceff4;
+		font-size: 0.78rem;
+		color: #8a94a6;
+	}
+	.qp-foot a {
+		color: #6d28d9;
+		font-weight: 600;
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.qp-foot a:hover {
+		text-decoration: underline;
 	}
 	.locus-input {
 		position: relative;
