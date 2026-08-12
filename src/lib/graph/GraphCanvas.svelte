@@ -1278,7 +1278,35 @@
 		canvasEl.addEventListener('pointermove', onPointerMove);
 		canvasEl.addEventListener('pointerleave', onPointerLeave);
 
-		const ro = new ResizeObserver(() => draw());
+		// Redraw on any container resize, and re-fit when the viewport shape really
+		// changes — a phone rotating (which, in the stacked mobile layout, swings the
+		// canvas width from ~375 to ~812) or a big window resize. Without the re-fit
+		// the graph stays scaled to the old dimensions and lands off-screen or tiny.
+		// A minor nudge (the mobile URL bar showing/hiding shifts only the height a
+		// little) just redraws at the current zoom, so it doesn't reset the user's pan.
+		let lastW = 0;
+		let lastH = 0;
+		let refitTimer: ReturnType<typeof setTimeout> | null = null;
+		const ro = new ResizeObserver(() => {
+			if (!canvasEl) return;
+			const w = canvasEl.clientWidth;
+			const h = canvasEl.clientHeight;
+			const hadSize = lastW > 1 && lastH > 1;
+			const significant =
+				hadSize && (Math.abs(w - lastW) > lastW * 0.2 || Math.abs(h - lastH) > lastH * 0.2);
+			lastW = w;
+			lastH = h;
+			draw(); // resize the backing store to the new dimensions right away
+			if (significant) {
+				// Debounce: a rotation can arrive as a couple of intermediate sizes, so
+				// settle before fitting to the final one.
+				if (refitTimer) clearTimeout(refitTimer);
+				refitTimer = setTimeout(() => {
+					refitTimer = null;
+					fitToView();
+				}, 150);
+			}
+		});
 		if (containerEl) ro.observe(containerEl);
 
 		return () => {
@@ -1288,6 +1316,7 @@
 			canvasEl?.removeEventListener('pointerup', onPointerUp);
 			canvasEl?.removeEventListener('pointermove', onPointerMove);
 			canvasEl?.removeEventListener('pointerleave', onPointerLeave);
+			if (refitTimer) clearTimeout(refitTimer);
 			ro.disconnect();
 		};
 	});

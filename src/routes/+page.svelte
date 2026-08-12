@@ -8,6 +8,7 @@
 	import { initAnalytics, trackEvent } from '$lib/analytics';
 	import { searchGenes, resolveGene, geneToLocus, type GeneEntry } from '$lib/genes';
 	import { GRAPHS, DEFAULT_GENE, MAX_GFA_BYTES, type GraphId } from '$lib/graphs';
+	import { limits } from '$lib/limits.svelte';
 	import { base } from '$app/paths';
 
 	let client: GbzClient | null = null;
@@ -322,12 +323,12 @@
 	// see the whole thing — the workaround was downloading the GFA and opening it
 	// in Bandage. This loads it into the layout instead.
 	//
-	// Guarded on node count rather than offered unconditionally: the unsimplified
-	// graph is what the reduce exists to avoid, so it has to be a deliberate
-	// choice, and past MAX_UNSIMPLIFIED_NODES it would take minutes to lay out
-	// and gigabytes to hold. Between the two, the layout drops to rough mode on
-	// its own (see GraphLayoutView).
-	const MAX_UNSIMPLIFIED_NODES = 25000;
+	// Guarded rather than offered unconditionally: the unsimplified graph is what
+	// the reduce exists to avoid, so it has to be a deliberate choice, and a big one
+	// is slow to lay out and heavy to hold. The ceiling (and its much lower mobile
+	// value, where holding every walk can crash the tab) lives in the shared `limits`
+	// module. `walkLoadTier === 'risky'` folds in both the node cap and the memory
+	// cap; on a memory-constrained device that means we don't offer it at all.
 	// Raw for the same reason as `gfa` above: large, reassigned wholesale, and deep
 	// cloned to the layout worker — proxying it would tax every read.
 	let unsimplified = $state.raw<Gfa | null>(null);
@@ -335,9 +336,12 @@
 	let showUnsimplified = $state(false);
 	/** Nodes the unsimplified graph would have, known from the reduced X line. */
 	const unsimplifiedNodes = $derived(gfa?.reduced?.segmentsBefore ?? 0);
-	const canShowUnsimplified = $derived(
-		unsimplifiedNodes > 0 && unsimplifiedNodes <= MAX_UNSIMPLIFIED_NODES
-	);
+	const unsimplifiedTier = $derived(limits.walkLoadTier(gfa?.reduced));
+	// Refuse the full graph when it's 'risky' — too many nodes to lay out (desktop:
+	// too slow) or too many walk-records to hold (mobile: an OOM risk). The tier folds
+	// in both caps at their device-scaled values, so this one check covers "too slow
+	// on desktop" and "would crash a phone" alike; the message names which.
+	const canShowUnsimplified = $derived(unsimplifiedNodes > 0 && unsimplifiedTier !== 'risky');
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
 
@@ -641,7 +645,7 @@
 							discoWalksGfa={unsimplified}
 							showingAllNodes={showUnsimplified}
 							allNodesCount={unsimplifiedNodes}
-							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+							allNodesTooMany={unsimplifiedNodes > 0 && !canShowUnsimplified}
 							onToggleSimplify={toggleUnsimplified}
 							onRequestMoreContext={requestMoreContext}
 							locusLabel={queriedGene ?? locusText}
@@ -1403,6 +1407,64 @@
 	@media (max-width: 860px) {
 		.locus-input input {
 			width: 11rem;
+		}
+	}
+
+	/* Phone header: the tagline, a full-width query pill, and two text links don't
+	   fit on one row at ~375px, so "About" used to overflow off the edge. Drop the
+	   tagline, shrink the wordmark, and — the real fix — let the pill be the one
+	   flexible item, shrinking into whatever space brand + links leave (it already
+	   truncates its contents), so the row can never overflow. */
+	@media (max-width: 640px) {
+		.appbar {
+			gap: 0.5rem;
+			padding: 0.4rem 0.6rem;
+		}
+		.tagline {
+			display: none;
+		}
+		.brand {
+			flex: 0 0 auto;
+			min-width: 0;
+		}
+		.brand h1 {
+			font-size: 1rem;
+		}
+		.querypill-wrap {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+		.querypill {
+			max-width: 100%;
+			padding: 0.28rem 0.6rem;
+			gap: 0.3rem;
+		}
+		.appbar-links {
+			flex: 0 0 auto;
+			gap: 0.15rem;
+		}
+		.appbar .link-btn {
+			font-size: 0.78rem;
+			padding: 0.2rem 0.25rem;
+		}
+
+		/* Tighter frame around the workspace so the graph gets the width. */
+		.workspace {
+			padding: 0.5rem;
+			gap: 0.5rem;
+		}
+
+		/* Pre-first-query shell: stack the report above the canvas frame instead of
+		   sitting beside it, where it squeezed the canvas into a thin vertical strip
+		   (matches how the loaded graph view already stacks at this width). */
+		.shell {
+			flex-direction: column;
+		}
+		.shell-side {
+			flex: 0 0 auto;
+		}
+		.shell-stage {
+			min-height: 240px;
 		}
 	}
 </style>
