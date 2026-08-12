@@ -8,6 +8,7 @@
 	import { initAnalytics, trackEvent } from '$lib/analytics';
 	import { searchGenes, resolveGene, geneToLocus, type GeneEntry } from '$lib/genes';
 	import { GRAPHS, DEFAULT_GENE, MAX_GFA_BYTES, type GraphId } from '$lib/graphs';
+	import { limits } from '$lib/limits.svelte';
 	import { base } from '$app/paths';
 
 	let client: GbzClient | null = null;
@@ -322,12 +323,12 @@
 	// see the whole thing — the workaround was downloading the GFA and opening it
 	// in Bandage. This loads it into the layout instead.
 	//
-	// Guarded on node count rather than offered unconditionally: the unsimplified
-	// graph is what the reduce exists to avoid, so it has to be a deliberate
-	// choice, and past MAX_UNSIMPLIFIED_NODES it would take minutes to lay out
-	// and gigabytes to hold. Between the two, the layout drops to rough mode on
-	// its own (see GraphLayoutView).
-	const MAX_UNSIMPLIFIED_NODES = 25000;
+	// Guarded rather than offered unconditionally: the unsimplified graph is what
+	// the reduce exists to avoid, so it has to be a deliberate choice, and a big one
+	// is slow to lay out and heavy to hold. The ceiling (and its much lower mobile
+	// value, where holding every walk can crash the tab) lives in the shared `limits`
+	// module. `walkLoadTier === 'risky'` folds in both the node cap and the memory
+	// cap; on a memory-constrained device that means we don't offer it at all.
 	// Raw for the same reason as `gfa` above: large, reassigned wholesale, and deep
 	// cloned to the layout worker — proxying it would tax every read.
 	let unsimplified = $state.raw<Gfa | null>(null);
@@ -335,8 +336,12 @@
 	let showUnsimplified = $state(false);
 	/** Nodes the unsimplified graph would have, known from the reduced X line. */
 	const unsimplifiedNodes = $derived(gfa?.reduced?.segmentsBefore ?? 0);
+	const unsimplifiedTier = $derived(limits.walkLoadTier(gfa?.reduced));
+	// Refuse the full graph only when it's genuinely a risk *and* memory is tight.
+	// On desktop even a 'risky' locus is allowed (the layout drops to rough on its
+	// own); on a phone 'risky' is blocked to avoid an OOM.
 	const canShowUnsimplified = $derived(
-		unsimplifiedNodes > 0 && unsimplifiedNodes <= MAX_UNSIMPLIFIED_NODES
+		unsimplifiedNodes > 0 && !(unsimplifiedTier === 'risky' && limits.lowMemory)
 	);
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
@@ -641,7 +646,7 @@
 							discoWalksGfa={unsimplified}
 							showingAllNodes={showUnsimplified}
 							allNodesCount={unsimplifiedNodes}
-							allNodesTooMany={unsimplifiedNodes > MAX_UNSIMPLIFIED_NODES}
+							allNodesTooMany={unsimplifiedNodes > 0 && !canShowUnsimplified}
 							onToggleSimplify={toggleUnsimplified}
 							onRequestMoreContext={requestMoreContext}
 							locusLabel={queriedGene ?? locusText}

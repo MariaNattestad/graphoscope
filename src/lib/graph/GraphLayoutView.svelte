@@ -7,6 +7,7 @@
 	// so this component just lays out and draws whatever graph it's given.
 	import { onDestroy, untrack } from 'svelte';
 	import { gfaStats, type Gfa } from '../gfa';
+	import { limits } from '../limits.svelte';
 	import { gfaToGraph } from './gfaToGraph';
 	import type { GfaGraph } from './types';
 	import type { LayoutResult, SimNode, SegmentChain } from './forceLayout';
@@ -218,9 +219,11 @@
 		straightenKey = null;
 		// …and any node-restricted haplotype filter (node ids won't carry over).
 		nodeFilter = null;
-		// A new graph gets a fresh automatic rough/full decision (see effectiveRough)
+		// A new graph gets a fresh automatic bendy/rough decision (see effectiveBendy)
 		// and drops any per-graph layout overrides back to the mode's defaults.
-		roughOverride = null;
+		bendyOverride = null;
+		// …and a fresh chance to surface the slow-layout tip for the new graph.
+		slowTipDismissed = false;
 		// Hover highlighting doesn't carry across graphs (node ids won't match), and the
 		// walk-graph load is per-graph.
 		hoveredNode = null;
@@ -696,12 +699,39 @@
 			: 0
 	);
 
+	// Whether to load the full-walk graph automatically, offer a button, or refuse
+	// it as a memory risk is decided from the reduced graph's own stats, all in the
+	// shared `limits` module (device- and memory-aware — see limits.svelte.ts). The
+	// full graph is ~97% walks (tens of MB at a repetitive locus), and it's the
+	// *parsed* walks that can OOM a phone tab, so the ceilings scale with the device.
+	// Full-graph size estimate from the reduced `X` line (0 when not a reduced graph).
+	const fullGraphNodes = $derived(gfa.reduced?.segmentsBefore ?? 0);
+	// Number of haplotype walks in the full graph — what the "load haplotypes"
+	// button actually fetches (the walks are ~97% of the payload). Distinct from
+	// `fullGraphNodes`: loading them doesn't change the node count on screen.
+	const fullGraphWalks = $derived(gfa.reduced?.totalWalks ?? 0);
+	// 'auto' → load without asking; 'manual' → load on a click; 'risky' → big
+	// enough to threaten an OOM (refused on a memory-constrained device).
+	const walkLoadTier = $derived(limits.walkLoadTier(gfa.reduced));
+	const haploDataLight = $derived(fullGraphNodes > 0 && walkLoadTier === 'auto');
+	// On a phone, a repetitive locus (LPA and the like) can crash the tab when its
+	// walks are parsed. There we don't offer to load them at all — avoiding the
+	// crash matters more than the feature. Desktop still allows it with a caution.
+	const walkLoadBlocked = $derived(walkLoadTier === 'risky' && limits.lowMemory);
+
 	// Walk mode needs the full-walk graph. On a reduced graph that means asking the
 	// parent to load it once (the same fetch disco uses); on a graph that already
 	// carries walks it's ready immediately.
 	const walkModeNeedsLoad = $derived(hoverMode === 'walk' && !walksGfa);
 	$effect(() => {
-		if (hoverMode === 'walk' && !walksGfa && discoAvailable && !discoLoading && !walkLoadRequested) {
+		if (
+			hoverMode === 'walk' &&
+			!walksGfa &&
+			discoAvailable &&
+			!discoLoading &&
+			!walkLoadRequested &&
+			!walkLoadBlocked
+		) {
 			walkLoadRequested = true;
 			onRequestDiscoGraph?.();
 		}
@@ -723,44 +753,10 @@
 		walksGfa == null && (discoAvailable || discoLoading || walkLoadRequested)
 	);
 	const showHaploBox = $derived(
-		showHaplotypes && (showDiscoButton || namedWalks.length > 0 || canLoadHaplos)
+		showHaplotypes &&
+			(showDiscoButton || namedWalks.length > 0 || canLoadHaplos || walkLoadBlocked)
 	);
 
-	// Auto-load the walks when the full graph is light enough that fetching + parsing
-	// it costs nothing noticeable — then the haplotype list (and disco) are just there,
-	// no button to hunt for. Only past a size threshold does it stay an explicit "load"
-	// (the full graph is walks ~97% of the payload, tens of MB at a repetitive locus).
-	// The size is known before loading from the reduced graph's stats: node count bounds
-	// the layout/memory cost, walk-record count bounds the fetch/parse cost (it explodes
-	// at repetitive loci where one haplotype fragments into thousands of W-lines).
-	//
-	// Thresholds are provisional — deliberately conservative here, to be tuned app-wide
-	// in a later pass. Mobile gets much lower ceilings: less memory, metered data.
-	let isNarrow = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 768px), (pointer: coarse)');
-		const update = () => (isNarrow = mq.matches);
-		update();
-		mq.addEventListener('change', update);
-		return () => mq.removeEventListener('change', update);
-	});
-	const AUTO_LOAD_MAX_NODES = $derived(isNarrow ? 2000 : 6000);
-	const AUTO_LOAD_MAX_WALK_RECORDS = $derived(isNarrow ? 6000 : 20000);
-	// Full-graph size estimate from the reduced `X` line (0 when not a reduced graph).
-	const fullGraphNodes = $derived(gfa.reduced?.segmentsBefore ?? 0);
-	const fullGraphWalkRecords = $derived(
-		gfa.reduced?.walkRecords ?? gfa.reduced?.totalWalks ?? 0
-	);
-	// Number of haplotype walks in the full graph — what the "load haplotypes"
-	// button actually fetches (the walks are ~97% of the payload). Distinct from
-	// `fullGraphNodes`: loading them doesn't change the node count on screen.
-	const fullGraphWalks = $derived(gfa.reduced?.totalWalks ?? 0);
-	const haploDataLight = $derived(
-		fullGraphNodes > 0 &&
-			fullGraphNodes <= AUTO_LOAD_MAX_NODES &&
-			fullGraphWalkRecords <= AUTO_LOAD_MAX_WALK_RECORDS
-	);
 	$effect(() => {
 		if (
 			showHaplotypes &&
@@ -986,34 +982,66 @@
 		return false;
 	});
 
-	// Past this node count the full-quality layout takes minutes, so switch to a
-	// rough one automatically rather than making people wait. Below it, quality is
-	// cheap. This is the automatic default; the "Rough layout" switch lets the user
-	// override it either way for the current graph.
-	const LARGE_LAYOUT_NODE_THRESHOLD = 2000;
-	const autoRough = $derived(adapted.keptSegments > LARGE_LAYOUT_NODE_THRESHOLD);
-	// null = follow the automatic default; true/false = a manual override. Reset to
-	// null on every new graph so rough mode keeps adapting automatically per query.
-	let roughOverride = $state<boolean | null>(null);
-	const effectiveRough = $derived(roughOverride ?? autoRough);
+	// "Bendy nodes" = the full-detail layout, where each segment relaxes into a
+	// curved strand. It costs ~5 ms/node, so on a large graph it's dropped for the
+	// ~0.55 ms/node rough layout (one straight node per segment). Small graphs get
+	// it automatically; the Bendy-nodes switch lets the user force it either way.
+	// `bendyOverride`: null = follow the automatic decision, true/false = a manual
+	// override. Reset to null on every new graph so it re-decides per query.
+	const autoBendy = $derived(adapted.keptSegments <= limits.roughLayoutNodes);
+	let bendyOverride = $state<boolean | null>(null);
+	const effectiveBendy = $derived(bendyOverride ?? autoBendy);
 
-	// Only warn "this can take a while" for genuinely heavy layouts. This is a much
-	// higher bar than the rough-layout switch above: rough mode makes even a
-	// ~10k-node graph lay out in a handful of seconds (measured ~6s on a 9,892-node
-	// fixture), so the warning must not fire the moment rough mode kicks in at
-	// 2,000 — it should only appear near the top of the renderable range
-	// (MAX_UNSIMPLIFIED_NODES is 25,000), where even the rough layout can run long.
-	const LARGE_LAYOUT_WARNING_THRESHOLD = 15000;
-	const showSlowLayoutWarning = $derived(adapted.keptSegments > LARGE_LAYOUT_WARNING_THRESHOLD);
+	// Warn "this can take a bit" only for genuinely heavy layouts, well above the
+	// point where rough mode kicks in — rough keeps even a ~10k-node graph to a
+	// handful of seconds (measured ~5–6 s on a 9,892-node fixture). The phone bar is
+	// lower (see limits): a slow layout there also means more time holding memory.
+	const showSlowLayoutWarning = $derived(adapted.keptSegments > limits.slowLayoutWarnNodes);
 
 	// Past this the hover modes build a noticeably heavy index (and walk mode also
 	// loads the full-walk graph), so the mode control warns before switching. The
 	// modes still stay off by default (info) on every graph — this only softens the
 	// opt-in on a big locus, per the "context by default, warn on slow-down" rule.
-	// (Provisional bar; in practice even ~10k-node graphs trace fine, especially with
-	// rough layout — flagged for a proper review of warning thresholds.)
-	const HOVER_MODE_HEAVY_THRESHOLD = 10000;
-	const hoverModeHeavy = $derived(adapted.keptSegments > HOVER_MODE_HEAVY_THRESHOLD);
+	const hoverModeHeavy = $derived(adapted.keptSegments > limits.hoverHeavyNodes);
+
+	// Live slowness tip: react to the layout time we actually measured, not a node
+	// count — the clock already reflects the device, so a slow machine trips this at
+	// a smaller graph on its own. When the finished layout ran long AND there's a
+	// cheaper option in reach, surface one dismissible suggestion pointing straight
+	// at the lever. Reset per graph (see the new-graph block above).
+	let slowTipDismissed = $state(false);
+	const slowLayoutTip = $derived.by((): { text: string; action: null | (() => void); cta: string } | null => {
+		if (slowTipDismissed || computing || !layoutIsCurrent) return null;
+		if (ms <= limits.slowLayoutMs) return null;
+		const secs = `${Math.round(ms / 1000)} s`;
+		// Most direct lever first. Bendy detail on a big graph is the biggest win.
+		if (effectiveBendy && adapted.keptSegments > limits.roughLayoutNodes) {
+			return {
+				text: `Layout took ${secs}. Bendy nodes is on — turning it off redraws almost instantly.`,
+				cta: 'Turn off Bendy nodes',
+				action: () => (bendyOverride = false)
+			};
+		}
+		if (showingAllNodes) {
+			return {
+				text: `Layout took ${secs} on the full graph.`,
+				cta: 'Back to simplified',
+				action: () => onToggleSimplify?.()
+			};
+		}
+		if (hoverMode === 'walk' || hoverMode === 'bubble') {
+			return {
+				text: `Layout took ${secs}. Heavy hover modes add to it.`,
+				cta: 'Set hover to Info',
+				action: () => (hoverMode = 'info')
+			};
+		}
+		return {
+			text: `Layout took ${secs} — a wide or repetitive locus. A narrower window redraws faster.`,
+			cta: '',
+			action: null
+		};
+	});
 
 	// --- layout worker ---
 	let worker: Worker | null = null;
@@ -1105,28 +1133,29 @@
 	// computed layout, so it's the worker's options.
 	interface LayoutKnobs {
 		mode: LayoutMode;
-		// The rough override only (null = auto); the effective rough decision folds in
-		// each graph's own node count inside layoutOptionsFor.
-		roughOverride: boolean | null;
+		// The bendy (full-detail) decision: null = auto, true/false = manual override.
+		// The effective decision folds in each graph's own node count inside
+		// layoutOptionsFor.
+		bendyOverride: boolean | null;
 		// The chosen haplotype straightened above the reference, or null. Included here
 		// so picking/clearing it re-runs the layout (it changes node positions).
 		straightenPath: DiscoStep[] | null;
 	}
-	const layoutKnobs = $derived<LayoutKnobs>({ mode: layoutMode, roughOverride, straightenPath });
+	const layoutKnobs = $derived<LayoutKnobs>({ mode: layoutMode, bendyOverride, straightenPath });
 
 	// Worker options for a graph of this size. The mode carries the whole recipe —
 	// the worker resolves every force knob from it (see layoutModes.ts / forceLayout)
-	// — so all we add here is the reference sample and the rough/quality decision.
-	// Rough mode (past the threshold unless overridden) collapses each segment to one
-	// node, cuts iterations and forces straight links — the much faster layout (see
-	// the 62.5s→6.0s note); otherwise the mode's full-quality settings apply.
+	// — so all we add here is the reference sample and the bendy/rough decision.
+	// Rough (not bendy: past the threshold unless overridden) collapses each segment
+	// to one straight node and cuts iterations — the much faster layout (see the
+	// 62.5s→6.0s note); bendy applies the mode's full-quality settings.
 	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
-		const { mode, roughOverride, straightenPath } = knobs;
-		const rough = roughOverride ?? keptSegments > LARGE_LAYOUT_NODE_THRESHOLD;
+		const { mode, bendyOverride, straightenPath } = knobs;
+		const bendy = bendyOverride ?? keptSegments <= limits.roughLayoutNodes;
 		const base = { referenceSample, mode, straightenPath: straightenPath ?? undefined };
-		return rough
-			? { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false }
-			: base;
+		return bendy
+			? base
+			: { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false };
 	}
 
 	function ensureWorker(): Worker {
@@ -1226,6 +1255,29 @@
 			/>
 
 			<div class="ctl-wrap" class:dimmed={reportBusy}>
+			<!-- Live slowness tip: appears only after a layout that actually ran long,
+			     pointing at the cheapest lever available. Dismissible; one per graph. -->
+			{#if slowLayoutTip}
+				<div class="slow-tip" role="status">
+					<span class="slow-tip-text">{slowLayoutTip.text}</span>
+					<div class="slow-tip-actions">
+						{#if slowLayoutTip.action}
+							<button
+								class="slow-tip-cta"
+								onclick={() => {
+									slowLayoutTip.action?.();
+									slowTipDismissed = true;
+								}}>{slowLayoutTip.cta}</button
+							>
+						{/if}
+						<button
+							class="slow-tip-dismiss"
+							onclick={() => (slowTipDismissed = true)}
+							aria-label="Dismiss">Dismiss</button
+						>
+					</div>
+				</div>
+			{/if}
 			<!-- Pinned primary controls: the two most-reached-for switches. -->
 			<section class="group primary">
 				{#if discoAvailable || showingAllNodes}
@@ -1298,7 +1350,11 @@
 						>
 					{/if}
 				{:else if hoverMode === 'walk'}
-					{#if walkModeNeedsLoad}
+					{#if walkLoadBlocked}
+						<span class="switch-sub note"
+							>too many walks to load on this device without risking a crash — open on a desktop</span
+						>
+					{:else if walkModeNeedsLoad}
 						<span class="switch-sub"
 							>{#if discoLoading || walkLoadRequested}loading the full-walk graph…{:else if discoAvailable}needs
 								the full-walk graph{:else}no walk data available for this graph{/if}</span
@@ -1435,6 +1491,13 @@
 								>clear {pinnedKeys.length > 1 ? `all ${pinnedKeys.length} traces` : 'trace'}</button
 							>
 						{/if}
+					{:else if walkLoadBlocked}
+						<!-- Memory-constrained device, repetitive locus (LPA and the like):
+						     parsing every walk would likely crash the tab, so don't offer it. -->
+						<span class="switch-sub note"
+							>{fullGraphWalks.toLocaleString()} haplotype walks — too much to load on this device without
+							risking a crash. Open on a desktop to inspect them.</span
+						>
 					{:else if canLoadHaplos}
 						{#if discoLoading || walkLoadRequested || haploDataLight}
 							<!-- Light loci auto-load (an effect fires as soon as `haploDataLight`),
@@ -1491,33 +1554,26 @@
 							</select>
 							<p class="mode-blurb">{modeCfg.blurb}</p>
 						</div>
-						<!-- Rough layout: the single biggest speed lever. On a large graph the
-						     full-quality force layout runs for many seconds (measured ~6 s at
-						     ~1k nodes, ~14 s near the 25k ceiling); rough mode collapses each
-						     segment to one node and cuts iterations, an order of magnitude
-						     faster. It turns on automatically past LARGE_LAYOUT_NODE_THRESHOLD;
-						     this switch lets the user force it either way for the current graph. -->
+						<!-- Bendy nodes: the single biggest speed lever, phrased as the pretty
+						     option so it reads as a choice, not a downgrade. On means the
+						     full-detail force layout (each segment relaxes into a curve) — pretty
+						     but ~5 ms/node, seconds on a large graph. Off is the rough layout
+						     (one straight node per segment), an order of magnitude faster. It
+						     turns off automatically past limits.roughLayoutNodes; this switch
+						     forces it either way for the current graph. -->
 						<label
 							class="switch"
-							title="Faster, lower-detail layout: one node per segment, fewer relaxation steps. Turns on automatically on large graphs; toggle to override for this graph."
+							title="Draw each segment as a relaxed curve (full detail). Prettier but much slower on large graphs, so it turns off automatically on big ones — toggle to override for this graph."
 						>
 							<input
 								type="checkbox"
-								checked={effectiveRough}
-								onchange={(e) => (roughOverride = e.currentTarget.checked)}
+								checked={effectiveBendy}
+								onchange={(e) => (bendyOverride = e.currentTarget.checked)}
 							/>
 							<span class="track"><span class="thumb"></span></span>
 							<span class="switch-text">
-								<span class="switch-label">Rough layout</span>
-								<span class="switch-sub">
-									{#if roughOverride === null && autoRough}
-										on automatically — {adapted.keptSegments.toLocaleString()} nodes is slow at full detail
-									{:else if effectiveRough}
-										faster, less detail
-									{:else}
-										full detail — can take several seconds
-									{/if}
-								</span>
+								<span class="switch-label">Bendy nodes</span>
+								<span class="switch-sub">Pretty but slower</span>
 							</span>
 						</label>
 					{:else if ctlTab === 'view'}
@@ -1620,8 +1676,8 @@
 							{#if showSlowLayoutWarning}
 								<br />
 								<span class="overlay-warning">
-									{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take a few minutes on
-									a large or repetitive locus. Still working, not stuck.
+									{adapted.keptSegments.toLocaleString()} nodes is a lot — this can take up to a minute
+									on a large or repetitive locus. Still working, not stuck.
 								</span>
 							{/if}
 						</span>
@@ -1635,8 +1691,8 @@
 					</div>
 					{#if showSlowLayoutWarning}
 						<div class="preview-note">
-							{adapted.keptSegments.toLocaleString()} nodes — the graph can take a few minutes on a large or
-							repetitive locus. The variant&nbsp;arcs and gene track below are ready now.
+							{adapted.keptSegments.toLocaleString()} nodes — the graph can take up to a minute on a
+							large or repetitive locus. The variant&nbsp;arcs and gene track below are ready now.
 						</div>
 					{/if}
 				{:else if computing}
@@ -2461,6 +2517,56 @@
 		filter: none;
 		opacity: 1;
 	}
+	/* Live slow-layout tip: an actionable amber card above the controls. */
+	.slow-tip {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		background: #fdf1dd;
+		border: 1px solid #f0d9a8;
+		border-radius: 9px;
+		padding: 0.6rem 0.7rem;
+		margin-bottom: 0.7rem;
+	}
+	.slow-tip-text {
+		font-size: 0.78rem;
+		line-height: 1.4;
+		color: #7a4f07;
+	}
+	.slow-tip-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		align-items: center;
+	}
+	.slow-tip-cta {
+		font: inherit;
+		font-size: 0.76rem;
+		font-weight: 600;
+		cursor: pointer;
+		border: 1px solid #e0b667;
+		background: #fff;
+		color: #92600b;
+		padding: 0.3rem 0.55rem;
+		border-radius: 6px;
+	}
+	.slow-tip-cta:hover {
+		background: #fff8ec;
+	}
+	.slow-tip-dismiss {
+		font: inherit;
+		font-size: 0.74rem;
+		cursor: pointer;
+		border: none;
+		background: none;
+		color: #b07d2a;
+		padding: 0.3rem 0.3rem;
+		text-decoration: underline;
+	}
+	.slow-tip-dismiss:hover {
+		color: #7a4f07;
+	}
+
 	.haplo-load {
 		font: inherit;
 		font-size: 0.78rem;
