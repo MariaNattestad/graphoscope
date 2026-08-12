@@ -5,6 +5,7 @@
 	// the optional middle content (`children` — e.g. the query pill), and any
 	// page-specific `links` placed before GitHub / About.
 	import type { Snippet } from 'svelte';
+	import { base } from '$app/paths';
 	import AboutModal from './AboutModal.svelte';
 
 	let {
@@ -27,10 +28,13 @@
 </script>
 
 <header class="appbar">
-	<div class="brand">
+	<!-- The wordmark returns to the locus browser (the app's home). data-sveltekit-reload
+	     so it's a full navigation from the standalone /gfa route, matching its other
+	     cross-links. -->
+	<a class="brand" href="{base}/" data-sveltekit-reload title="Back to the locus browser">
 		<h1>Graphoscope</h1>
 		<span class="tagline">{tagline}</span>
-	</div>
+	</a>
 
 	{@render children?.()}
 
@@ -68,6 +72,22 @@
 		display: flex;
 		flex-direction: column;
 		line-height: 1.15;
+		/* Reset the anchor: the wordmark should look identical to before, just clickable. */
+		text-decoration: none;
+		color: inherit;
+		border-radius: 6px;
+		transition: opacity 0.12s ease;
+	}
+	.brand:hover {
+		opacity: 0.85;
+	}
+	.brand:hover h1 {
+		text-decoration: underline;
+		text-underline-offset: 2px;
+	}
+	.brand:focus-visible {
+		outline: 2px solid #ede9fe;
+		outline-offset: 2px;
 	}
 	.brand h1 {
 		margin: 0;
