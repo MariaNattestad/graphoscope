@@ -22,7 +22,8 @@
 		fetchInfo = null,
 		querying = false,
 		computing = false,
-		layoutMs = 0
+		layoutMs = 0,
+		walkNoun = 'haplotype walks'
 	}: {
 		locusLabel: string;
 		stats?: GfaStats | null;
@@ -33,6 +34,9 @@
 		/** The layout worker is computing (excludes quick in-place recomputes). */
 		computing?: boolean;
 		layoutMs?: number;
+		/** Label for the traversal-count row ("haplotype walks" / "paths"). `null`
+		 * hides the row — used for a computed-backbone graph with no real traversals. */
+		walkNoun?: string | null;
 	} = $props();
 
 	// User's manual expand/collapse for the idle state. Reset to collapsed whenever
@@ -117,10 +121,12 @@
 					</div>
 				{/if}
 
-				<div class="rep-row">
-					<span class="rk">haplotype walks</span>
-					<span class="rv">{pending || !stats ? '' : num(stats.walks)}</span>
-				</div>
+				{#if walkNoun}
+					<div class="rep-row">
+						<span class="rk">{walkNoun}</span>
+						<span class="rv">{pending || !stats ? '' : num(stats.walks)}</span>
+					</div>
+				{/if}
 
 				{#if reduced}
 					<div class="rep-row">
@@ -179,7 +185,9 @@
 			{#if stats}
 				<span class="rep-mini"><b>{num(stats.segments)}</b> n</span>
 				<span class="rep-mini"><b>{num(stats.links)}</b> l</span>
-				<span class="rep-mini"><b>{num(stats.walks)}</b> w</span>
+				{#if walkNoun}
+					<span class="rep-mini"><b>{num(stats.walks)}</b> w</span>
+				{/if}
 			{/if}
 			<span class="rep-caret" aria-hidden="true">▾</span>
 		</button>

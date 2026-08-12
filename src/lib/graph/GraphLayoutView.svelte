@@ -43,11 +43,21 @@
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
-		showHaplotypes = false
+		showHaplotypes = false,
+		initialLayoutMode,
+		walkNoun = 'haplotype walks'
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
 		refKey?: RefKey;
+		/** Layout mode to open on (before the user touches the control). The /gfa page
+		 * uses this to start a no-reference graph in a reference-free mode. Omitted →
+		 * the default anchored mode. */
+		initialLayoutMode?: LayoutMode;
+		/** What to call the traversals in the report — "haplotype walks" for the hosted
+		 * locus browser's W-lines, "paths" for a P-line graph. `null` hides the count
+		 * entirely (a computed-backbone graph has no real traversals to report). */
+		walkNoun?: string | null;
 		/** Show a panel listing the graph's named haplotype walks, where clicking one
 		 * pins the disco spotlight onto that single haplotype's path (a paused disco
 		 * trace). Off by default — the hosted locus browser's walks are anonymised, so
@@ -93,11 +103,20 @@
 	// The primary layout control: a named mode that picks a whole recipe (family +
 	// all the per-mode force tuning, resolved in the worker). Persists across graphs
 	// so the user can keep comparing the same view. See layoutModes.ts.
-	let layoutMode = $state<LayoutMode>(DEFAULT_LAYOUT_MODE);
+	// Seeded once from the prop (untracked — later prop changes shouldn't yank the
+	// user's chosen mode out from under them); the control owns it from then on.
+	let layoutMode = $state<LayoutMode>(untrack(() => initialLayoutMode) ?? DEFAULT_LAYOUT_MODE);
 	const modeCfg = $derived(getModeConfig(layoutMode));
 	// Reference-free modes have no backbone, so they show no coordinate axis and no
 	// gene track (see the GraphCanvas props below).
 	const referenceFree = $derived(modeCfg.family === 'free');
+
+	// Whether this graph's traversals are P-line paths (vs W-line haplotypes), taken
+	// from the report noun the parent passed. Drives the Haplotypes/Paths panel
+	// wording so a GFA-1.0 path graph doesn't get mislabelled "haplotypes".
+	const traversalsArePaths = $derived(walkNoun === 'paths');
+	const panelHeader = $derived(traversalsArePaths ? 'Paths' : 'Haplotypes');
+	const panelNoun = $derived(traversalsArePaths ? 'paths' : 'walks');
 
 	// Switch layout family from the segmented control, landing on that family's
 	// first mode (so "Reference-free" always has a sensible default selected).
@@ -1252,6 +1271,7 @@
 				{querying}
 				computing={reportComputing}
 				layoutMs={ms}
+				{walkNoun}
 			/>
 
 			<div class="ctl-wrap" class:dimmed={reportBusy}>
@@ -1382,7 +1402,7 @@
 			{#if showHaploBox}
 				<section class="group haplo">
 					<div class="haplo-head">
-						<span class="switch-label">Haplotypes</span>
+						<span class="switch-label">{panelHeader}</span>
 						{#if namedWalks.length > 0}
 							{#if nodeFilter}
 								<span class="switch-sub"
@@ -1390,12 +1410,12 @@
 									></span
 								>
 							{:else if straightenKey}
-								<span class="switch-sub">one walk straightened below the reference</span>
+								<span class="switch-sub">one {panelNoun === 'paths' ? 'path' : 'walk'} straightened below the reference</span>
 							{:else if pinnedKeys.length > 0}
 								<span class="switch-sub">{pinnedKeys.length} traced · click more to compare</span>
 							{:else}
 								<span class="switch-sub"
-									>{namedWalks.length} walks · click to trace, 📐 to straighten</span
+									>{namedWalks.length} {panelNoun} · click to trace, 📐 to straighten</span
 								>
 							{/if}
 						{/if}
