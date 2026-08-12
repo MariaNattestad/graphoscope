@@ -20,6 +20,17 @@ export interface Segment {
 	 * for unchop-merged chains — whose own id (`u<first>`) exists nowhere in the
 	 * source graph, so this is what makes them traceable back to it. */
 	members?: string[];
+	/** Read depth / coverage from an assembler's tag: `dp:f` (average k-mer depth,
+	 * a multiplier), or `KC:i`/`RC:i` (k-mer / read counts). Absent on pangenome
+	 * graphs. Paired with {@link depthUnit} so the viewer can label it correctly. */
+	depth?: number;
+	depthUnit?: 'x' | 'reads';
+	/** rGFA stable-sequence tags (minigraph): the reference contig name (`SN`), the
+	 * 0-based offset on it (`SO`), and the stable rank (`SR`; 0 = the reference).
+	 * When present these give a *real* reference backbone — no path/walk needed. */
+	stableName?: string;
+	stableOffset?: number;
+	rank?: number;
 }
 
 export interface Link {
@@ -36,7 +47,23 @@ export interface Step {
 	orient: Orient;
 }
 
-/** A haplotype traversal (GFA W-line). */
+/**
+ * Where a `Walk` came from, so the viewer can label it honestly:
+ *  - `'W'` — a GFA 1.1 W-line (a named haplotype traversal).
+ *  - `'P'` — a GFA 1.0 P-line (a named path). Older graphs (odgi, vg, seqwish,
+ *    minigraph) carry their samples as P-lines, not W-lines; we fold them into
+ *    the same `Walk` shape so every downstream view (backbone pick, coordinates,
+ *    tracing) works unchanged. A P-line has only a single name, so `sample` and
+ *    `seqId` are both that name and `hapIndex` is 0.
+ *  - `'synthetic'` — not from the file at all: a longest-path backbone the viewer
+ *    computes when a graph has neither W- nor P-lines, so the reference-anchored
+ *    layout still has an axis to hang variation off. Always flagged so the UI can
+ *    say "this backbone was computed, it isn't a reference in your file".
+ */
+export type WalkKind = 'W' | 'P' | 'synthetic';
+
+/** A haplotype traversal (GFA W-line), a named path (P-line), or a computed
+ * backbone — all normalised to one shape. See {@link WalkKind}. */
 export interface Walk {
 	sample: string;
 	hapIndex: number;
@@ -46,6 +73,9 @@ export interface Walk {
 	steps: Step[];
 	/** Optional tags on the W-line, e.g. WT:i:<copies> from --distinct. */
 	tags: Record<string, string>;
+	/** Origin of this traversal — W-line, P-line, or a computed backbone. Defaults
+	 * to `'W'` when omitted (so existing W-only code paths are unaffected). */
+	kind?: WalkKind;
 }
 
 /** Locus-level counts carried by the reduced GFA's `X` stats line, so the viewer
@@ -114,6 +144,28 @@ function intTag(fields: string[], tag: string): number | undefined {
 	return undefined;
 }
 
+/** Reads a float GFA tag like `dp:f:37.5` from a line's trailing fields. */
+function floatTag(fields: string[], tag: string): number | undefined {
+	const prefix = `${tag}:f:`;
+	for (const f of fields) {
+		if (f.startsWith(prefix)) {
+			const n = Number(f.slice(prefix.length));
+			return Number.isFinite(n) ? n : undefined;
+		}
+	}
+	return undefined;
+}
+
+/** Read depth from whichever assembler tag a segment carries: `dp:f` (a depth
+ * multiplier, shown as "×"), else `KC:i`/`RC:i` (k-mer / read counts). */
+function readDepth(fields: string[]): { depth: number; depthUnit: 'x' | 'reads' } | undefined {
+	const dp = floatTag(fields, 'dp');
+	if (dp !== undefined) return { depth: dp, depthUnit: 'x' };
+	const kc = intTag(fields, 'KC') ?? intTag(fields, 'RC');
+	if (kc !== undefined) return { depth: kc, depthUnit: 'reads' };
+	return undefined;
+}
+
 function parseSteps(walk: string): Step[] {
 	const steps: Step[] = [];
 	// A step is an orientation (`>`/`<`) followed by a segment id. The id is not
@@ -123,6 +175,25 @@ function parseSteps(walk: string): Step[] {
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(walk)) !== null) {
 		steps.push({ id: m[2], orient: m[1] === '>' ? '+' : '-' });
+	}
+	return steps;
+}
+
+/**
+ * Parse a P-line's `SegmentNames` field: a comma-separated list where each token
+ * is a segment id followed by a trailing orientation, e.g. `1+,3+,5-,6+`. This is
+ * the GFA 1.0 spelling of a traversal — distinct from a W-line's `>`/`<`-prefixed
+ * form (see {@link parseSteps}). Tokens without a valid orientation, and the `*`
+ * placeholder, are skipped.
+ */
+function parsePathSteps(field: string): Step[] {
+	const steps: Step[] = [];
+	if (!field || field === '*') return steps;
+	for (const tok of field.split(',')) {
+		if (tok.length < 2) continue;
+		const orient = tok[tok.length - 1];
+		if (orient !== '+' && orient !== '-') continue;
+		steps.push({ id: tok.slice(0, -1), orient });
 	}
 	return steps;
 }
@@ -169,16 +240,30 @@ export function parseGfa(text: string): Gfa {
 				break;
 			}
 			case 'S': {
-				const seq = f[2] ?? '';
 				const tags = f.slice(3);
+				// A segment's sequence may be elided as `*` (or absent) with the length
+				// carried in an `LN:i` tag instead — how minigraph's rGFA and many
+				// assembler GFAs (sequence kept in a side FASTA) store nodes. Fall back
+				// to that tag so those graphs still get real node lengths, which the
+				// backbone/longest-path/coordinate math all depend on.
+				const rawSeq = f[2] ?? '';
+				const hasSeq = rawSeq.length > 0 && rawSeq !== '*';
+				const seq = hasSeq ? rawSeq : '';
+				const length = hasSeq ? rawSeq.length : (intTag(tags, 'LN') ?? 0);
+				const depth = readDepth(tags);
 				segments.set(f[1], {
 					id: f[1],
 					seq,
-					length: seq.length,
+					length,
 					coverage: intTag(tags, 'WC'),
 					walkStarts: intTag(tags, 'WS'),
 					walkEnds: intTag(tags, 'WE'),
-					members: stringTag(tags, 'MB')?.split(',')
+					members: stringTag(tags, 'MB')?.split(','),
+					depth: depth?.depth,
+					depthUnit: depth?.depthUnit,
+					stableName: stringTag(tags, 'SN'),
+					stableOffset: intTag(tags, 'SO'),
+					rank: intTag(tags, 'SR')
 				});
 				break;
 			}
@@ -205,13 +290,43 @@ export function parseGfa(text: string): Gfa {
 					start: Number(f[4]),
 					end: Number(f[5]),
 					steps: parseSteps(f[6] ?? ''),
-					tags
+					tags,
+					kind: 'W'
+				});
+				break;
+			}
+			case 'P': {
+				// GFA 1.0 path. A P-line has just a name (no sample/hap/seq split), so
+				// map it onto a `Walk` with the name in both `sample` and `seqId`. Its
+				// bp span isn't on the line — we fill `end` from the summed segment
+				// lengths in a post-pass below, once every S-line has been read.
+				const name = f[1] ?? '';
+				walks.push({
+					sample: name,
+					hapIndex: 0,
+					seqId: name,
+					start: 0,
+					end: 0,
+					steps: parsePathSteps(f[2] ?? ''),
+					tags: {},
+					kind: 'P'
 				});
 				break;
 			}
 			default:
 				break;
 		}
+	}
+
+	// A P-line carries no genomic coordinates, so give each path a bp span equal to
+	// the sequence it visits (segment lengths summed over its steps). This makes the
+	// "reference span" readout and the backbone coordinate axis meaningful for a
+	// path-based graph, matching what a W-line's SeqStart/SeqEnd would give.
+	for (const w of walks) {
+		if (w.kind !== 'P') continue;
+		let bp = 0;
+		for (const s of w.steps) bp += segments.get(s.id)?.length ?? 0;
+		w.end = bp;
 	}
 
 	return { headers, segments, links, walks, referenceSamples, reduced };
@@ -252,9 +367,12 @@ export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 	const ref = referenceSample ? gfa.walks.find((w) => w.sample === referenceSample) : undefined;
 	// In reduced mode the non-reference walks have been aggregated away, so the
 	// live `walks`/sample counts would undercount — use the totals the reducer
-	// recorded on the `X` line instead.
-	const walks = gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length;
-	const samples = gfa.reduced ? gfa.reduced.samples : new Set(gfa.walks.map((w) => w.sample)).size;
+	// recorded on the `X` line instead. A synthetic backbone (computed longest path /
+	// rGFA reference) isn't one of the file's own traversals, so it's excluded — a
+	// graph with no real walks or paths must report 0, not 1.
+	const realWalks = gfa.walks.filter((w) => w.kind !== 'synthetic');
+	const walks = gfa.reduced ? gfa.reduced.totalWalks : realWalks.length;
+	const samples = gfa.reduced ? gfa.reduced.samples : new Set(realWalks.map((w) => w.sample)).size;
 	return {
 		segments: gfa.segments.size,
 		links: gfa.links.length,

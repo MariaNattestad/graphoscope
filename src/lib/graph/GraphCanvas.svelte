@@ -638,8 +638,21 @@
 		// Anchors are sorted by on-screen position (minX). Genomic starts must
 		// ascend in that same order, or "left-to-right = increasing bp" — which the
 		// axis and the gene track both rely on — is false.
+		//
+		// A tolerance guards against false positives: the force layout can nudge a very
+		// short reference segment a pixel past its neighbour, flipping their draw order
+		// by a bp or two (seen on graphs with 1 bp reference nodes, e.g. minigraph rGFA).
+		// That's cosmetically invisible on the axis, so only a backward jump larger than
+		// a small fraction of the whole reference span — the signature of a genuine
+		// mis-ordering, like a reverse-strand segment placed far from its neighbours —
+		// is worth flagging.
+		const refSpan = Math.max(
+			1,
+			anchors[anchors.length - 1].coord.end - anchors[0].coord.start
+		);
+		const tol = Math.max(4, refSpan * 0.005);
 		for (let i = 1; i < anchors.length; i++) {
-			if (anchors[i].coord.start < anchors[i - 1].coord.start) {
+			if (anchors[i - 1].coord.start - anchors[i].coord.start > tol) {
 				console.error(
 					`GraphCanvas: reference is not monotonically increasing — segment ${anchors[i].segId} ` +
 						`is drawn right of ${anchors[i - 1].segId} but has a smaller genomic start ` +

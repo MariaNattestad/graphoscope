@@ -29,7 +29,7 @@
 
 	let {
 		gfa,
-		referenceSample,
+		referenceSample = $bindable(),
 		refKey,
 		discoAvailable = false,
 		discoLoading = false,
@@ -43,11 +43,38 @@
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
-		showHaplotypes = false
+		showHaplotypes = false,
+		initialLayoutMode,
+		walkNoun = 'haplotype walks',
+		backboneOptions = [],
+		backboneNote = null,
+		hasTraversals = true
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
 		refKey?: RefKey;
+		/** Selectable backbone/reference names. When more than one is given, the
+		 * Reference-based layout options show a picker bound to `referenceSample`
+		 * (the /gfa page, where the backbone is user-choosable). Empty on the hosted
+		 * locus browser, whose reference is fixed — so no picker appears there. */
+		backboneOptions?: string[];
+		/** A one-line note shown in place of the picker when the backbone isn't a
+		 * chosen reference — e.g. "computed longest path" or an rGFA reference. */
+		backboneNote?: string | null;
+		/** Whether the graph has real haplotype walks / paths to trace. False for a
+		 * reference-less GFA whose only "walk" is the computed backbone: walk-tracing
+		 * and walk-coverage colouring are meaningless there, so the walk hover mode
+		 * shows a note and the default colouring avoids coverage. Defaults to true (the
+		 * hosted locus browser, whose walks load on demand). */
+		hasTraversals?: boolean;
+		/** Layout mode to open on (before the user touches the control). The /gfa page
+		 * uses this to start a no-reference graph in a reference-free mode. Omitted →
+		 * the default anchored mode. */
+		initialLayoutMode?: LayoutMode;
+		/** What to call the traversals in the report — "haplotype walks" for the hosted
+		 * locus browser's W-lines, "paths" for a P-line graph. `null` hides the count
+		 * entirely (a computed-backbone graph has no real traversals to report). */
+		walkNoun?: string | null;
 		/** Show a panel listing the graph's named haplotype walks, where clicking one
 		 * pins the disco spotlight onto that single haplotype's path (a paused disco
 		 * trace). Off by default — the hosted locus browser's walks are anonymised, so
@@ -93,11 +120,20 @@
 	// The primary layout control: a named mode that picks a whole recipe (family +
 	// all the per-mode force tuning, resolved in the worker). Persists across graphs
 	// so the user can keep comparing the same view. See layoutModes.ts.
-	let layoutMode = $state<LayoutMode>(DEFAULT_LAYOUT_MODE);
+	// Seeded once from the prop (untracked — later prop changes shouldn't yank the
+	// user's chosen mode out from under them); the control owns it from then on.
+	let layoutMode = $state<LayoutMode>(untrack(() => initialLayoutMode) ?? DEFAULT_LAYOUT_MODE);
 	const modeCfg = $derived(getModeConfig(layoutMode));
 	// Reference-free modes have no backbone, so they show no coordinate axis and no
 	// gene track (see the GraphCanvas props below).
 	const referenceFree = $derived(modeCfg.family === 'free');
+
+	// Whether this graph's traversals are P-line paths (vs W-line haplotypes), taken
+	// from the report noun the parent passed. Drives the Haplotypes/Paths panel
+	// wording so a GFA-1.0 path graph doesn't get mislabelled "haplotypes".
+	const traversalsArePaths = $derived(walkNoun === 'paths');
+	const panelHeader = $derived(traversalsArePaths ? 'Paths' : 'Haplotypes');
+	const panelNoun = $derived(traversalsArePaths ? 'paths' : 'walks');
 
 	// Switch layout family from the segmented control, landing on that family's
 	// first mode (so "Reference-free" always has a sensible default selected).
@@ -150,9 +186,11 @@
 	let lightMode = $state(false);
 	let canvasApi = $state<{ exportImage: (filename: string) => void } | null>(null);
 
-	// What each node's fill encodes. Defaults to walk coverage (the original heatmap);
-	// the picker lives in the on-graph legend at the foot of the canvas.
-	let colorMode = $state<ColorMode>('coverage');
+	// What each node's fill encodes. Defaults to walk coverage (the original heatmap),
+	// except on a graph with no real walks/paths — there every node's coverage is 0, so
+	// the heatmap is a flat uniform colour; fall back to node length, which is always
+	// meaningful. The picker lives in the on-graph legend at the foot of the canvas.
+	let colorMode = $state<ColorMode>(untrack(() => hasTraversals) ? 'coverage' : 'length');
 	const colorModeInfo = $derived(COLOR_MODES.find((m) => m.mode === colorMode) ?? COLOR_MODES[0]);
 	// The legend swatch is drawn from the same ramp the canvas uses, so it tracks the
 	// light/dark theme (the picker itself sits on the app's light chrome regardless).
@@ -251,6 +289,7 @@
 		if (gfa.reduced) return [];
 		const out: WalkEndpoint[] = [];
 		for (const w of gfa.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length === 0) continue;
 			const startsHere = w.steps[0].id === nodeId;
 			const endsHere = w.steps[w.steps.length - 1].id === nodeId;
@@ -308,6 +347,7 @@
 		// key and keep only the first walk with each distinct trace.
 		const seen = new Set<string>();
 		for (const w of src.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length < 2) continue; // a single node isn't a path to trace
 			// When a node filter is active (set from the node inspector), disco cycles
 			// only the walks that actually pass through that node.
@@ -373,6 +413,7 @@
 		const seen = new Set<string>();
 		let anonCount = 0;
 		for (const w of src.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length < 2) continue;
 			const key = `${w.sample}#${w.hapIndex}#${w.seqId}`;
 			if (seen.has(key)) continue;
@@ -608,6 +649,7 @@
 		const bySkip = new Map<string, DiscoStep[][]>();
 		if (hoverMode !== 'walk' || !walksGfa) return { byNode, bySkip };
 		for (const w of walksGfa.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length < 2) continue;
 			// File the walk under every displayed segment it touches (deduped).
 			const touched = new Set<string>();
@@ -1252,6 +1294,7 @@
 				{querying}
 				computing={reportComputing}
 				layoutMs={ms}
+				{walkNoun}
 			/>
 
 			<div class="ctl-wrap" class:dimmed={reportBusy}>
@@ -1278,7 +1321,11 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Pinned primary controls: the two most-reached-for switches. -->
+			<!-- Pinned primary controls: the two most-reached-for switches. Only the
+			     hosted locus browser has these (Simplify needs the full/reduced graph
+			     swap), so on a plain GFA the whole group is dropped rather than left as
+			     an empty box. -->
+			{#if discoAvailable || showingAllNodes || allNodesTooMany}
 			<section class="group primary">
 				{#if discoAvailable || showingAllNodes}
 					<label
@@ -1313,6 +1360,7 @@
 					>
 				{/if}
 			</section>
+			{/if}
 
 			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
@@ -1354,7 +1402,12 @@
 						>
 					{/if}
 				{:else if hoverMode === 'walk'}
-					{#if walkLoadBlocked}
+					{#if !hasTraversals}
+						<span class="switch-sub note"
+							>⚠︎ This graph has no walks or paths to trace — its only backbone is the computed
+							one. Try <b>Bubbles</b> instead.</span
+						>
+					{:else if walkLoadBlocked}
 						<span class="switch-sub note"
 							>too much memory to load these walks on this device — open on a desktop</span
 						>
@@ -1382,7 +1435,7 @@
 			{#if showHaploBox}
 				<section class="group haplo">
 					<div class="haplo-head">
-						<span class="switch-label">Haplotypes</span>
+						<span class="switch-label">{panelHeader}</span>
 						{#if namedWalks.length > 0}
 							{#if nodeFilter}
 								<span class="switch-sub"
@@ -1390,12 +1443,12 @@
 									></span
 								>
 							{:else if straightenKey}
-								<span class="switch-sub">one walk straightened below the reference</span>
+								<span class="switch-sub">one {panelNoun === 'paths' ? 'path' : 'walk'} straightened below the reference</span>
 							{:else if pinnedKeys.length > 0}
 								<span class="switch-sub">{pinnedKeys.length} traced · click more to compare</span>
 							{:else}
 								<span class="switch-sub"
-									>{namedWalks.length} walks · click to trace, 📐 to straighten</span
+									>{namedWalks.length} {panelNoun} · click to trace, 📐 to straighten</span
 								>
 							{/if}
 						{/if}
@@ -1460,7 +1513,7 @@
 											<span class="hl-dot" style="background:{colorForKey(w.key)}"></span>
 										{/if}
 										<span class="hl-name">{w.label}</span>
-										{#if w.sample !== 'unknown'}<span class="hl-hap">hap {w.hapIndex}</span>{/if}
+										{#if w.sample !== 'unknown' && !traversalsArePaths}<span class="hl-hap">hap {w.hapIndex}</span>{/if}
 										<span class="hl-span">{w.span > 0 ? `${w.span.toLocaleString()} bp` : ''}</span>
 									</button>
 									<button
@@ -1557,6 +1610,24 @@
 								{/each}
 							</select>
 							<p class="mode-blurb">{modeCfg.blurb}</p>
+							<!-- Backbone picker / note: only meaningful for a reference-anchored
+							     layout, so it lives here (and only when the parent supplies choices —
+							     the /gfa page). More than one option → a picker bound to the chosen
+							     reference; otherwise the note explaining a computed/rGFA backbone. -->
+							{#if modeCfg.family === 'anchored'}
+								{#if backboneOptions.length > 1}
+									<label class="backbone-pick">
+										<span class="backbone-label">Backbone</span>
+										<select bind:value={referenceSample} aria-label="Reference backbone">
+											{#each backboneOptions as s (s)}
+												<option value={s}>{s}</option>
+											{/each}
+										</select>
+									</label>
+								{:else if backboneNote}
+									<p class="backbone-note">{backboneNote}</p>
+								{/if}
+							{/if}
 						</div>
 						<!-- Bendy nodes: the single biggest speed lever, phrased as the pretty
 						     option so it reads as a choice, not a downgrade. On means the
@@ -2383,6 +2454,40 @@
 		line-height: 1.35;
 		color: #6b7280;
 	}
+	/* Backbone picker inside the reference-based layout options (the /gfa page). */
+	.backbone-pick {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin-top: 0.5rem;
+		font-size: 0.76rem;
+		color: #6b7280;
+	}
+	.backbone-label {
+		flex: 0 0 auto;
+	}
+	.backbone-pick select {
+		flex: 1 1 auto;
+		min-width: 0;
+		font: inherit;
+		font-size: 0.78rem;
+		padding: 0.3rem 0.4rem;
+		border: 1px solid #cbd0d8;
+		border-radius: 6px;
+		background: #fff;
+		color: #222;
+		cursor: pointer;
+	}
+	.backbone-note {
+		margin: 0.5rem 0 0;
+		font-size: 0.74rem;
+		line-height: 1.35;
+		color: #5b6472;
+		background: #f4f6fa;
+		border: 1px solid #e3e7ee;
+		border-radius: 6px;
+		padding: 0.35rem 0.5rem;
+	}
 
 	/* Node-inspector header actions (gear + close) and the gear settings popover. */
 	.insp-actions {
@@ -2613,12 +2718,22 @@
 	.hl-name {
 		font-weight: 600;
 		color: #1f2430;
+		/* Long path names (e.g. rGFA/odgi "gi|568815592:32578768-32589835") must
+		   truncate rather than shove the hap/span columns out of the box; the full
+		   name stays in the row's title tooltip. */
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.hl-hap {
+		flex: 0 0 auto;
 		color: #9aa0aa;
 		font-size: 0.7rem;
 	}
 	.hl-span {
+		flex: 0 0 auto;
 		margin-left: auto;
 		color: #9aa0aa;
 		font-size: 0.7rem;

@@ -22,7 +22,8 @@
 		fetchInfo = null,
 		querying = false,
 		computing = false,
-		layoutMs = 0
+		layoutMs = 0,
+		walkNoun = 'haplotype walks'
 	}: {
 		locusLabel: string;
 		stats?: GfaStats | null;
@@ -33,6 +34,9 @@
 		/** The layout worker is computing (excludes quick in-place recomputes). */
 		computing?: boolean;
 		layoutMs?: number;
+		/** Label for the traversal-count row ("haplotype walks" / "paths"). `null`
+		 * hides the row — used for a computed-backbone graph with no real traversals. */
+		walkNoun?: string | null;
 	} = $props();
 
 	// User's manual expand/collapse for the idle state. Reset to collapsed whenever
@@ -85,12 +89,17 @@
 			     and a long value never collide the way shared grid columns would — every
 			     row fits the narrow panel on its own, with all values flush to the right. -->
 			<div class="rep-grid">
-				<div class="rep-row">
-					<span class="rk">fetched</span>
-					<span class="rv">{pending || !fetchInfo
-							? ''
-							: `${fmtBytes(fetchInfo.bytesFetched)} in ${fetchInfo.requestCount} blocks`}</span>
-				</div>
+				<!-- The "fetched" row is about the network round-trip, which only the hosted
+				     locus browser has. The /gfa viewer parses a local file (no fetchInfo,
+				     not querying), so the row is dropped entirely rather than left blank. -->
+				{#if fetchInfo || querying}
+					<div class="rep-row">
+						<span class="rk">fetched</span>
+						<span class="rv">{pending || !fetchInfo
+								? ''
+								: `${fmtBytes(fetchInfo.bytesFetched)} in ${fetchInfo.requestCount} blocks`}</span>
+					</div>
+				{/if}
 
 				<!-- The simplified/raw split only exists on a reduced graph; with Simplify
 				     off the graph is the full one, so show a single count. When reduced, the
@@ -117,10 +126,12 @@
 					</div>
 				{/if}
 
-				<div class="rep-row">
-					<span class="rk">haplotype walks</span>
-					<span class="rv">{pending || !stats ? '' : num(stats.walks)}</span>
-				</div>
+				{#if walkNoun}
+					<div class="rep-row">
+						<span class="rk">{walkNoun}</span>
+						<span class="rv">{pending || !stats ? '' : num(stats.walks)}</span>
+					</div>
+				{/if}
 
 				{#if reduced}
 					<div class="rep-row">
@@ -179,7 +190,9 @@
 			{#if stats}
 				<span class="rep-mini"><b>{num(stats.segments)}</b> n</span>
 				<span class="rep-mini"><b>{num(stats.links)}</b> l</span>
-				<span class="rep-mini"><b>{num(stats.walks)}</b> w</span>
+				{#if walkNoun}
+					<span class="rep-mini"><b>{num(stats.walks)}</b> w</span>
+				{/if}
 			{/if}
 			<span class="rep-caret" aria-hidden="true">▾</span>
 		</button>
