@@ -311,7 +311,7 @@
 						</div>
 
 						<div class="gfa-foot">
-							<span>Looking for HPRC pangenome loci?</span>
+							<span>Want to query from the massive HPRC graphs?</span>
 							<a href="{base}/" data-sveltekit-reload>Open the locus browser →</a>
 						</div>
 					</div>
