@@ -1321,7 +1321,11 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Pinned primary controls: the two most-reached-for switches. -->
+			<!-- Pinned primary controls: the two most-reached-for switches. Only the
+			     hosted locus browser has these (Simplify needs the full/reduced graph
+			     swap), so on a plain GFA the whole group is dropped rather than left as
+			     an empty box. -->
+			{#if discoAvailable || showingAllNodes || allNodesTooMany}
 			<section class="group primary">
 				{#if discoAvailable || showingAllNodes}
 					<label
@@ -1356,6 +1360,7 @@
 					>
 				{/if}
 			</section>
+			{/if}
 
 			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index

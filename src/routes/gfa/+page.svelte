@@ -31,6 +31,10 @@
 	let error = $state<string | null>(null);
 	let loading = $state(false);
 	let dragOver = $state(false);
+	// The file picker popover, opened from the header pill (mirrors the locus browser's
+	// query popover). Open on first load — there's no file yet — and closed once one is
+	// loaded; the pill toggles it thereafter, over the current graph.
+	let pickerOpen = $state(true);
 
 	// What the layout hangs its straight reference axis off, and where it came from:
 	//  - 'walk'      — the file has W-line haplotypes (GFA 1.1).
@@ -148,6 +152,7 @@
 				}
 			}
 			fileName = name;
+			pickerOpen = false; // a graph is up — dismiss the picker
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -236,14 +241,6 @@
 		}
 	}
 
-	function reset() {
-		gfa = null;
-		fileName = '';
-		error = null;
-		referenceSample = '';
-		backboneKind = 'none';
-		rgfaContig = '';
-	}
 </script>
 
 <svelte:head>
@@ -252,13 +249,84 @@
 
 <div class="app">
 	<AppBar tagline="Drop in any .gfa — with or without a reference path">
-		{#snippet links()}
-			{#if gfa}
-				<span class="fname" title={fileName}>{fileName}</span>
-				<button class="link-btn" onclick={reset}>Load another</button>
-			{/if}
+		{#snippet children()}
+			<!-- File pill, mirroring the locus browser's query pill: it names the current
+			     file and opens the picker (drop zone + examples) below it. -->
+			<div class="filepill-wrap">
+				<button
+					class="filepill"
+					class:open={pickerOpen}
+					onclick={() => (pickerOpen = !pickerOpen)}
+					title="Open a .gfa file"
+				>
+					{#if gfa}
+						<span class="fp-name">{fileName}</span>
+					{:else}
+						<span class="fp-placeholder">Open a <code>.gfa</code> file</span>
+					{/if}
+					<span class="fp-caret" aria-hidden="true">▾</span>
+				</button>
+
+				{#if pickerOpen}
+					<div class="gfa-pop" role="dialog" aria-label="Open a GFA graph">
+						<div class="qp-block">
+							<span class="qp-head">Open a file</span>
+							<!-- svelte-ignore a11y_no_static_element_interactions -->
+							<label
+								class="dz-drop"
+								class:over={dragOver}
+								ondragover={(e) => {
+									e.preventDefault();
+									dragOver = true;
+								}}
+								ondragleave={() => (dragOver = false)}
+								ondrop={onDrop}
+							>
+								<span class="dz-drop-icon">🧬</span>
+								<span class="dz-drop-main"
+									>Drag a <code>.gfa</code> here, or <span class="dz-choose">choose a file</span></span
+								>
+								<span class="dz-drop-sub"
+									>{loading ? 'Loading…' : 'parsed in your browser — nothing uploaded'}</span
+								>
+								<input type="file" accept=".gfa,.txt" onchange={onPick} hidden />
+							</label>
+						</div>
+
+						<div class="qp-block">
+							<span class="qp-head">Or try an example</span>
+							<div class="gfa-ex-grid">
+								{#each EXAMPLES as ex (ex.name)}
+									<button
+										class="gfa-ex"
+										onclick={() => loadExample(ex)}
+										disabled={loading}
+										title={'url' in ex.src ? `Fetched from GitHub: ${ex.src.url}` : ex.name}
+									>
+										<b>{ex.label}</b>
+										<span class="gfa-ex-kind">{ex.kind}</span>
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						<p class="gfa-pop-note">
+							Reads GFA 1.1 <code>W</code>-line walks and GFA 1.0 <code>P</code>-line paths — each
+							becomes a clickable trace. A graph with no walks or paths still opens: a reference is
+							recovered from rGFA <code>SN/SO/SR</code> tags if present, else a longest path is
+							computed; assembly-style graphs also get a structure &amp; depth report. All examples
+							but the first are fetched from the test data of odgi, gfatools and Bandage.
+						</p>
+					</div>
+				{/if}
+			</div>
 		{/snippet}
 	</AppBar>
+
+	{#if pickerOpen}
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+		<div class="pick-scrim" role="presentation" onclick={() => (pickerOpen = false)}></div>
+	{/if}
 
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
@@ -288,9 +356,10 @@
 				</div>
 			</section>
 		{:else}
+			<!-- No file yet: an empty frame with a hint. The picker opens over it. -->
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<section
-				class="dropzone"
+				class="empty-stage"
 				class:over={dragOver}
 				ondragover={(e) => {
 					e.preventDefault();
@@ -299,41 +368,12 @@
 				ondragleave={() => (dragOver = false)}
 				ondrop={onDrop}
 			>
-				<div class="dz-inner">
+				<div class="empty-hint">
 					<div class="dz-icon">🧬</div>
-					<h2>Open a GFA graph</h2>
-					<p class="dz-sub">
-						Drag a <code>.gfa</code> file here, or choose one. Everything is parsed in your browser —
-						nothing is uploaded.
-					</p>
-					<div class="dz-actions">
-						<label class="dz-btn primary">
-							{loading ? 'Loading…' : 'Choose file'}
-							<input type="file" accept=".gfa,.txt" onchange={onPick} hidden />
-						</label>
-					</div>
-					<div class="dz-examples">
-						<span class="dz-examples-label">or try an example</span>
-						<div class="dz-example-btns">
-							{#each EXAMPLES as ex (ex.name)}
-								<button
-									class="dz-btn small"
-									onclick={() => loadExample(ex)}
-									disabled={loading}
-									title={'url' in ex.src ? `Fetched from GitHub: ${ex.src.url}` : ex.name}
-								>
-									<span class="ex-label">{ex.label}</span>
-									<span class="ex-kind">{ex.kind}</span>
-								</button>
-							{/each}
-						</div>
-					</div>
-					<p class="dz-note">
-						Reads GFA 1.1 <code>W</code>-line haplotype walks and GFA 1.0 <code>P</code>-line paths
-						— each becomes a clickable trace through the graph. A graph with no walks or paths still
-						opens: a reference is recovered from rGFA <code>SN/SO/SR</code> tags if present, else a
-						longest path is computed; assembly-style graphs also get a structure &amp; depth report.
-						All examples but the first are fetched from the test data of odgi, gfatools and Bandage.
+					<p>
+						No graph loaded — <button class="link-inline" onclick={() => (pickerOpen = true)}
+							>open a <code>.gfa</code> file</button
+						> to begin, or drop one here.
 					</p>
 				</div>
 			</section>
@@ -364,16 +404,184 @@
 		background: #eef1f5;
 	}
 
-	/* The file name shown in the shared top bar (passed through AppBar's `links`
-	   snippet, so it's styled here, in the parent scope). */
-	.fname {
-		color: #ede9fe;
-		font-size: 0.8rem;
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		max-width: 30vw;
+	/* ---- file pill in the header + its picker popover (mirrors the locus browser) ---- */
+	.filepill-wrap {
+		position: relative;
+		display: flex;
+		justify-content: center;
+	}
+	.filepill {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		max-width: 46vw;
+		padding: 0.3rem 0.9rem;
+		border-radius: 999px;
+		border: 1px solid rgba(255, 255, 255, 0.25);
+		background: rgba(255, 255, 255, 0.12);
+		color: #fff;
+		font: inherit;
+		cursor: pointer;
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.filepill:hover {
+		background: rgba(255, 255, 255, 0.2);
+		border-color: rgba(255, 255, 255, 0.4);
+	}
+	.filepill.open {
+		background: #fff;
+		border-color: #fff;
+		color: #2e1065;
+	}
+	.fp-name {
+		flex: 0 1 auto;
+		min-width: 2.5rem;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.85rem;
+		font-weight: 700;
+	}
+	.fp-placeholder {
+		flex: 0 1 auto;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+	.fp-placeholder code {
+		background: rgba(255, 255, 255, 0.16);
+		color: inherit;
+	}
+	.filepill.open .fp-placeholder code {
+		background: #eef1f5;
+		color: #2e1065;
+	}
+	.fp-caret {
+		flex: 0 0 auto;
+		font-size: 0.6rem;
+		opacity: 0.8;
+	}
+
+	/* Dim scrim over the page — under the header (z 100), so the strip and its picker
+	   stay bright while everything below dims. */
+	.pick-scrim {
+		position: fixed;
+		inset: 0;
+		z-index: 90;
+		background: rgba(16, 24, 40, 0.4);
+	}
+	.gfa-pop {
+		position: absolute;
+		top: calc(100% + 10px);
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 101;
+		width: min(540px, 92vw);
+		display: flex;
+		flex-direction: column;
+		gap: 0.9rem;
+		background: #fff;
+		border: 1px solid #e3e7ee;
+		border-radius: 12px;
+		padding: 1rem 1.1rem;
+		box-shadow: 0 18px 44px rgba(16, 24, 40, 0.28);
+		color: #1f2430;
+		text-align: left;
+	}
+	.qp-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.qp-block + .qp-block {
+		border-top: 1px solid #f0f2f5;
+		padding-top: 0.9rem;
+	}
+	.qp-head {
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: #6b7280;
+	}
+	/* Drop zone / choose-file target inside the popover. */
+	.dz-drop {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 0.2rem;
+		text-align: center;
+		padding: 1.1rem 1rem;
+		border: 2px dashed #cbd2dd;
+		border-radius: 10px;
+		background: #fbfcfe;
+		cursor: pointer;
+		transition:
+			border-color 0.15s ease,
+			background 0.15s ease;
+	}
+	.dz-drop:hover {
+		border-color: #9aa0aa;
+		background: #f6f7f9;
+	}
+	.dz-drop.over {
+		border-color: #7c3aed;
+		background: #faf7ff;
+	}
+	.dz-drop-icon {
+		font-size: 1.6rem;
+	}
+	.dz-drop-main {
+		font-size: 0.9rem;
+		color: #333;
+	}
+	.dz-choose {
+		color: #6d28d9;
+		font-weight: 600;
+		text-decoration: underline;
+	}
+	.dz-drop-sub {
+		font-size: 0.74rem;
+		color: #9aa0aa;
+	}
+	.gfa-ex-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.5rem;
+	}
+	.gfa-ex {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
+		text-align: left;
+		font: inherit;
+		background: #f7f8fa;
+		border: 1px solid #e3e7ee;
+		border-radius: 9px;
+		padding: 0.5rem 0.6rem;
+		cursor: pointer;
+	}
+	.gfa-ex:hover:not(:disabled) {
+		background: #f5f0ff;
+		border-color: #c7b8ec;
+	}
+	.gfa-ex:disabled {
+		opacity: 0.6;
+		cursor: default;
+	}
+	.gfa-ex b {
+		font-size: 0.82rem;
+		color: #1f2430;
+	}
+	.gfa-ex-kind {
+		font-size: 0.7rem;
+		color: #7a828f;
+	}
+	.gfa-pop-note {
+		margin: 0;
+		font-size: 0.74rem;
+		line-height: 1.5;
+		color: #9aa0aa;
 	}
 
 	.error-banner {
@@ -418,8 +626,8 @@
 		height: 100%;
 	}
 
-	/* Empty-state drop zone. */
-	.dropzone {
+	/* Empty stage shown before a file is chosen (the picker opens over it). */
+	.empty-stage {
 		flex: 1;
 		display: flex;
 		align-items: center;
@@ -431,102 +639,37 @@
 			border-color 0.15s ease,
 			background 0.15s ease;
 	}
-	.dropzone.over {
+	.empty-stage.over {
 		border-color: #7c3aed;
 		background: #faf7ff;
 	}
-	.dz-inner {
+	.empty-hint {
 		text-align: center;
-		max-width: 30rem;
+		max-width: 28rem;
 		padding: 2rem;
+		color: #8a94a6;
 	}
 	.dz-icon {
 		font-size: 2.5rem;
 	}
-	.dz-inner h2 {
-		margin: 0.6rem 0 0.3rem;
-		font-size: 1.2rem;
-	}
-	.dz-sub {
-		margin: 0 0 1.2rem;
-		color: #6b7280;
-		font-size: 0.9rem;
+	.empty-hint p {
+		margin: 0.6rem 0 0;
+		font-size: 0.95rem;
 		line-height: 1.5;
 	}
-	.dz-actions {
-		display: flex;
-		gap: 0.6rem;
-		justify-content: center;
-		flex-wrap: wrap;
-	}
-	.dz-btn {
+	.link-inline {
 		font: inherit;
-		font-size: 0.88rem;
+		font-size: inherit;
 		font-weight: 600;
+		color: #6d28d9;
+		background: none;
+		border: none;
+		padding: 0;
 		cursor: pointer;
-		border: 1px solid #d3d9e2;
-		background: #fff;
-		color: #333;
-		padding: 0.5rem 1rem;
-		border-radius: 8px;
+		text-decoration: underline;
 	}
-	.dz-btn:hover:not(:disabled) {
-		border-color: #9aa0aa;
-		background: #f6f7f9;
-	}
-	.dz-btn.small {
-		font-size: 0.8rem;
-		padding: 0.4rem 0.7rem;
-		display: inline-flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 0.1rem;
-		line-height: 1.2;
-	}
-	.ex-label {
-		font-weight: 600;
-	}
-	.ex-kind {
-		font-size: 0.68rem;
-		font-weight: 500;
-		color: #9aa0aa;
-	}
-	.dz-examples {
-		margin-top: 1.4rem;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 0.55rem;
-	}
-	.dz-examples-label {
-		font-size: 0.75rem;
-		color: #9aa0aa;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	.dz-example-btns {
-		display: flex;
-		gap: 0.5rem;
-		justify-content: center;
-		flex-wrap: wrap;
-	}
-	.dz-btn.primary {
-		border-color: #7c3aed;
-		background: #7c3aed;
-		color: #fff;
-	}
-	.dz-btn.primary:hover {
-		background: #6d28d9;
-	}
-	.dz-btn:disabled {
-		opacity: 0.6;
-		cursor: default;
-	}
-	.dz-note {
-		margin: 1.2rem 0 0;
-		color: #9aa0aa;
-		font-size: 0.78rem;
-		line-height: 1.5;
+	.link-inline:hover {
+		color: #5b21b6;
 	}
 	code {
 		background: #eef1f5;
