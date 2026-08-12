@@ -27,7 +27,6 @@
 	const theme = $derived<BaseTheme>(lightMode ? baseThemeLight : baseThemeDark);
 
 	// --- geometry ---------------------------------------------------------------
-	const GUTTER_W = 156; // left row-label column
 	const RULER_H = 38; // top node-id + coordinate band
 	const ROW_H = 20;
 	const LETTER_MIN_PX = 7.5; // draw glyphs once a base is at least this wide
@@ -37,6 +36,10 @@
 	let canvasEl: HTMLCanvasElement | undefined = $state();
 	let width = $state(800);
 	let height = $state(360);
+
+	// Left row-label column: narrower on a phone, where it would otherwise swallow
+	// half the width, but never so wide it starves the matrix on a small panel.
+	const GUTTER_W = $derived(Math.min(width * 0.42, width < 560 ? 96 : 156));
 
 	let pxPerBp = $state(4);
 	let panX = $state(0); // px; screenX(bp) = GUTTER_W + panX + bp*pxPerBp
@@ -437,7 +440,8 @@
 				? '600 11px ui-sans-serif, system-ui, sans-serif'
 				: '11px ui-sans-serif, system-ui, sans-serif';
 			ctx.fillStyle = row.isReference ? theme.refRowLabel : theme.rowLabel;
-			const label = row.label.length > 20 ? row.label.slice(0, 19) + '…' : row.label;
+			const maxChars = Math.max(4, Math.floor((GUTTER_W - 46) / 6.3));
+			const label = row.label.length > maxChars ? row.label.slice(0, maxChars - 1) + '…' : row.label;
 			ctx.fillText(label, 8, y0 + ROW_H / 2);
 			// multiplicity + inversion badges, right-aligned in the gutter
 			let bx = GUTTER_W - 6;
@@ -466,11 +470,16 @@
 		ctx.moveTo(GUTTER_W + 0.5, 0);
 		ctx.lineTo(GUTTER_W + 0.5, height);
 		ctx.stroke();
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(0, 0, GUTTER_W - 2, RULER_H);
+		ctx.clip();
 		ctx.fillStyle = theme.gutterText;
 		ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
 		ctx.textAlign = 'left';
 		ctx.textBaseline = 'middle';
-		ctx.fillText('paths ↓ · bases →', 8, RULER_H / 2);
+		ctx.fillText(GUTTER_W < 120 ? 'paths ↓' : 'paths ↓ · bases →', 8, RULER_H / 2);
+		ctx.restore();
 
 		// 6) vertical scrollbar hint
 		if (maxScrollY > 0) {
