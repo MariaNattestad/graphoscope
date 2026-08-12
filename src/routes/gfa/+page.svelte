@@ -248,7 +248,6 @@
 				<span class="fname" title={fileName}>{fileName}</span>
 				<button class="link-btn" onclick={reset}>Load another</button>
 			{/if}
-			<a class="link-btn" href="{base}/" data-sveltekit-reload>← Locus browser</a>
 		{/snippet}
 	</AppBar>
 
