@@ -16,6 +16,7 @@
 	import type { LayoutMode } from '$lib/graph/layoutModes';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import AssemblyReport from './AssemblyReport.svelte';
+	import AppBar from '$lib/AppBar.svelte';
 	import { base } from '$app/paths';
 
 	// The label given to the synthetic longest-path backbone we compute for a graph
@@ -241,19 +242,15 @@
 </svelte:head>
 
 <div class="app">
-	<header class="appbar">
-		<div class="brand">
-			<h1>GFA viewer</h1>
-			<span class="tagline">Drop in any .gfa — with or without a reference path</span>
-		</div>
-		<div class="appbar-links">
+	<AppBar tagline="Drop in any .gfa — with or without a reference path">
+		{#snippet links()}
 			{#if gfa}
 				<span class="fname" title={fileName}>{fileName}</span>
 				<button class="link-btn" onclick={reset}>Load another</button>
 			{/if}
 			<a class="link-btn" href="{base}/" data-sveltekit-reload>← Locus browser</a>
-		</div>
-	</header>
+		{/snippet}
+	</AppBar>
 
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
@@ -393,38 +390,8 @@
 		background: #eef1f5;
 	}
 
-	.appbar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.4rem 1rem;
-		background: linear-gradient(90deg, #2e1065 0%, #6d28d9 58%, #9333ea 100%);
-		border-bottom: 1px solid #4c1d95;
-		box-shadow: 0 1px 3px rgba(76, 29, 149, 0.25);
-		flex: 0 0 auto;
-	}
-	.brand {
-		display: flex;
-		flex-direction: column;
-		line-height: 1.15;
-	}
-	.brand h1 {
-		margin: 0;
-		font-size: 1.15rem;
-		font-weight: 700;
-		letter-spacing: -0.01em;
-		color: #fff;
-	}
-	.tagline {
-		color: #d6bcfa;
-		font-size: 0.72rem;
-	}
-	.appbar-links {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-	}
+	/* The file name shown in the shared top bar (passed through AppBar's `links`
+	   snippet, so it's styled here, in the parent scope). */
 	.fname {
 		color: #ede9fe;
 		font-size: 0.8rem;
@@ -433,21 +400,6 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.link-btn {
-		background: none;
-		border: none;
-		color: #ede9fe;
-		font: inherit;
-		font-size: 0.85rem;
-		font-weight: 600;
-		cursor: pointer;
-		padding: 0.2rem 0.3rem;
-		text-decoration: none;
-	}
-	.link-btn:hover {
-		color: #fff;
-		text-decoration: underline;
 	}
 
 	.error-banner {

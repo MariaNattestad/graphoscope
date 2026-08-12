@@ -3,6 +3,7 @@
 	import { GbzClient, parseLocus, DEFAULT_CONTEXT, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RawDataView from '$lib/RawDataView.svelte';
+	import AppBar from '$lib/AppBar.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import QueryReport from '$lib/graph/QueryReport.svelte';
 	import { initAnalytics, trackEvent } from '$lib/analytics';
@@ -57,7 +58,6 @@
 	// overlay is open. UI-only, so plain local state. (The variant arcs, once their
 	// own tab, are now an optional track inside the graph layout view.)
 	let view = $state<'graph' | 'data'>('graph');
-	let aboutOpen = $state(false);
 	// The query popover, opened from the header pill: reference graph, locus/gene,
 	// examples, and context — everything needed to compose or change a query. The
 	// graph stays visible behind a dim scrim. Closed by the pill, the scrim, Escape,
@@ -481,20 +481,13 @@
 
 <svelte:window
 	onkeydown={(e) => {
-		if (e.key === 'Escape') {
-			aboutOpen = false;
-			queryOpen = false;
-		}
+		if (e.key === 'Escape') queryOpen = false;
 	}}
 />
 
 <div class="app">
-	<header class="appbar">
-		<div class="brand">
-			<h1>Graphoscope</h1>
-			<span class="tagline">HPRC pangenome graphs, queried by locus</span>
-		</div>
-
+	<AppBar tagline="HPRC pangenome graphs, queried by locus" aboutSource={graph.s3Source}>
+		{#snippet children()}
 		<div class="querypill-wrap">
 			<button
 				class="querypill"
@@ -598,19 +591,8 @@
 				</div>
 			{/if}
 		</div>
-
-		<div class="appbar-links">
-			<a
-				class="link-btn"
-				href="https://github.com/MariaNattestad/graphoscope"
-				target="_blank"
-				rel="noopener"
-			>
-				GitHub ↗
-			</a>
-			<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
-		</div>
-	</header>
+		{/snippet}
+	</AppBar>
 
 	{#if queryOpen}
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -693,109 +675,6 @@
 	</div>
 </div>
 
-{#if aboutOpen}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="modal-backdrop" role="presentation" onclick={() => (aboutOpen = false)}>
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<div
-			class="modal"
-			role="dialog"
-			tabindex="-1"
-			aria-modal="true"
-			aria-label="About Graphoscope"
-			onclick={(e) => e.stopPropagation()}
-		>
-			<div class="modal-head">
-				<h2>About Graphoscope</h2>
-				<button class="modal-close" onclick={() => (aboutOpen = false)} aria-label="Close">×</button>
-			</div>
-			<div class="modal-body">
-				<h3>How the on-demand querying works</h3>
-				<div class="how-body">
-			<p>
-				The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
-				the Human Pangenome Reference Consortium. Each is distributed as a
-				<code>.gbz</code> file of several gigabytes.
-			</p>
-			<p>
-				Querying one by genomic coordinate normally means downloading the whole thing. Instead we
-				use <b>GBZ-base</b> (<code>gbz2db</code> / <code>query</code>, part of the
-				<a href="https://github.com/jltsiren/gbz-base" target="_blank" rel="noopener">vg / GBZ-base</a>
-				tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database that
-				<i>can</i> be queried by position.
-			</p>
-			<p>
-				What <b>we</b> added: we compiled GBZ-base's <code>query</code> program to WebAssembly
-				(<code>wasm32-wasip1</code>) and wrote a small WASI filesystem shim that backs SQLite's
-				page reads with <b>HTTP range requests</b>. So the browser runs the real query engine in a
-				Web Worker and pulls only the few megabytes of database pages a locus actually touches
-				from the file on Cloudflare R2 — an approach inspired by
-				<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>.
-				The visualizations above (the graph layout, with optional bubble and gene tracks
-				beneath it, and the simplification described next) are a few prototypes we built for
-				inspecting a graph's complex patterns around a particular reference locus.
-			</p>
-			<p>
-				A raw locus can still be far too tangled to read — and, more to the point, far too heavy to
-				hold in a browser tab, since the per-haplotype walks through the graph dominate the data
-				(for a repetitive locus like <b>LPA</b> they are the great majority of the bytes). So before
-				anything is drawn, Graphoscope runs its own <b>reference-guided simplification</b> — a second
-				WebAssembly module we wrote (<code>crates/reduce</code>, independent of GBZ-base) that reads
-				the query's output as a stream and never materialises the whole graph. Anchored on the
-				reference path, it detects the <i>superbubbles</i> hanging off it and collapses any whose
-				alternate alleles are shorter than a <b>collapse threshold</b> (50&nbsp;bp), then merges the
-				resulting non-branching runs of nodes into single segments.
-				Crucially, instead of keeping every walk it just <b>counts</b> how many pass through each node
-				and edge — that count is what the yellow&#8202;→&#8202;red colouring shows. The effect on
-				memory is large: a locus like LPA drops from hundreds of megabytes of parsed graph to a few.
-				A standalone <a href="{base}/playground" target="_blank" rel="noopener"
-					>simplification playground</a
-				> (a testing sandbox) lets you tweak the collapse threshold and compare the original and
-				simplified graphs side by side.
-			</p>
-			<p>
-				Currently showing: <code>{graph.s3Source}</code> — the public HPRC v2.0 Minigraph-Cactus
-				graph, converted to a GBZ-base <code>.gbz.db</code> (SQLite) and hosted on Cloudflare R2
-				for coordinate range queries.
-			</p>
-		</div>
-
-			<h3>Acknowledgements</h3>
-			<ul class="ack-list">
-			<li>
-				<b>The Human Pangenome Reference Consortium (HPRC)</b> and the
-				<b>Minigraph-Cactus</b> team for building and openly releasing the pangenome graphs shown
-				here.
-			</li>
-			<li>
-				<b>GBZ-base</b> and the <b>vg</b> toolkit (Jouni Sirén and colleagues) for
-				<code>gbz2db</code>/<code>query</code>, which make coordinate queries over a graph
-				possible.
-			</li>
-			<li>
-				<b>browser_wasi_shim</b> (@bjorn3) for running the WASI query binary in the browser, and the
-				<b>SQLite</b> and <b>Rust</b> projects underneath it.
-			</li>
-			<li>
-				<b>IGV.js</b> and <b>D3</b> for visualization frameworks.
-			</li>
-			<li>
-				<b>Bandage</b> for the strand-like node rendering style that the reference-anchored graph
-				layout draws inspiration from.
-			</li>
-			<li>
-				<b>42basepairs</b> for the range-request idea that this is modelled on.
-			</li>
-			<li>Gene coordinates from <b>GENCODE</b> (GRCh38) and the <b>T2T-CHM13v2.0</b> annotation.</li>
-			</ul>
-			</div>
-			<footer class="modal-foot muted small">
-				GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
-			</footer>
-		</div>
-	</div>
-{/if}
-
 <style>
 	:global(html),
 	:global(body) {
@@ -819,50 +698,8 @@
 		background: #eef1f5;
 	}
 
-	/* ---- top bar: a thin identity strip over a distinct query banner ---- */
-	.appbar {
-		/* Above the query scrim, so the strip (and its popover) stay bright while
-		   the rest of the page dims behind them. */
-		position: relative;
-		z-index: 100;
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
-		padding: 0.4rem 1rem;
-		/* A sleek purple strip, nodding to the disco-walks button's gradient. */
-		background: linear-gradient(90deg, #2e1065 0%, #6d28d9 58%, #9333ea 100%);
-		border-bottom: 1px solid #4c1d95;
-		box-shadow: 0 1px 3px rgba(76, 29, 149, 0.25);
-		flex: 0 0 auto;
-	}
-	.appbar .brand h1 {
-		color: #fff;
-	}
-	.appbar .tagline {
-		color: #d6bcfa;
-	}
-	.appbar .link-btn {
-		color: #ede9fe;
-	}
-	.appbar .link-btn:hover {
-		color: #fff;
-	}
-	.brand {
-		display: flex;
-		flex-direction: column;
-		line-height: 1.15;
-	}
-	.brand h1 {
-		margin: 0;
-		font-size: 1.15rem;
-		font-weight: 700;
-		letter-spacing: -0.01em;
-	}
-	.tagline {
-		color: #7a828f;
-		font-size: 0.72rem;
-	}
+	/* The top bar (wordmark, GitHub / About links, About modal) now lives in the
+	   shared AppBar component. Only the query pill it hosts stays here. */
 
 	/* ---- query pill in the header + its popover ---- */
 	.querypill-wrap {
@@ -1118,25 +955,6 @@
 		cursor: default;
 	}
 
-	.appbar-links {
-		display: flex;
-		align-items: center;
-		gap: 0.3rem;
-	}
-	.link-btn {
-		background: none;
-		border: none;
-		color: #2563eb;
-		font: inherit;
-		font-size: 0.85rem;
-		font-weight: 600;
-		cursor: pointer;
-		padding: 0.2rem 0.3rem;
-		text-decoration: none;
-	}
-	.link-btn:hover {
-		text-decoration: underline;
-	}
 	/* suggest dropdown */
 	.suggest {
 		position: absolute;
@@ -1309,94 +1127,6 @@
 		}
 	}
 
-	/* ---- about modal ---- */
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(16, 24, 40, 0.45);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: 2rem;
-		z-index: 100;
-	}
-	.modal {
-		background: #fff;
-		border-radius: 12px;
-		width: min(760px, 100%);
-		max-height: 85vh;
-		display: flex;
-		flex-direction: column;
-		box-shadow: 0 20px 60px rgba(16, 24, 40, 0.3);
-		overflow: hidden;
-	}
-	.modal-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 1rem 1.3rem;
-		border-bottom: 1px solid #e3e7ee;
-	}
-	.modal-head h2 {
-		margin: 0;
-		font-size: 1.05rem;
-	}
-	.modal-close {
-		background: none;
-		border: none;
-		font-size: 1.5rem;
-		line-height: 1;
-		color: #98a0ac;
-		cursor: pointer;
-		padding: 0 0.3rem;
-	}
-	.modal-close:hover {
-		color: #1f2430;
-	}
-	.modal-body {
-		padding: 1.1rem 1.3rem;
-		overflow-y: auto;
-	}
-	.modal-body h3 {
-		margin: 1.3rem 0 0.5rem;
-		font-size: 0.9rem;
-	}
-	.modal-body h3:first-child {
-		margin-top: 0;
-	}
-	.modal-foot {
-		padding: 0.7rem 1.3rem;
-		border-top: 1px solid #e3e7ee;
-	}
-
-	.how-body {
-		font-size: 0.85rem;
-		padding: 0.6rem 0.9rem;
-		border-left: 3px solid #dbeafe;
-		background: #f8faff;
-		border-radius: 0 8px 8px 0;
-		color: #444;
-	}
-	.how-body p {
-		margin: 0 0 0.6rem;
-	}
-	.how-body p:last-child {
-		margin-bottom: 0;
-	}
-	.ack-list {
-		margin: 0.4rem 0 0;
-		padding-left: 1.1rem;
-		font-size: 0.82rem;
-		color: #555;
-		line-height: 1.6;
-	}
-
-	.muted {
-		color: #888;
-	}
-	.small {
-		font-size: 0.8rem;
-	}
 	code {
 		background: #eef1f5;
 		padding: 0 4px;
@@ -1416,20 +1146,8 @@
 	   flexible item, shrinking into whatever space brand + links leave (it already
 	   truncates its contents), so the row can never overflow. */
 	@media (max-width: 640px) {
-		.appbar {
-			gap: 0.5rem;
-			padding: 0.4rem 0.6rem;
-		}
-		.tagline {
-			display: none;
-		}
-		.brand {
-			flex: 0 0 auto;
-			min-width: 0;
-		}
-		.brand h1 {
-			font-size: 1rem;
-		}
+		/* The query pill is the flexible middle item in the shared AppBar header —
+		   let it shrink into whatever space the wordmark and links leave. */
 		.querypill-wrap {
 			flex: 1 1 auto;
 			min-width: 0;
@@ -1438,14 +1156,6 @@
 			max-width: 100%;
 			padding: 0.28rem 0.6rem;
 			gap: 0.3rem;
-		}
-		.appbar-links {
-			flex: 0 0 auto;
-			gap: 0.15rem;
-		}
-		.appbar .link-btn {
-			font-size: 0.78rem;
-			padding: 0.2rem 0.25rem;
 		}
 
 		/* Tighter frame around the workspace so the graph gets the width. */
