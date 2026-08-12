@@ -130,7 +130,7 @@ export interface LayoutOptions {
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 	/** Which named layout mode to use. Anchored modes ('classic', 'spread', 'naive')
-	 * lay out along the reference backbone; free modes ('simple-force', 'stringy',
+	 * lay out along the reference backbone; free modes ('fm3', 'simple-force',
 	 * 'flow', 'layered', 'radial') ignore the backbone for positioning and run a
 	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'classic'. */
 	mode?: LayoutMode;
@@ -285,8 +285,7 @@ function farthest(dist: Map<string, number>): string {
 
 /** Scatter each chain over a square whose side grows with node count, so a big
  * graph starts spread out (a tiny box would pack everything into one dense knot
- * that charge repulsion then has to slowly blow apart). Used by simple-force /
- * stringy. */
+ * that charge repulsion then has to slowly blow apart). Used by simple-force. */
 function seedScatter(ctx: FreeCtx) {
 	const n = Math.max(1, ctx.chains.length);
 	const spread = Math.max(ctx.unit * 20, ctx.unit * 3 * Math.sqrt(n));

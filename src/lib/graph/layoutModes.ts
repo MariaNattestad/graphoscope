@@ -29,7 +29,6 @@ export type LayoutMode =
 	// reference-free
 	| 'fm3'
 	| 'simple-force'
-	| 'stringy'
 	| 'flow'
 	| 'layered'
 	| 'radial';
@@ -161,25 +160,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkDistanceScale: 1,
 			linkStrength: 0.5,
 			collide: 8,
-			seeding: 'scatter',
-		}
-	},
-	{
-		id: 'stringy',
-		label: 'Stringy',
-		family: 'free',
-		blurb: 'Long, loose strands that spread out organically. Good for tangles and repeats.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
-		spread: false,
-		bendNodes: true,
-		refFree: {
-			charge: -90,
-			chargeDistanceMax: 700,
-			linkDistanceScale: 2.4,
-			linkStrength: 0.12,
-			collide: 11,
 			seeding: 'scatter',
 		}
 	},
