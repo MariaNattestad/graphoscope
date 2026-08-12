@@ -30,4 +30,62 @@ describe('parseGfa + gfaStats', () => {
 		const gfa = parseGfa(['S\t1\tACGT', 'Q\tsomething\telse', 'S\t2\tGG'].join('\n'));
 		expect(gfa.segments.size).toBe(2);
 	});
+
+	it('takes segment length from the LN tag when the sequence is elided', () => {
+		// rGFA / assembler style: sequence stored elsewhere, length in LN:i.
+		const gfa = parseGfa(['S\ts1\t*\tLN:i:5000', 'S\ts2\tACGT'].join('\n'));
+		expect(gfa.segments.get('s1')?.length).toBe(5000);
+		expect(gfa.segments.get('s1')?.seq).toBe('');
+		// A real sequence still wins over any (redundant) LN tag.
+		expect(gfa.segments.get('s2')?.length).toBe(4);
+		expect(gfaStats(gfa).totalSequenceBp).toBe(5004);
+	});
+
+	it('excludes a synthetic backbone from the walk and sample counts', () => {
+		// A reference-less graph gets a computed backbone injected as a walk; it isn't
+		// one of the file's own traversals, so the counts must stay 0.
+		const gfa = parseGfa(['S\t1\tACGT', 'S\t2\tACGT'].join('\n'));
+		gfa.walks.push({
+			sample: '(computed backbone)',
+			hapIndex: 0,
+			seqId: 'longest path',
+			start: 0,
+			end: 8,
+			steps: [
+				{ id: '1', orient: '+' },
+				{ id: '2', orient: '+' }
+			],
+			tags: {},
+			kind: 'synthetic'
+		});
+		const s = gfaStats(gfa);
+		expect(s.walks).toBe(0);
+		expect(s.samples).toBe(0);
+	});
+
+	it('parses P-lines (GFA 1.0 paths) into walks with a bp span', () => {
+		const text = [
+			'H\tVN:Z:1.0',
+			'S\t1\tCAAATAAG', // 8 bp
+			'S\t2\tA', // 1 bp
+			'S\t3\tCCAACTCTCTG', // 11 bp
+			'P\tx\t1+,2-,3+\t8M,1M,11M',
+			'L\t1\t+\t2\t+\t0M',
+			'L\t2\t+\t3\t+\t0M'
+		].join('\n');
+		const gfa = parseGfa(text);
+		expect(gfa.walks).toHaveLength(1);
+		const p = gfa.walks[0];
+		expect(p.kind).toBe('P');
+		expect(p.sample).toBe('x');
+		expect(p.seqId).toBe('x');
+		expect(p.steps).toEqual([
+			{ id: '1', orient: '+' },
+			{ id: '2', orient: '-' },
+			{ id: '3', orient: '+' }
+		]);
+		// bp span comes from summed segment lengths (P-lines carry no coordinates).
+		expect(p.end - p.start).toBe(20);
+		expect(gfaStats(gfa, 'x').referencePathBp).toBe(20);
+	});
 });
