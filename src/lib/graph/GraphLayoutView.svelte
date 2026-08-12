@@ -1753,10 +1753,13 @@
 						{/if}
 					</div>
 				{/if}
+			</div>
 
-				<!-- Floating node inspector: shown while a node is selected and not dismissed.
-				     The × only hides the box (keeping the frozen highlight lit); clicking the
-				     empty graph clears the selection. -->
+				<!-- Node inspector: lives OUTSIDE .stage (which clips with overflow:hidden)
+				     so on mobile it can drop below the graph instead of overlapping it. On
+				     desktop it still floats over the graph's top-left corner — absolute,
+				     anchored to .stage-col. The × only hides the box (keeping the frozen
+				     highlight lit); clicking the empty graph clears the selection. -->
 				{#if selected && !inspectorDismissed}
 					<div class="inspector">
 						<div class="insp-head">
@@ -2066,7 +2069,6 @@
 						{/if}
 					</div>
 				{/if}
-			</div>
 		<div class="foot">
 			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
 			<span class="spacer"></span>
@@ -2135,6 +2137,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		/* Positioning context for the node inspector, which now lives here (a sibling
+		   of .stage) so it can float over the graph on desktop but flow below it on
+		   mobile. */
+		position: relative;
 	}
 	.sidebar {
 		flex: 0 0 224px;
@@ -2879,6 +2885,13 @@
 		.sidebar {
 			flex-basis: auto;
 		}
+		/* More graph on a phone: the inspector no longer overlaps it (it flows below),
+		   so give the canvas a taller frame. */
+		.stage {
+			min-height: 60vh;
+		}
+		/* The .inspector override lives after its base rule (search "position: static")
+		   so it isn't undone by source order. */
 	}
 	.overlay {
 		position: absolute;
@@ -3040,6 +3053,19 @@
 		border-radius: 8px;
 		padding: 0.55rem 0.7rem;
 		box-shadow: 0 10px 28px rgba(16, 24, 40, 0.22);
+	}
+	/* Phone: drop the inspector below the graph instead of floating over it — on a
+	   small screen the overlay covers most of the canvas. As a normal-flow child of
+	   .stage-col it sits right under the graph, full width, and grows to fit. This
+	   block must follow the base .inspector rule above so source order doesn't undo
+	   `position: static`. */
+	@media (max-width: 640px) {
+		.inspector {
+			position: static;
+			width: auto;
+			max-width: 100%;
+			max-height: none;
+		}
 	}
 	.insp-head {
 		display: flex;
