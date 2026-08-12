@@ -337,12 +337,11 @@
 	/** Nodes the unsimplified graph would have, known from the reduced X line. */
 	const unsimplifiedNodes = $derived(gfa?.reduced?.segmentsBefore ?? 0);
 	const unsimplifiedTier = $derived(limits.walkLoadTier(gfa?.reduced));
-	// Refuse the full graph only when it's genuinely a risk *and* memory is tight.
-	// On desktop even a 'risky' locus is allowed (the layout drops to rough on its
-	// own); on a phone 'risky' is blocked to avoid an OOM.
-	const canShowUnsimplified = $derived(
-		unsimplifiedNodes > 0 && !(unsimplifiedTier === 'risky' && limits.lowMemory)
-	);
+	// Refuse the full graph when it's 'risky' — too many nodes to lay out (desktop:
+	// too slow) or too many walk-records to hold (mobile: an OOM risk). The tier folds
+	// in both caps at their device-scaled values, so this one check covers "too slow
+	// on desktop" and "would crash a phone" alike; the message names which.
+	const canShowUnsimplified = $derived(unsimplifiedNodes > 0 && unsimplifiedTier !== 'risky');
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
 

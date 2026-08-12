@@ -1306,7 +1306,11 @@
 						</span>
 					</label>
 				{:else if allNodesTooMany}
-					<span class="switch-sub note">{allNodesCount.toLocaleString()} nodes — too many to render in full</span>
+					<span class="switch-sub note"
+						>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
+							? 'too much memory to show in full on this device'
+							: 'too slow to render in full'}</span
+					>
 				{/if}
 			</section>
 
@@ -1352,7 +1356,7 @@
 				{:else if hoverMode === 'walk'}
 					{#if walkLoadBlocked}
 						<span class="switch-sub note"
-							>too many walks to load on this device without risking a crash — open on a desktop</span
+							>too much memory to load these walks on this device — open on a desktop</span
 						>
 					{:else if walkModeNeedsLoad}
 						<span class="switch-sub"
@@ -1495,8 +1499,8 @@
 						<!-- Memory-constrained device, repetitive locus (LPA and the like):
 						     parsing every walk would likely crash the tab, so don't offer it. -->
 						<span class="switch-sub note"
-							>{fullGraphWalks.toLocaleString()} haplotype walks — too much to load on this device without
-							risking a crash. Open on a desktop to inspect them.</span
+							>{fullGraphWalks.toLocaleString()} haplotype walks — too much memory to load on this device
+							without risking a crash. Open on a desktop to inspect them.</span
 						>
 					{:else if canLoadHaplos}
 						{#if discoLoading || walkLoadRequested || haploDataLight}
@@ -2380,14 +2384,24 @@
 		align-items: center;
 		gap: 0.15rem;
 	}
+	/* Gear + close share one square, flex-centred box so the two glyphs line up
+	   despite their different sizes and metrics. */
+	.insp-gear,
+	.insp-close {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.6rem;
+		height: 1.6rem;
+		padding: 0;
+		line-height: 1;
+		border-radius: 5px;
+	}
 	.insp-gear {
 		border: none;
 		background: transparent;
 		color: #9aa0aa;
 		font-size: 0.9rem;
-		line-height: 1;
-		padding: 0.1rem 0.2rem;
-		border-radius: 5px;
 		cursor: pointer;
 	}
 	.insp-gear:hover,
@@ -3008,7 +3022,11 @@
 		position: absolute;
 		top: 10px;
 		left: 10px;
-		z-index: 5;
+		/* Above the passive hover/trace readouts (z-index 6): on a narrow screen the
+		   inspector spans nearly the full width, so a top-right trace badge would
+		   otherwise land on top of the × and steal the tap. The interactive panel
+		   always wins over a passive badge. */
+		z-index: 7;
 		width: 272px;
 		max-width: calc(100% - 20px);
 		max-height: calc(100% - 20px);
@@ -3056,10 +3074,8 @@
 		background: none;
 		border: none;
 		font-size: 1.2rem;
-		line-height: 1;
 		color: #98a0ac;
 		cursor: pointer;
-		padding: 0 0.15rem;
 	}
 	.insp-close:hover {
 		color: #1f2430;
