@@ -3,20 +3,36 @@ import type { GfaGraph } from './types';
 import { buildAdjacency, computeBackbones, type Backbone } from './backbone';
 import { stableUnit } from './prng';
 import { getModeConfig, type LayoutMode, type RefFreeParams } from './layoutModes';
+import { runFm3, type Fm3Edge } from './fm3';
 
 /**
- * Layout approach: each segment becomes a *chain* of sub-nodes whose total
- * chain length is proportional to the segment's sequence length (drawn as a
- * strand, conceptually inspired by Bandage's rendering but implemented
- * independently with d3-force rather than OGDF/FMMM).
+ * Builds a force-directed layout for a GFA graph and returns node positions
+ * (see LayoutResult / buildAndRunLayout). Two things are common to every layout
+ * this file produces:
  *
- * On top of that, one "backbone" path per connected component (see
- * backbone.ts) is anchored to a straight, deterministic horizontal line via
- * d3-force's fixed-position nodes (fx/fy) — a genome-browser-style coordinate
- * axis. Everything else (variant bubbles, alt alleles) is seeded near its
- * backbone attachment point and only locally relaxed. This makes the layout
- * reproducible and comparable across similar graphs, instead of a force
- * simulation's usual rotation/reflection/local-minimum ambiguity.
+ *  - Each segment becomes a *chain* of sub-nodes whose total length is
+ *    proportional to the segment's sequence length. At full ("bendy") detail
+ *    the chain has many sub-nodes, so a segment can bow into a curved strand; at
+ *    lower detail it collapses toward a single straight edge (fewer nodes = a
+ *    much faster simulation). Structural links join the chains, optionally
+ *    routed through an invisible "bend" node so a connector curves clear of what
+ *    it would otherwise cut straight across.
+ *
+ *  - The result is deterministic: seed positions come from a stable per-id PRNG
+ *    (see prng.ts), so the same graph always settles into the same drawing
+ *    instead of a force sim's usual rotation/reflection/local-minimum ambiguity.
+ *
+ * Where the nodes actually go is chosen by the layout *mode* (see
+ * layoutModes.ts), in two families:
+ *
+ *  - Anchored modes pin one "backbone" path per connected component (see
+ *    backbone.ts) to a straight horizontal axis via d3-force's fixed nodes
+ *    (fx/fy) — a genome-browser-style coordinate line — and seed everything else
+ *    near its backbone attachment, relaxing only locally.
+ *
+ *  - Free modes ignore the backbone and let the simulation find the graph's own
+ *    shape from a mode-specific seed (multilevel FM³, layered/DAG, radial,
+ *    scatter; see fm3.ts and the seed* functions below).
  */
 
 export interface SimNode {
@@ -114,7 +130,7 @@ export interface LayoutOptions {
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 	/** Which named layout mode to use. Anchored modes ('classic', 'spread', 'naive')
-	 * lay out along the reference backbone; free modes ('simple-force', 'stringy',
+	 * lay out along the reference backbone; free modes ('fm3', 'simple-force',
 	 * 'flow', 'layered', 'radial') ignore the backbone for positioning and run a
 	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'classic'. */
 	mode?: LayoutMode;
@@ -269,8 +285,7 @@ function farthest(dist: Map<string, number>): string {
 
 /** Scatter each chain over a square whose side grows with node count, so a big
  * graph starts spread out (a tiny box would pack everything into one dense knot
- * that charge repulsion then has to slowly blow apart). Used by simple-force /
- * stringy. */
+ * that charge repulsion then has to slowly blow apart). Used by simple-force. */
 function seedScatter(ctx: FreeCtx) {
 	const n = Math.max(1, ctx.chains.length);
 	const spread = Math.max(ctx.unit * 20, ctx.unit * 3 * Math.sqrt(n));
@@ -475,6 +490,66 @@ function seedRadial(ctx: FreeCtx) {
 	}
 }
 
+/** FM³ seeding: run the multilevel FM³ engine on the *segment* graph (one node
+ * per segment, not per bead) to get a clean, untangled centre for each segment,
+ * then lay each segment's bead chain out through that centre, oriented along the
+ * local flow (the principal axis of the directions to its neighbours). The final
+ * relaxation in runFreeLayout then bends the strands into the characteristic
+ * noodle look. See fm3.ts for the algorithm. */
+function seedFm3(ctx: FreeCtx) {
+	const segIds = ctx.chains.map((c) => c.segId);
+	const spanFor = (id: string) => ctx.chainPxLength.get(id) ?? ctx.unit;
+
+	// One FM³ edge per graph link between two laid-out segments (deduped, and
+	// self-loops dropped). Desired length ≈ half of each segment's on-screen span
+	// plus a gap, so two linked segments' ends meet rather than their centres.
+	const edgeSeen = new Set<string>();
+	const edges: Fm3Edge[] = [];
+	for (const link of ctx.graph.links) {
+		if (link.from === link.to) continue;
+		if (!ctx.chainById.has(link.from) || !ctx.chainById.has(link.to)) continue;
+		const key = link.from < link.to ? `${link.from} ${link.to}` : `${link.to} ${link.from}`;
+		if (edgeSeen.has(key)) continue;
+		edgeSeen.add(key);
+		edges.push({
+			a: link.from,
+			b: link.to,
+			len: (spanFor(link.from) + spanFor(link.to)) / 2 + ctx.unit
+		});
+	}
+
+	const { pos } = runFm3({ nodes: segIds, edges, iterationsPerLevel: 40 });
+
+	// Orientation: align each segment's strand with the principal axis of the
+	// directions from its centre to its neighbours' centres (a 2×2 orientation
+	// tensor). For a path-like node that's the line through its two neighbours, so
+	// the strand lies along the flow instead of at a random angle.
+	const adjacency = buildAdjacency(ctx.graph);
+	for (const chain of ctx.chains) {
+		const c = pos.get(chain.segId) ?? { x: 0, y: 0 };
+		let sxx = 0;
+		let sxy = 0;
+		let syy = 0;
+		let count = 0;
+		for (const nb of adjacency.get(chain.segId) ?? []) {
+			const p = pos.get(nb);
+			if (!p) continue;
+			let dx = p.x - c.x;
+			let dy = p.y - c.y;
+			const mag = Math.hypot(dx, dy);
+			if (mag < 1e-6) continue;
+			dx /= mag;
+			dy /= mag;
+			sxx += dx * dx;
+			sxy += dx * dy;
+			syy += dy * dy;
+			count++;
+		}
+		const angle = count > 0 ? 0.5 * Math.atan2(2 * sxy, sxx - syy) : stableUnit(chain.segId) * Math.PI;
+		placeChain(chain, c.x, c.y, angle, spanOf(ctx, chain), ctx.unit, ctx.nodesById);
+	}
+}
+
 /** Bend nodes seed at the midpoint of their (now-positioned) endpoints, nudged
  * off the straight line so the simulation has a direction to bow the curve. */
 function seedBendNodes(ctx: FreeCtx) {
@@ -492,7 +567,8 @@ function seedBendNodes(ctx: FreeCtx) {
 function runFreeLayout(ctx: FreeCtx) {
 	const { params } = ctx;
 
-	if (params.seeding === 'layered') seedLayered(ctx);
+	if (params.seeding === 'fm3') seedFm3(ctx);
+	else if (params.seeding === 'layered') seedLayered(ctx);
 	else if (params.seeding === 'radial') seedRadial(ctx);
 	else if (params.seeding === 'dag') seedDag(ctx);
 	else seedScatter(ctx);
@@ -738,7 +814,11 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			links,
 			chainPxLength,
 			unit: opts.unitEdgeLength,
-			iterations: opts.iterations,
+			// Precedence: an explicit caller override wins; otherwise the mode's own
+			// iteration count (modes with a good seed, like FM³, need far fewer than
+			// the 350 default); otherwise the global default. Previously the per-mode
+			// count was declared but never read.
+			iterations: options.iterations ?? modeCfg.refFree.iterations ?? opts.iterations,
 			params: modeCfg.refFree
 		});
 		return assembleResult(graph, backbones, new Set(), nodesById, chains, structuralLinkPaths);

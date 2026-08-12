@@ -27,8 +27,8 @@ export type LayoutMode =
 	| 'spread'
 	| 'naive'
 	// reference-free
+	| 'fm3'
 	| 'simple-force'
-	| 'stringy'
 	| 'flow'
 	| 'layered'
 	| 'radial';
@@ -46,7 +46,7 @@ export interface RefFreeParams {
 	/** forceCollide radius (hard minimum separation between any two nodes). */
 	collide: number;
 	/** Initial placement strategy before relaxation. */
-	seeding: 'scatter' | 'layered' | 'radial' | 'dag';
+	seeding: 'scatter' | 'layered' | 'radial' | 'dag' | 'fm3';
 	/** Simulation iterations (defaults to the layout's own default when omitted). */
 	iterations?: number;
 }
@@ -114,6 +114,36 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bendNodes: false
 	},
 	// --- reference-free ---
+	// Listed first so it's the default whenever the reference-free family is chosen
+	// (the UI lands on the family's first entry — see GraphLayoutView.selectFamily).
+	{
+		id: 'fm3',
+		label: 'Untangled (FM³)',
+		family: 'free',
+		blurb:
+			'Multilevel force-directed (FM³) layout: coarsens the graph, lays out the coarse skeleton, then refines down to a clean, untangled drawing. The best general reference-free view.',
+		bubblesAbove: false,
+		anchorToReference: false,
+		avoidBaseline: false,
+		spread: false,
+		// The strand/"noodle" curve comes from each segment's length-proportional
+		// bead chain bending, not from bend nodes on the connectors — so we skip bend
+		// nodes (they'd ~double the simulation's node count for a straight-connector
+		// detail that's barely visible here) and keep the layout fast enough to be a
+		// default.
+		bendNodes: false,
+		refFree: {
+			charge: -45,
+			chargeDistanceMax: 500,
+			linkDistanceScale: 1,
+			linkStrength: 0.35,
+			collide: 9,
+			seeding: 'fm3',
+			// FM³ hands the relaxation an already-untangled seed, so it only needs a
+			// light final pass to bend the strands — not the 350-iteration default.
+			iterations: 120
+		}
+	},
 	{
 		id: 'simple-force',
 		label: 'Simple force-directed',
@@ -130,25 +160,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			linkDistanceScale: 1,
 			linkStrength: 0.5,
 			collide: 8,
-			seeding: 'scatter',
-		}
-	},
-	{
-		id: 'stringy',
-		label: 'Stringy',
-		family: 'free',
-		blurb: 'Long, loose strands that spread out organically. Good for tangles and repeats.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
-		spread: false,
-		bendNodes: true,
-		refFree: {
-			charge: -90,
-			chargeDistanceMax: 700,
-			linkDistanceScale: 2.4,
-			linkStrength: 0.12,
-			collide: 11,
 			seeding: 'scatter',
 		}
 	},
