@@ -1447,5 +1447,24 @@
 			font-size: 0.78rem;
 			padding: 0.2rem 0.25rem;
 		}
+
+		/* Tighter frame around the workspace so the graph gets the width. */
+		.workspace {
+			padding: 0.5rem;
+			gap: 0.5rem;
+		}
+
+		/* Pre-first-query shell: stack the report above the canvas frame instead of
+		   sitting beside it, where it squeezed the canvas into a thin vertical strip
+		   (matches how the loaded graph view already stacks at this width). */
+		.shell {
+			flex-direction: column;
+		}
+		.shell-side {
+			flex: 0 0 auto;
+		}
+		.shell-stage {
+			min-height: 240px;
+		}
 	}
 </style>
