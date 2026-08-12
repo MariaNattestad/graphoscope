@@ -1409,4 +1409,43 @@
 			width: 11rem;
 		}
 	}
+
+	/* Phone header: the tagline, a full-width query pill, and two text links don't
+	   fit on one row at ~375px, so "About" used to overflow off the edge. Drop the
+	   tagline, shrink the wordmark, and — the real fix — let the pill be the one
+	   flexible item, shrinking into whatever space brand + links leave (it already
+	   truncates its contents), so the row can never overflow. */
+	@media (max-width: 640px) {
+		.appbar {
+			gap: 0.5rem;
+			padding: 0.4rem 0.6rem;
+		}
+		.tagline {
+			display: none;
+		}
+		.brand {
+			flex: 0 0 auto;
+			min-width: 0;
+		}
+		.brand h1 {
+			font-size: 1rem;
+		}
+		.querypill-wrap {
+			flex: 1 1 auto;
+			min-width: 0;
+		}
+		.querypill {
+			max-width: 100%;
+			padding: 0.28rem 0.6rem;
+			gap: 0.3rem;
+		}
+		.appbar-links {
+			flex: 0 0 auto;
+			gap: 0.15rem;
+		}
+		.appbar .link-btn {
+			font-size: 0.78rem;
+			padding: 0.2rem 0.25rem;
+		}
+	}
 </style>
