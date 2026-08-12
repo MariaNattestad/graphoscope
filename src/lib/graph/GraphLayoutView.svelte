@@ -20,6 +20,7 @@
 		type LayoutFamily
 	} from './layoutModes';
 	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
+	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
 	import { COLOR_MODES, legendGradientCss, darkTheme, lightTheme, type ColorMode } from './colors';
@@ -208,6 +209,28 @@
 
 	let selected = $state<string | null>(null);
 
+	// The base-alignment (MSA) view: a resizable split below the graph showing the
+	// reference plus the haplotypes through the selected node, aligned base-by-base.
+	// Opened from the node inspector; stays open and re-derives as the selection
+	// changes, so a user can click node after node and watch the alignment update.
+	let msaOpen = $state(false);
+	let msaHeight = $state(360);
+	function startMsaResize(e: PointerEvent) {
+		e.preventDefault();
+		const startY = e.clientY;
+		const startH = msaHeight;
+		const onMove = (ev: PointerEvent) => {
+			// Drag up grows the panel; clamp so neither the graph nor the panel vanish.
+			msaHeight = Math.max(160, Math.min(720, startH + (startY - ev.clientY)));
+		};
+		const onUp = () => {
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+		};
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+	}
+
 	// The node the highlighting is keyed to: the one under the pointer while hovering,
 	// otherwise the clicked (selected) one. So a click *freezes* the highlight — you
 	// can move off the node and pan/zoom around with the bubble or its walks still lit,
@@ -252,6 +275,9 @@
 		selected = null;
 		selectedFeature = null;
 		selectedExit = null;
+		// A new graph has different nodes; close the base-alignment view rather than
+		// leaving it pinned to a node id that no longer exists.
+		msaOpen = false;
 		// A new graph clears any pinned haplotype traces (its walk keys won't exist).
 		pinnedKeys = [];
 		straightenKey = null;
@@ -1826,6 +1852,30 @@
 				{/if}
 			</div>
 
+			<!-- Base-alignment (MSA) split: a resizable panel below the graph, driven by
+			     the selected node. A drag handle on top resizes it; the graph (flex:1)
+			     shrinks to make room. -->
+			{#if msaOpen}
+				<div class="msa-split" style="height:{msaHeight}px">
+					<div
+						class="msa-resize"
+						onpointerdown={startMsaResize}
+						role="separator"
+						aria-label="Resize the alignment panel"
+						title="Drag to resize"
+					></div>
+					<div class="msa-split-inner">
+						<MsaPanel
+							{gfa}
+							{referenceSample}
+							selectedSegId={selected}
+							{lightMode}
+							onClose={() => (msaOpen = false)}
+						/>
+					</div>
+				</div>
+			{/if}
+
 				<!-- Node inspector: lives OUTSIDE .stage (which clips with overflow:hidden)
 				     so on mobile it can drop below the graph instead of overlapping it. On
 				     desktop it still floats over the graph's top-left corner — absolute,
@@ -1886,6 +1936,18 @@
 								{/if}
 							</div>
 						{/if}
+
+						<button
+							class="ni-msa-btn"
+							class:active={msaOpen}
+							onclick={() => {
+								msaOpen = true;
+								trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
+							}}
+							title="Open the base-level alignment of the reference and the haplotypes through this node"
+						>
+							≡ Align sequences here
+						</button>
 
 						{#if hoverMode === 'bubble'}
 							<div class="ni-bubble">
@@ -2990,6 +3052,58 @@
 		border-radius: 8px;
 		overflow: hidden;
 		background: #0b0d12;
+	}
+
+	/* Base-alignment split panel below the graph. Fixed (drag-resizable) height, so
+	   the graph above it (flex:1) yields the remaining space. */
+	.msa-split {
+		flex: 0 0 auto;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		border: 1px solid #eee;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+	.msa-resize {
+		height: 8px;
+		flex: 0 0 auto;
+		cursor: ns-resize;
+		background: repeating-linear-gradient(
+			90deg,
+			transparent 0 6px,
+			rgba(140, 155, 180, 0.5) 6px 10px
+		);
+		background-position: center;
+		background-size: 32px 2px;
+		background-repeat: no-repeat;
+		background-color: rgba(140, 155, 180, 0.12);
+	}
+	.msa-resize:hover {
+		background-color: rgba(140, 155, 180, 0.28);
+	}
+	.msa-split-inner {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+	.ni-msa-btn {
+		display: block;
+		width: 100%;
+		margin: 0.5rem 0 0.1rem;
+		padding: 0.4rem 0.6rem;
+		font: inherit;
+		font-size: 0.82rem;
+		font-weight: 600;
+		text-align: center;
+		border: 1px solid rgba(103, 232, 249, 0.5);
+		border-radius: 7px;
+		background: rgba(103, 232, 249, 0.12);
+		color: #0e7490;
+		cursor: pointer;
+	}
+	.ni-msa-btn:hover,
+	.ni-msa-btn.active {
+		background: rgba(103, 232, 249, 0.22);
 	}
 
 	/* Stack the sidebar above the canvas on narrow screens. */

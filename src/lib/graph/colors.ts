@@ -43,6 +43,103 @@ export const COLOR_MODES: ColorModeInfo[] = [
 
 export const BACKBONE_COLOR = '#f2f4f8';
 
+// --- base (nucleotide) colours, for the MSA / base-alignment view ------------
+// One saturated fill per nucleotide, in the widely-recognised IGV convention
+// (A green, C blue, G amber, T red) so anyone who has looked at a read pileup
+// reads them without a legend. The same hues are used as zoomed-out blocks and
+// as the tinted cell a letter sits on when zoomed in; `letter` is the glyph
+// colour drawn over the block, chosen for contrast against these fills.
+export interface BaseTheme {
+	/** Fill per uppercased base; `other` covers ambiguity codes (R,Y,N,…). */
+	A: string;
+	C: string;
+	G: string;
+	T: string;
+	other: string;
+	/** A cell the row skips (gap / deletion relative to this column's node). */
+	gap: string;
+	/** Glyph colour for the base letter drawn over its cell. */
+	letter: string;
+	/** Faint tint behind a whole node's block, so node boundaries stay visible. */
+	nodeBandEven: string;
+	nodeBandOdd: string;
+	/** The clicked node's block, highlighted across every row. */
+	selectedBand: string;
+	/** Vertical separator between adjacent node blocks. */
+	nodeDivider: string;
+	background: string;
+	gutter: string;
+	gutterText: string;
+	rulerText: string;
+	rowLabel: string;
+	refRowLabel: string;
+	grid: string;
+}
+
+export const baseThemeDark: BaseTheme = {
+	A: '#3aa845',
+	C: '#2f74d0',
+	G: '#d99a2b',
+	T: '#d6483c',
+	other: '#7f8794',
+	gap: 'rgba(120, 132, 150, 0.14)',
+	letter: 'rgba(255, 255, 255, 0.96)',
+	nodeBandEven: 'rgba(255, 255, 255, 0.03)',
+	nodeBandOdd: 'rgba(255, 255, 255, 0.07)',
+	selectedBand: 'rgba(103, 232, 249, 0.16)',
+	nodeDivider: 'rgba(180, 195, 220, 0.28)',
+	background: '#0b0d12',
+	gutter: '#12151c',
+	gutterText: 'rgba(214, 224, 245, 0.7)',
+	rulerText: 'rgba(169, 199, 255, 0.9)',
+	rowLabel: 'rgba(224, 230, 245, 0.92)',
+	refRowLabel: '#8fd4ff',
+	grid: 'rgba(150, 165, 190, 0.14)'
+};
+
+export const baseThemeLight: BaseTheme = {
+	A: '#2f9e3f',
+	C: '#2563cf',
+	G: '#c07f10',
+	T: '#c33628',
+	other: '#6b7280',
+	gap: 'rgba(100, 116, 139, 0.12)',
+	letter: 'rgba(255, 255, 255, 0.98)',
+	nodeBandEven: 'rgba(15, 23, 42, 0.02)',
+	nodeBandOdd: 'rgba(15, 23, 42, 0.055)',
+	selectedBand: 'rgba(8, 145, 178, 0.14)',
+	nodeDivider: 'rgba(51, 65, 85, 0.3)',
+	background: '#ffffff',
+	gutter: '#f6f8fb',
+	gutterText: 'rgba(30, 41, 59, 0.7)',
+	rulerText: 'rgba(29, 78, 216, 0.95)',
+	rowLabel: 'rgba(30, 41, 59, 0.95)',
+	refRowLabel: '#1d4ed8',
+	grid: 'rgba(71, 85, 105, 0.16)'
+};
+
+/** The fill for a single base character, from the active base theme. */
+export function baseFill(ch: string, t: BaseTheme): string {
+	switch (ch) {
+		case 'A':
+		case 'a':
+			return t.A;
+		case 'C':
+		case 'c':
+			return t.C;
+		case 'G':
+		case 'g':
+			return t.G;
+		case 'T':
+		case 't':
+		case 'U':
+		case 'u':
+			return t.T;
+		default:
+			return t.other;
+	}
+}
+
 type Rgb = readonly [number, number, number];
 
 /** Interpolated `rgb()` between two colors for a 0..1 ratio. */
