@@ -47,7 +47,8 @@
 		initialLayoutMode,
 		walkNoun = 'haplotype walks',
 		backboneOptions = [],
-		backboneNote = null
+		backboneNote = null,
+		hasTraversals = true
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
@@ -60,6 +61,12 @@
 		/** A one-line note shown in place of the picker when the backbone isn't a
 		 * chosen reference — e.g. "computed longest path" or an rGFA reference. */
 		backboneNote?: string | null;
+		/** Whether the graph has real haplotype walks / paths to trace. False for a
+		 * reference-less GFA whose only "walk" is the computed backbone: walk-tracing
+		 * and walk-coverage colouring are meaningless there, so the walk hover mode
+		 * shows a note and the default colouring avoids coverage. Defaults to true (the
+		 * hosted locus browser, whose walks load on demand). */
+		hasTraversals?: boolean;
 		/** Layout mode to open on (before the user touches the control). The /gfa page
 		 * uses this to start a no-reference graph in a reference-free mode. Omitted →
 		 * the default anchored mode. */
@@ -179,9 +186,11 @@
 	let lightMode = $state(false);
 	let canvasApi = $state<{ exportImage: (filename: string) => void } | null>(null);
 
-	// What each node's fill encodes. Defaults to walk coverage (the original heatmap);
-	// the picker lives in the on-graph legend at the foot of the canvas.
-	let colorMode = $state<ColorMode>('coverage');
+	// What each node's fill encodes. Defaults to walk coverage (the original heatmap),
+	// except on a graph with no real walks/paths — there every node's coverage is 0, so
+	// the heatmap is a flat uniform colour; fall back to node length, which is always
+	// meaningful. The picker lives in the on-graph legend at the foot of the canvas.
+	let colorMode = $state<ColorMode>(untrack(() => hasTraversals) ? 'coverage' : 'length');
 	const colorModeInfo = $derived(COLOR_MODES.find((m) => m.mode === colorMode) ?? COLOR_MODES[0]);
 	// The legend swatch is drawn from the same ramp the canvas uses, so it tracks the
 	// light/dark theme (the picker itself sits on the app's light chrome regardless).
@@ -280,6 +289,7 @@
 		if (gfa.reduced) return [];
 		const out: WalkEndpoint[] = [];
 		for (const w of gfa.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length === 0) continue;
 			const startsHere = w.steps[0].id === nodeId;
 			const endsHere = w.steps[w.steps.length - 1].id === nodeId;
@@ -337,6 +347,7 @@
 		// key and keep only the first walk with each distinct trace.
 		const seen = new Set<string>();
 		for (const w of src.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length < 2) continue; // a single node isn't a path to trace
 			// When a node filter is active (set from the node inspector), disco cycles
 			// only the walks that actually pass through that node.
@@ -402,6 +413,7 @@
 		const seen = new Set<string>();
 		let anonCount = 0;
 		for (const w of src.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length < 2) continue;
 			const key = `${w.sample}#${w.hapIndex}#${w.seqId}`;
 			if (seen.has(key)) continue;
@@ -637,6 +649,7 @@
 		const bySkip = new Map<string, DiscoStep[][]>();
 		if (hoverMode !== 'walk' || !walksGfa) return { byNode, bySkip };
 		for (const w of walksGfa.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
 			if (w.steps.length < 2) continue;
 			// File the walk under every displayed segment it touches (deduped).
 			const touched = new Set<string>();
@@ -1384,7 +1397,12 @@
 						>
 					{/if}
 				{:else if hoverMode === 'walk'}
-					{#if walkLoadBlocked}
+					{#if !hasTraversals}
+						<span class="switch-sub note"
+							>⚠︎ This graph has no walks or paths to trace — its only backbone is the computed
+							one. Try <b>Bubbles</b> instead.</span
+						>
+					{:else if walkLoadBlocked}
 						<span class="switch-sub note"
 							>too much memory to load these walks on this device — open on a desktop</span
 						>

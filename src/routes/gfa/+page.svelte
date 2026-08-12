@@ -74,9 +74,11 @@
 	const referenceless = $derived(
 		backboneKind === 'rgfa' || backboneKind === 'synthetic' || backboneKind === 'none'
 	);
-	// The report/haplotype-panel wording and whether to open on a reference-free mode.
-	const walkNoun = $derived<string | null>(
-		backboneKind === 'walk' ? 'haplotype walks' : backboneKind === 'path' ? 'paths' : null
+	// The report/haplotype-panel wording. Reference-less graphs still get a row —
+	// showing "walks 0" — so the info box makes the absence of traversals explicit
+	// rather than hiding it (gfaStats excludes the synthetic backbone from the count).
+	const walkNoun = $derived<string>(
+		backboneKind === 'walk' ? 'haplotype walks' : backboneKind === 'path' ? 'paths' : 'walks'
 	);
 	const initialLayoutMode = $derived<LayoutMode | undefined>(
 		backboneKind === 'none' ? 'simple-force' : undefined
@@ -281,6 +283,7 @@
 						{walkNoun}
 						{backboneOptions}
 						{backboneNote}
+						hasTraversals={hasReference}
 					/>
 				</div>
 			</section>

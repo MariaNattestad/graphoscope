@@ -367,9 +367,12 @@ export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 	const ref = referenceSample ? gfa.walks.find((w) => w.sample === referenceSample) : undefined;
 	// In reduced mode the non-reference walks have been aggregated away, so the
 	// live `walks`/sample counts would undercount — use the totals the reducer
-	// recorded on the `X` line instead.
-	const walks = gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length;
-	const samples = gfa.reduced ? gfa.reduced.samples : new Set(gfa.walks.map((w) => w.sample)).size;
+	// recorded on the `X` line instead. A synthetic backbone (computed longest path /
+	// rGFA reference) isn't one of the file's own traversals, so it's excluded — a
+	// graph with no real walks or paths must report 0, not 1.
+	const realWalks = gfa.walks.filter((w) => w.kind !== 'synthetic');
+	const walks = gfa.reduced ? gfa.reduced.totalWalks : realWalks.length;
+	const samples = gfa.reduced ? gfa.reduced.samples : new Set(realWalks.map((w) => w.sample)).size;
 	return {
 		segments: gfa.segments.size,
 		links: gfa.links.length,

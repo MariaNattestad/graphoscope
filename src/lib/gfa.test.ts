@@ -41,6 +41,28 @@ describe('parseGfa + gfaStats', () => {
 		expect(gfaStats(gfa).totalSequenceBp).toBe(5004);
 	});
 
+	it('excludes a synthetic backbone from the walk and sample counts', () => {
+		// A reference-less graph gets a computed backbone injected as a walk; it isn't
+		// one of the file's own traversals, so the counts must stay 0.
+		const gfa = parseGfa(['S\t1\tACGT', 'S\t2\tACGT'].join('\n'));
+		gfa.walks.push({
+			sample: '(computed backbone)',
+			hapIndex: 0,
+			seqId: 'longest path',
+			start: 0,
+			end: 8,
+			steps: [
+				{ id: '1', orient: '+' },
+				{ id: '2', orient: '+' }
+			],
+			tags: {},
+			kind: 'synthetic'
+		});
+		const s = gfaStats(gfa);
+		expect(s.walks).toBe(0);
+		expect(s.samples).toBe(0);
+	});
+
 	it('parses P-lines (GFA 1.0 paths) into walks with a bp span', () => {
 		const text = [
 			'H\tVN:Z:1.0',
