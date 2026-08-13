@@ -11,13 +11,32 @@
 		gfa,
 		rawText,
 		downloadRaw,
-		downloadingRaw = false
+		downloadingRaw = false,
+		allWalksGfa = null,
+		loadingAllWalks = false,
+		canLoadAllWalks = false,
+		allWalksBlocked = false,
+		onLoadAllWalks
 	}: {
 		gfa: Gfa;
 		rawText: string;
 		/** Fetches and downloads the unsimplified subgraph (every haplotype walk). */
 		downloadRaw?: () => void;
 		downloadingRaw?: boolean;
+		/** The unsimplified subgraph, once the parent has loaded it — the source of
+		 * every haplotype walk. In reduced mode `gfa.walks` holds only the reference
+		 * path (the rest were aggregated into coverage counts), so this is what lets
+		 * the Walks tab list them all. Null until loaded. */
+		allWalksGfa?: Gfa | null;
+		/** Parent is fetching/parsing the full-walk graph right now. */
+		loadingAllWalks?: boolean;
+		/** The full-walk graph is small enough to offer a load button for. */
+		canLoadAllWalks?: boolean;
+		/** Too many walks to hold on this (memory-constrained) device — offer info,
+		 * not a load button. Mirrors the Haplotypes box on the graph view. */
+		allWalksBlocked?: boolean;
+		/** Ask the parent to load the full-walk graph so every walk can be listed. */
+		onLoadAllWalks?: () => void;
 	} = $props();
 
 	const PREVIEW = 25; // rows shown per table
@@ -27,6 +46,11 @@
 	// Walk count to advertise: in reduced mode the non-reference walks were
 	// aggregated into coverage counts, so `gfa.walks` holds only the reference.
 	const walkCount = $derived(gfa.reduced ? gfa.reduced.totalWalks : gfa.walks.length);
+	// In reduced mode `gfa.walks` is the reference path only; once the parent loads
+	// the unsimplified graph, `allWalksGfa.walks` carries every haplotype. The tab
+	// draws from whichever is the fuller set.
+	const allWalksLoaded = $derived(isReduced && allWalksGfa != null);
+	const walksToShow = $derived(allWalksLoaded ? allWalksGfa!.walks : gfa.walks);
 
 	function stepsPreview(steps: { id: string; orient: string }[], n = 6): string {
 		const head = steps
@@ -67,7 +91,9 @@
 <div class="raw">
 	<div class="tabs">
 		<button class:active={tab === 'walks'} onclick={() => (tab = 'walks')}
-			>{isReduced ? 'Reference path' : `Walks (${walkCount.toLocaleString()})`}</button
+			>{isReduced && !allWalksLoaded
+				? 'Reference path'
+				: `Walks (${(allWalksLoaded ? walksToShow.length : walkCount).toLocaleString()})`}</button
 		>
 		<button class:active={tab === 'segments'} onclick={() => (tab = 'segments')}
 			>Segments ({gfa.segments.size})</button
@@ -86,11 +112,30 @@
 	</div>
 
 	{#if tab === 'walks'}
-		{#if isReduced}
+		{#if isReduced && !allWalksLoaded}
 			<p class="desc">
 				The reference path (a GFA <code>W</code>-line) through this subgraph. The other
 				{(walkCount - 1).toLocaleString()} haplotype walks were counted per node and edge — see the
 				<code>walks</code> column under Segments — and dropped before reaching the browser.
+			</p>
+			{#if loadingAllWalks}
+				<p class="note">Loading every haplotype walk…</p>
+			{:else if allWalksBlocked}
+				<p class="note">
+					{(walkCount - 1).toLocaleString()} more haplotype walks — too much memory to load on this device
+					without risking a crash. Open on a desktop to inspect them.
+				</p>
+			{:else if canLoadAllWalks && onLoadAllWalks}
+				<button class="load" onclick={onLoadAllWalks}
+					>Load all {walkCount.toLocaleString()} haplotype walks</button
+				>
+				<span class="load-sub">fetches the unsimplified subgraph — loaded on request</span>
+			{/if}
+		{:else if allWalksLoaded}
+			<p class="desc">
+				Every haplotype's path (a GFA <code>W</code>-line) through this subgraph, from the
+				unsimplified graph the reduce normally aggregates away. Haplotypes the graph carries
+				without a sample name (e.g. anonymous minigraph paths) are reported as <code>unknown</code>.
 			</p>
 		{:else}
 			<p class="desc">
@@ -104,7 +149,7 @@
 				<tr><th>sample</th><th>hap</th><th>contig</th><th>start</th><th>end</th><th>steps</th><th>path (first steps)</th></tr>
 			</thead>
 			<tbody>
-				{#each gfa.walks.slice(0, PREVIEW) as w (w.sample + w.hapIndex + w.seqId + w.start)}
+				{#each walksToShow.slice(0, PREVIEW) as w (w.sample + w.hapIndex + w.seqId + w.start)}
 					<tr>
 						<td>{w.sample}</td><td>{w.hapIndex}</td><td>{w.seqId}</td>
 						<td>{w.start.toLocaleString()}</td><td>{w.end.toLocaleString()}</td>
@@ -114,7 +159,7 @@
 				{/each}
 			</tbody>
 		</table>
-		{#if gfa.walks.length > PREVIEW}<p class="note">showing {PREVIEW} of {gfa.walks.length} walks</p>{/if}
+		{#if walksToShow.length > PREVIEW}<p class="note">showing {PREVIEW} of {walksToShow.length.toLocaleString()} walks</p>{/if}
 	{:else if tab === 'segments'}
 		{#if isReduced}
 			<p class="desc">
@@ -245,5 +290,24 @@
 		padding: 0 3px;
 		border-radius: 3px;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	}
+	.load {
+		font: inherit;
+		padding: 0.35rem 0.8rem;
+		border: 1px solid #2563eb;
+		background: #2563eb;
+		color: #fff;
+		border-radius: 6px;
+		cursor: pointer;
+		margin: 0 0 0.4rem;
+	}
+	.load:hover {
+		background: #1d4ed8;
+	}
+	.load-sub {
+		display: block;
+		color: #888;
+		font-size: 0.78rem;
+		margin: 0 0 0.6rem;
 	}
 </style>

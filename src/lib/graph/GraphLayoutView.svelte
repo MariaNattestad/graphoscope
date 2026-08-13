@@ -48,7 +48,8 @@
 		walkNoun = 'haplotype walks',
 		backboneOptions = [],
 		backboneNote = null,
-		hasTraversals = true
+		hasTraversals = true,
+		windowedSubgraph = false
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
@@ -115,6 +116,12 @@
 		/** Raise the query context and re-run — offered when an off-locus exit is
 		 * selected, to follow chopped haplotypes further past the locus. */
 		onRequestMoreContext?: () => void;
+		/** Whether the graph is a window cut from a larger graph (the hosted locus
+		 * browser), where a chopped strand really is a haplotype leaving the fetched
+		 * region. False for a whole uploaded GFA (the /gfa page), where a loose end is
+		 * just a genuine graph terminus — so the "off-locus exit" cues, which only
+		 * make sense against a wider graph, are suppressed there. */
+		windowedSubgraph?: boolean;
 	} = $props();
 
 	// The primary layout control: a named mode that picks a whole recipe (family +
@@ -144,9 +151,11 @@
 	}
 
 	// Mark strands chopped at the subgraph boundary with a fading cue toward the
-	// frame edge (the direction the haplotype leaves the locus), so they don't read
-	// as random dangles. Off for a clean figure.
-	let showExits = $state(true);
+	// frame edge, so a haplotype leaving the fetched window doesn't read as a random
+	// dangle. Off for a clean figure — and only meaningful for a windowed subgraph:
+	// on a whole uploaded GFA a loose end is a real graph terminus, not an exit, so
+	// the cue (and its checkbox) are hidden there entirely.
+	let showExits = $state(untrack(() => windowedSubgraph));
 
 	// The gene track drawn in a band under the backbone, inside the graph canvas. On
 	// by default; switched off from the side panel.
@@ -1670,17 +1679,19 @@
 								<span class="switch-sub">white background for figures</span>
 							</span>
 						</label>
-						<label
-							class="switch"
-							title="Mark strands cut off at the locus edge with a fading dashed cue toward the side they leave on (their continuation is outside this subgraph). Off for a clean figure."
-						>
-							<input type="checkbox" bind:checked={showExits} />
-							<span class="track"><span class="thumb"></span></span>
-							<span class="switch-text">
-								<span class="switch-label">Off-locus exits</span>
-								<span class="switch-sub">cue chopped-off haplotypes</span>
-							</span>
-						</label>
+						{#if windowedSubgraph}
+							<label
+								class="switch"
+								title="Mark strands cut off at the locus edge with a fading dashed cue, so a haplotype that leaves the fetched window (its continuation is outside this subgraph) doesn't read as a random dangle. Off for a clean figure."
+							>
+								<input type="checkbox" bind:checked={showExits} />
+								<span class="track"><span class="thumb"></span></span>
+								<span class="switch-text">
+									<span class="switch-label">Off-locus exits</span>
+									<span class="switch-sub">cue chopped-off haplotypes</span>
+								</span>
+							</label>
+						{/if}
 						<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
 							⬇ Export PNG
 						</button>
@@ -1707,7 +1718,7 @@
 						onExitSegments={(ids) => (exitSegIds = new Set(ids))}
 						{lightMode}
 						{nodeTooltip}
-						{showExits}
+						showExits={showExits && windowedSubgraph}
 						{colorMode}
 						{bubbleIdBySeg}
 						{bubbleLongestBySeg}
@@ -2126,8 +2137,8 @@
 						<p class="exit-note">
 							A haplotype leaves the queried window here and continues into the graph
 							<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
-							is outside this subgraph — so it's drawn as a dashed cue toward the
-							{selectedExit.side} edge, the direction it exits.
+							is outside this subgraph — so it's marked with a short dashed cue trailing off the
+							edge. The cue only flags the loose end; its direction carries no information.
 						</p>
 						{#if onRequestMoreContext}
 							<button class="exit-more" onclick={() => onRequestMoreContext?.()}>

@@ -2,14 +2,15 @@ const GOLDEN_ANGLE = 137.508;
 
 // Deterministic, visually distinct color per segment id. Hashes the id, then
 // spaces hues by the golden angle so that even sequential ids (1, 2, 3, ...)
-// land on well-separated hues instead of clustering together.
-export function colorForSegment(id: string): string {
+// land on well-separated hues instead of clustering together. `lightness` lets
+// the dark and light themes keep the swatches legible against their backgrounds.
+export function colorForSegment(id: string, lightness = 50): string {
 	let hash = 0;
 	for (let i = 0; i < id.length; i++) {
 		hash = (hash * 31 + id.charCodeAt(i)) | 0;
 	}
 	const hue = (Math.abs(hash) * GOLDEN_ANGLE) % 360;
-	return `hsl(${hue}, 65%, 50%)`;
+	return `hsl(${hue}, 65%, ${lightness}%)`;
 }
 
 // Discrete, well-separated color for the Nth item (e.g. the Nth bubble). Spacing
@@ -22,7 +23,7 @@ export function discreteColor(index: number, lightness = 55): string {
 }
 
 /** How each node's fill is colored in the graph view. */
-export type ColorMode = 'coverage' | 'bubbleSize' | 'bubble' | 'length';
+export type ColorMode = 'coverage' | 'bubbleSize' | 'bubble' | 'length' | 'node';
 
 export interface ColorModeInfo {
 	mode: ColorMode;
@@ -38,6 +39,7 @@ export const COLOR_MODES: ColorModeInfo[] = [
 	{ mode: 'coverage', label: 'Walks through node', caption: 'more walks through node', kind: 'heatmap' },
 	{ mode: 'bubbleSize', label: 'Bubble size', caption: 'longer path through bubble', kind: 'heatmap' },
 	{ mode: 'bubble', label: 'Bubble', caption: 'one color per bubble', kind: 'discrete' },
+	{ mode: 'node', label: 'Node', caption: 'one color per node', kind: 'discrete' },
 	{ mode: 'length', label: 'Node length', caption: 'longer node', kind: 'heatmap' }
 ];
 

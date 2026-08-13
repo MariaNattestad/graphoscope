@@ -3,7 +3,14 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
-	import { heatmapModeColor, discreteColor, darkTheme, lightTheme, type ColorMode } from './colors';
+	import {
+		heatmapModeColor,
+		discreteColor,
+		colorForSegment,
+		darkTheme,
+		lightTheme,
+		type ColorMode
+	} from './colors';
 	import type { Transcript } from '../geneTrack';
 	import { trackEvent } from '../analytics';
 
@@ -190,7 +197,9 @@
 		return s;
 	});
 	$effect(() => {
-		onExitSegments?.([...exitSegIds]);
+		// When exit cues are hidden (a whole uploaded GFA has no "off-locus" concept)
+		// report none, so the inspector's "leaves the locus" notes stay quiet too.
+		onExitSegments?.(showExits ? [...exitSegIds] : []);
 	});
 
 	// Reserved bottom bands, in screen (CSS) px, stacked under the backbone: the
@@ -345,6 +354,10 @@
 				// nodes) falls back to the reference tone rather than a misleading hue.
 				return id === undefined ? theme.backbone : discreteColor(id, lightMode ? 45 : 58);
 			}
+			case 'node':
+				// One stable hue per node id — no metric, just distinguishing adjacent
+				// nodes. Theme-tuned lightness keeps it legible on dark and light alike.
+				return colorForSegment(segId, lightMode ? 42 : 55);
 			case 'bubbleSize':
 				return heat('bubbleSize', logRatio(bubbleLongestBySeg?.get(segId) ?? 0, maxBubbleLongest));
 			case 'length':
@@ -975,9 +988,10 @@
 	// A haplotype that continues past the queried locus is chopped at the subgraph
 	// boundary, leaving a strand that just stops mid-air — reading as a random
 	// dangle. For each such loose end (a non-backbone chain end no link attaches to)
-	// draw a short fading dashed line toward the nearer frame edge: the direction the
-	// haplotype exits the locus. We can't know *which* node it reconnects to (it's
-	// outside the subgraph), only that it leaves this way.
+	// draw a short fading dashed line toward the nearer frame edge, purely so the cue
+	// has somewhere to trail off to. We can't know *which* node it reconnects to (it's
+	// outside the subgraph), and the side it's drawn on is just whichever edge is
+	// closer on screen — it carries no real direction.
 	function drawExitCues(ctx: CanvasRenderingContext2D, width: number) {
 		exitHits = [];
 		if (!showExits) return;
