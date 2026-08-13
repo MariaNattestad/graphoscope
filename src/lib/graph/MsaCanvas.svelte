@@ -491,22 +491,49 @@
 		}
 	}
 
-	// Resize tracking.
+	// Resize tracking. This effect must depend on `canvasEl` ONLY — every reactive
+	// read (matrixW/width/alignment via fit()/clampPan()) is wrapped in untrack so
+	// the observer is created once, not re-created on every width/alignment change.
+	// Without that, a width that flickers (e.g. a scrollbar appearing when the panel
+	// opens) would re-run this effect on each flicker and trip Svelte's
+	// effect_update_depth guard, freezing the panel.
 	$effect(() => {
-		if (!canvasEl) return;
-		const parent = canvasEl.parentElement;
+		const el = canvasEl;
+		if (!el) return;
+		const parent = el.parentElement;
 		if (!parent) return;
+		let rafId = 0;
+		const apply = () => {
+			const w = parent.clientWidth;
+			const h = parent.clientHeight;
+			// Ignore no-op notifications (the scrollbar-flicker guard): only react to a
+			// real size change, so an oscillating width can't drive a redraw storm.
+			if (w === width && h === height) return;
+			width = w;
+			height = h;
+			untrack(() => {
+				if (userAdjusted) clampPan();
+				else fit();
+			});
+		};
 		const ro = new ResizeObserver(() => {
-			width = parent.clientWidth;
-			height = parent.clientHeight;
-			if (userAdjusted) clampPan();
-			else fit();
+			// Coalesce bursts (rotation/scrollbar) into one measurement per frame.
+			if (rafId) return;
+			rafId = requestAnimationFrame(() => {
+				rafId = 0;
+				apply();
+			});
 		});
 		ro.observe(parent);
-		width = parent.clientWidth;
-		height = parent.clientHeight;
-		if (!userAdjusted) fit();
-		return () => ro.disconnect();
+		untrack(() => {
+			width = parent.clientWidth;
+			height = parent.clientHeight;
+			if (!userAdjusted) fit();
+		});
+		return () => {
+			if (rafId) cancelAnimationFrame(rafId);
+			ro.disconnect();
+		};
 	});
 </script>
 

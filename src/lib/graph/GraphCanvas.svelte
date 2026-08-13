@@ -419,6 +419,29 @@
 		select(canvasEl).call(zoomBehavior.transform, next);
 	}
 
+	// Re-fit only the vertical axis to a new height, preserving the horizontal
+	// (genomic) zoom/pan. Used when just the height changes — e.g. the MSA panel
+	// opening below the graph — so that doesn't throw away the user's zoom the way a
+	// full fitToView would. No-op in uniform mode, where one scale drives both axes.
+	function refitVertical() {
+		if (!canvasEl || uniformZoom) return;
+		let minY = Infinity,
+			maxY = -Infinity;
+		for (const node of layout.nodesById.values()) {
+			if (node.y < minY) minY = node.y;
+			if (node.y > maxY) maxY = node.y;
+		}
+		if (!Number.isFinite(minY)) return;
+		const height = canvasEl.clientHeight || 1;
+		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
+		const fitH = Math.max(1, height - axisBand - geneBand);
+		const graphHeight = Math.max(1, maxY - minY);
+		const cy = (minY + maxY) / 2;
+		baseScaleY = Math.min((fitH / graphHeight) * 0.9, 8);
+		panY = fitH / 2 - cy * baseScaleY;
+		draw();
+	}
+
 	function draw() {
 		if (!canvasEl) return;
 		const ctx = canvasEl.getContext('2d');
@@ -1328,18 +1351,23 @@
 			const w = canvasEl.clientWidth;
 			const h = canvasEl.clientHeight;
 			const hadSize = lastW > 1 && lastH > 1;
-			const significant =
-				hadSize && (Math.abs(w - lastW) > lastW * 0.2 || Math.abs(h - lastH) > lastH * 0.2);
+			const wChanged = hadSize && Math.abs(w - lastW) > lastW * 0.2;
+			const hChanged = hadSize && Math.abs(h - lastH) > lastH * 0.2;
 			lastW = w;
 			lastH = h;
 			draw(); // resize the backing store to the new dimensions right away
-			if (significant) {
+			if (wChanged || hChanged) {
 				// Debounce: a rotation can arrive as a couple of intermediate sizes, so
-				// settle before fitting to the final one.
+				// settle before fitting to the final one. A width change (rotation, window
+				// resize) does a full fit; a height-only change (the MSA panel opening
+				// below the graph) re-fits just the vertical axis, so the genomic X-zoom
+				// the user set is preserved rather than reset to fit-all.
 				if (refitTimer) clearTimeout(refitTimer);
+				const widthChanged = wChanged;
 				refitTimer = setTimeout(() => {
 					refitTimer = null;
-					fitToView();
+					if (widthChanged) fitToView();
+					else refitVertical();
 				}, 150);
 			}
 		});

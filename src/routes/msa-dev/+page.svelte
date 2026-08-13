@@ -197,7 +197,7 @@
 		opacity: 0.7;
 	}
 	.graph-embed {
-		height: 420px;
+		height: 720px;
 		border: 1px solid rgba(140, 155, 180, 0.2);
 		border-radius: 10px;
 		overflow: hidden;

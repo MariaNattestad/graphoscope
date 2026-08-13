@@ -1716,7 +1716,7 @@
 		</aside>
 
 	<div class="stage-col">
-			<div class="stage">
+			<div class="stage" class:msa-open={msaOpen}>
 				{#if displayLayout}
 					<GraphCanvas
 						layout={displayLayout}
@@ -3052,6 +3052,12 @@
 		border-radius: 8px;
 		overflow: hidden;
 		background: #0b0d12;
+	}
+	/* When the MSA panel is open below it, the graph must be free to shrink so the
+	   two together don't overflow the column (which would flicker a scrollbar and
+	   thrash both canvases' resize observers). */
+	.stage.msa-open {
+		min-height: 140px;
 	}
 
 	/* Base-alignment split panel below the graph. Fixed (drag-resizable) height, so
