@@ -68,8 +68,8 @@
 	// One-line explanation of each hosted graph, shown in that popover so the
 	// choice isn't just two opaque labels.
 	const GRAPH_BLURB: Record<GraphId, string> = {
-		grch38: 'The standard human reference. Coordinates most tools and papers use.',
-		chm13: 'The T2T complete assembly — gapless, including centromeres and other regions GRCh38 leaves out.'
+		grch38: 'HPRCv2.1 Minigraph-Cactus graph with the standard human reference as backbone.',
+		chm13: 'HPRCv2.1 Minigraph-Cactus graph with T2T-CHM13 as backbone.'
 	};
 	// The graph the widgets see. It arrives already simplified + walk-counted from
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
