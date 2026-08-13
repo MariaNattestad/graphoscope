@@ -2,14 +2,18 @@
 // readable /api route so a coordinate means the same thing in both.
 //
 // Both are HPRC Release 2 (v2.1) Minigraph-Cactus pangenome graphs. We serve the
-// public GBZ-base `.gbz.db` (SQLite) files directly from the human-pangenomics
-// S3 bucket via 42basepairs, which provides CORS + HTTP range support so the
-// browser can query a locus without downloading the multi-GB database.
+// public GBZ-base `.gbz.db` (SQLite) files straight from the human-pangenomics
+// AWS Open Data bucket, which sends `Access-Control-Allow-Origin: *` and HTTP
+// range support so the browser can query a locus without downloading the multi-GB
+// database. Measured ~2x faster per range request than proxying the same objects
+// through 42basepairs (`/download/s3/…`), which added ~1s of latency per request
+// with no edge caching — and each locus query makes many serial range requests,
+// so that per-request cost dominates the fetch time.
 
 import type { RefKey } from './genes';
 
 export const DB_BASE =
-	'https://42basepairs.com/download/s3/human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/v2.1';
+	'https://human-pangenomics.s3.amazonaws.com/pangenomes/freeze/release2/minigraph-cactus/v2.1';
 
 export interface GraphDef {
 	id: 'grch38' | 'chm13';
