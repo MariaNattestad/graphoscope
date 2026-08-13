@@ -51,8 +51,9 @@
 					(<code>wasm32-wasip1</code>) and wrote a small WASI filesystem shim that backs SQLite's
 					page reads with <b>HTTP range requests</b>. So the browser runs the real query engine in a
 					Web Worker and pulls only the few megabytes of database pages a locus actually touches from
-					the file on Cloudflare R2 — an approach inspired by
-					<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>. The
+					served straight from the public HPRC S3 bucket via
+					<a href="https://42basepairs.com" target="_blank" rel="noopener">42basepairs</a>, whose
+					range-request approach inspired this. The
 					visualizations (the graph layout, with optional bubble and gene tracks beneath it, and the
 					simplification described next) are a few prototypes we built for inspecting a graph's
 					complex patterns around a particular reference locus.
@@ -81,9 +82,9 @@
 				</p>
 				{#if source}
 					<p>
-						Currently showing: <code>{source}</code> — the public HPRC v2.0 Minigraph-Cactus graph,
-						converted to a GBZ-base <code>.gbz.db</code> (SQLite) and hosted on Cloudflare R2 for
-						coordinate range queries.
+						Currently showing: <code>{source}</code> — the public HPRC v2.1 Minigraph-Cactus graph,
+						converted to a GBZ-base <code>.gbz.db</code> (SQLite) and served from S3 via 42basepairs
+						for coordinate range queries.
 					</p>
 				{/if}
 			</div>
