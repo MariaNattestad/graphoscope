@@ -15,19 +15,28 @@
 	let {
 		alignment,
 		lightMode = false,
-		emphasizeVariants = true
+		emphasizeVariants = true,
+		simplifiedNames = true,
+		onNodeClick
 	}: {
 		alignment: Alignment;
 		lightMode?: boolean;
 		/** Dim the shared backbone sequence so the alt-allele columns (the actual
 		 * variation) stand out — the node-block equivalent of an MSA's match dots. */
 		emphasizeVariants?: boolean;
+		/** Label nodes with their short local R1/A1 names instead of raw segment ids. */
+		simplifiedNames?: boolean;
+		/** A node column was clicked (not dragged); its displayed segment id. */
+		onNodeClick?: (segId: string) => void;
 	} = $props();
 
 	const theme = $derived<BaseTheme>(lightMode ? baseThemeLight : baseThemeDark);
 
 	// --- geometry ---------------------------------------------------------------
-	const RULER_H = 38; // top node-id + coordinate band
+	// Taller ruler when showing raw segment ids, which are long and get drawn on a
+	// diagonal to avoid trimming; the short R1/A1 names sit horizontally in a
+	// shorter band.
+	const RULER_H = $derived(simplifiedNames ? 40 : 56);
 	const ROW_H = 20;
 	const LETTER_MIN_PX = 7.5; // draw glyphs once a base is at least this wide
 	const MIN_PX_PER_BP = 0.02;
@@ -39,7 +48,7 @@
 
 	// Left row-label column: narrower on a phone, where it would otherwise swallow
 	// half the width, but never so wide it starves the matrix on a small panel.
-	const GUTTER_W = $derived(Math.min(width * 0.42, width < 560 ? 96 : 156));
+	const GUTTER_W = $derived(Math.min(width * 0.42, width < 560 ? 104 : 176));
 
 	let pxPerBp = $state(4);
 	let panX = $state(0); // px; screenX(bp) = GUTTER_W + panX + bp*pxPerBp
@@ -59,6 +68,7 @@
 		bpCol: number;
 		rowIdx: number;
 		segId: string;
+		nodeName: string;
 		isBackbone: boolean;
 		rowLabel: string;
 		base: string;
@@ -76,19 +86,20 @@
 		scrollY = Math.min(maxScrollY, Math.max(0, scrollY));
 	}
 
-	/** Fit the whole window into view, centred on the selected node. */
+	// The alignment builds a generous window, but the view opens focused on the
+	// clicked node: the node fills the width (min 21 bp so a 1 bp SNP is still
+	// readable), and zooming out from there reveals the surrounding context.
+	const MIN_FOCUS_BP = 21;
+
+	/** Open the view focused on the clicked node (its own length, ≥ 21 bp). */
 	export function fit() {
 		userAdjusted = false;
-		const total = Math.max(1, alignment.totalBp);
-		const k = Math.min(MAX_PX_PER_BP, Math.max(MIN_PX_PER_BP, matrixW / total));
-		pxPerBp = k;
 		const sel = alignment.blocks.find((b) => b.isSelected);
-		if (sel && total * k > matrixW) {
-			const center = (sel.colStart + sel.bpLen / 2) * k;
-			panX = matrixW / 2 - center;
-		} else {
-			panX = total * k < matrixW ? (matrixW - total * k) / 2 : 0;
-		}
+		const focusBp = Math.max(MIN_FOCUS_BP, sel ? sel.bpLen : Math.min(alignment.totalBp, 200));
+		const k = Math.min(MAX_PX_PER_BP, Math.max(MIN_PX_PER_BP, matrixW / focusBp));
+		pxPerBp = k;
+		const centerBp = sel ? sel.colStart + sel.bpLen / 2 : alignment.totalBp / 2;
+		panX = matrixW / 2 - centerBp * k;
 		scrollY = 0;
 		clampPan();
 	}
@@ -134,10 +145,16 @@
 	let dragging = false;
 	let lastX = 0;
 	let lastY = 0;
+	let downX = 0;
+	let downY = 0;
+	let dragDist = 0;
 	function onPointerDown(e: PointerEvent) {
 		dragging = true;
 		lastX = e.clientX;
 		lastY = e.clientY;
+		downX = e.clientX;
+		downY = e.clientY;
+		dragDist = 0;
 		canvasEl?.setPointerCapture(e.pointerId);
 	}
 	function onPointerMove(e: PointerEvent) {
@@ -145,7 +162,8 @@
 		if (dragging) {
 			const dx = e.clientX - lastX;
 			const dy = e.clientY - lastY;
-			if (Math.abs(dx) + Math.abs(dy) > 2) userAdjusted = true;
+			dragDist += Math.abs(dx) + Math.abs(dy);
+			if (dragDist > 3) userAdjusted = true;
 			panX += dx;
 			scrollY -= dy;
 			lastX = e.clientX;
@@ -159,9 +177,29 @@
 	function onPointerUp(e: PointerEvent) {
 		dragging = false;
 		canvasEl?.releasePointerCapture(e.pointerId);
+		// A press that didn't drag is a click on a node column → flash it in the graph.
+		if (dragDist <= 3 && onNodeClick) {
+			const rect = canvasEl!.getBoundingClientRect();
+			const segId = segIdAtPointer(e.clientX - rect.left, e.clientY - rect.top);
+			if (segId) onNodeClick(segId);
+		}
 	}
 	function onLeave() {
 		if (!dragging) hover = null;
+	}
+	function onDblClick(e: MouseEvent) {
+		const rect = canvasEl!.getBoundingClientRect();
+		const px = e.clientX - rect.left;
+		if (px < GUTTER_W) return;
+		const bp = (px - GUTTER_W - panX) / pxPerBp;
+		zoomBy(2, bp);
+	}
+	/** The displayed segment id under a screen point in the matrix, or null. */
+	function segIdAtPointer(px: number, py: number): string | null {
+		if (px < GUTTER_W || py < RULER_H) return null;
+		const bp = (px - GUTTER_W - panX) / pxPerBp;
+		const bi = blockAtBp(bp);
+		return bi >= 0 ? alignment.blocks[bi].segId : null;
 	}
 
 	function blockAtBp(bp: number): number {
@@ -208,6 +246,7 @@
 			bpCol: Math.floor(bp),
 			rowIdx,
 			segId: blk.segId,
+			nodeName: simplifiedNames ? blk.simpleName : blk.segId,
 			isBackbone: blk.isBackbone,
 			rowLabel: alignment.rows[rowIdx].label,
 			base,
@@ -233,6 +272,7 @@
 		alignment;
 		theme;
 		emphasizeVariants;
+		simplifiedNames;
 		pxPerBp;
 		panX;
 		scrollY;
@@ -383,37 +423,54 @@
 		ctx.beginPath();
 		ctx.rect(GUTTER_W, 0, matrixW, RULER_H);
 		ctx.clip();
-		ctx.textBaseline = 'middle';
+		// Node names: kept in view by sticking each to the visible-left of its block
+		// (so zooming into a node's right edge doesn't scroll its name off), and drawn
+		// on a diagonal when the label is too long to fit horizontally — so a long raw
+		// id is never trimmed. `lastRight` skips a name only when it would collide with
+		// the previous one (dense zoom-out), keeping the rest readable.
+		ctx.textBaseline = 'alphabetic';
+		let lastRight = -Infinity;
 		for (let i = 0; i < alignment.blocks.length; i++) {
 			const blk = alignment.blocks[i];
 			if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
 			const x0 = screenX(blk.colStart);
 			const x1 = screenX(blk.colStart + blk.bpLen);
-			const w = x1 - x0;
-			// node-id label, centred, clipped to the block
-			if (w > 14) {
+			const label = simplifiedNames ? blk.simpleName : blk.segId;
+			ctx.font = blk.isSelected
+				? '600 11px ui-sans-serif, system-ui, sans-serif'
+				: '11px ui-sans-serif, system-ui, sans-serif';
+			ctx.fillStyle = blk.isSelected ? theme.refRowLabel : theme.gutterText;
+			const textW = ctx.measureText(label).width;
+			const vis0 = Math.max(x0 + 2, GUTTER_W + 2); // sticky to the visible left edge
+			const availPx = Math.min(x1, width) - vis0;
+			if (textW + 3 <= availPx && vis0 >= lastRight) {
+				// fits horizontally
+				ctx.textAlign = 'left';
+				ctx.fillText(label, vis0, 14);
+				lastRight = vis0 + textW + 6;
+			} else if (vis0 >= lastRight - 2) {
+				// diagonal so a long id isn't trimmed; rises up-right from the left edge
 				ctx.save();
-				ctx.beginPath();
-				ctx.rect(x0 + 1, 0, w - 2, RULER_H);
-				ctx.clip();
-				ctx.textAlign = 'center';
-				ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
-				ctx.fillStyle = blk.isSelected ? theme.refRowLabel : theme.gutterText;
-				ctx.fillText(blk.segId, (x0 + x1) / 2, RULER_H - 11);
+				ctx.translate(vis0, RULER_H - 10);
+				ctx.rotate(-Math.PI / 4);
+				ctx.textAlign = 'left';
+				ctx.fillText(label, 0, 0);
 				ctx.restore();
+				lastRight = vis0 + 10;
 			}
-			// backbone coordinate tick at the block's left edge
-			if (blk.isBackbone && blk.refStart != null && w > 3) {
+			// backbone coordinate tick + number at the block's left edge (stays put —
+			// it marks a genomic position, not the node's identity).
+			if (blk.isBackbone && blk.refStart != null && x1 - x0 > 3) {
 				ctx.strokeStyle = theme.nodeDivider;
 				ctx.beginPath();
 				ctx.moveTo(Math.round(x0) + 0.5, RULER_H - 6);
 				ctx.lineTo(Math.round(x0) + 0.5, RULER_H);
 				ctx.stroke();
-				if (w > 46) {
+				if (x1 - x0 > 46 && x0 > GUTTER_W) {
 					ctx.textAlign = 'left';
 					ctx.font = '9px ui-monospace, monospace';
 					ctx.fillStyle = theme.rulerText;
-					ctx.fillText(blk.refStart.toLocaleString(), x0 + 3, 9);
+					ctx.fillText(blk.refStart.toLocaleString(), x0 + 3, RULER_H - 8);
 				}
 			}
 		}
@@ -478,7 +535,7 @@
 		ctx.font = '10px ui-sans-serif, system-ui, sans-serif';
 		ctx.textAlign = 'left';
 		ctx.textBaseline = 'middle';
-		ctx.fillText(GUTTER_W < 120 ? 'paths ↓' : 'paths ↓ · bases →', 8, RULER_H / 2);
+		ctx.fillText(GUTTER_W < 120 ? 'walks ↓' : 'walks ↓ · bases →', 8, RULER_H / 2);
 		ctx.restore();
 
 		// 6) vertical scrollbar hint
@@ -546,6 +603,7 @@
 		onpointermove={onPointerMove}
 		onpointerup={onPointerUp}
 		onpointerleave={onLeave}
+		ondblclick={onDblClick}
 	></canvas>
 
 	<div class="zoom-controls">
@@ -561,7 +619,10 @@
 			style="left:{Math.min(hover.x + 14, width - 220)}px; top:{Math.min(hover.y + 14, height - 70)}px"
 		>
 			<div class="tip-base"><b>{hover.base}</b></div>
-			<div>{hover.isBackbone ? 'ref node' : 'alt node'} <b>{hover.segId}</b></div>
+			<div>
+				{hover.isBackbone ? 'ref node' : 'alt node'} <b>{hover.nodeName}</b>
+				{#if hover.nodeName !== hover.segId}<span class="tip-dim">({hover.segId})</span>{/if}
+			</div>
 			{#if hover.refPos != null}
 				<div class="tip-dim">{hover.contig}:{hover.refPos.toLocaleString()}</div>
 			{/if}

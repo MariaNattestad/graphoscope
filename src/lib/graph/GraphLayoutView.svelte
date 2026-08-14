@@ -215,6 +215,17 @@
 	// changes, so a user can click node after node and watch the alignment update.
 	let msaOpen = $state(false);
 	let msaHeight = $state(360);
+	// Short local names (R1/A1/…) the MSA assigns to the nodes in its window, so the
+	// graph can label the same nodes; null when simplified names are off/closed.
+	let msaNames = $state<Map<string, string> | null>(null);
+	// A node clicked in the MSA gets flashed in the graph so the user can spot it.
+	// `flashNonce` bumps on every click so re-clicking the same node re-triggers.
+	let flashSegment = $state<string | null>(null);
+	let flashNonce = $state(0);
+	function flashGraphNode(segId: string) {
+		flashSegment = segId;
+		flashNonce++;
+	}
 	function startMsaResize(e: PointerEvent) {
 		e.preventDefault();
 		const startY = e.clientY;
@@ -1738,6 +1749,9 @@
 						{bubbleIdBySeg}
 						{bubbleLongestBySeg}
 						{maxBubbleLongest}
+						nodeLabels={msaNames}
+						{flashSegment}
+						{flashNonce}
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
 						onSelectSegment={(id) => {
@@ -1871,6 +1885,8 @@
 							selectedSegId={selected}
 							{lightMode}
 							onClose={() => (msaOpen = false)}
+							onNames={(m) => (msaNames = m)}
+							onNodeFlash={flashGraphNode}
 						/>
 					</div>
 				</div>
@@ -1937,17 +1953,18 @@
 							</div>
 						{/if}
 
-						<button
-							class="ni-msa-btn"
-							class:active={msaOpen}
-							onclick={() => {
-								msaOpen = true;
-								trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
-							}}
-							title="Open the base-level alignment of the reference and the haplotypes through this node"
-						>
-							≡ Align sequences here
-						</button>
+						{#if !msaOpen}
+							<button
+								class="ni-msa-btn"
+								onclick={() => {
+									msaOpen = true;
+									trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
+								}}
+								title="Open multiple sequence alignment panel"
+							>
+								≡ Show MSA
+							</button>
+						{/if}
 
 						{#if hoverMode === 'bubble'}
 							<div class="ni-bubble">
@@ -3107,8 +3124,7 @@
 		color: #0e7490;
 		cursor: pointer;
 	}
-	.ni-msa-btn:hover,
-	.ni-msa-btn.active {
+	.ni-msa-btn:hover {
 		background: rgba(103, 232, 249, 0.22);
 	}
 

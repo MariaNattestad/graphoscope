@@ -7,7 +7,6 @@
 	import type { Gfa } from '../gfa';
 	import { buildAlignment } from './msa';
 	import { limits } from '../limits.svelte';
-	import { baseThemeDark, baseThemeLight } from './colors';
 	import MsaCanvas from './MsaCanvas.svelte';
 
 	let {
@@ -15,33 +14,62 @@
 		referenceSample,
 		selectedSegId,
 		lightMode = false,
-		onClose
+		onClose,
+		onNames,
+		onNodeFlash
 	}: {
 		gfa: Gfa;
 		referenceSample?: string;
 		selectedSegId: string | null;
 		lightMode?: boolean;
 		onClose?: () => void;
+		/** Reports the window's segId → short-name map (R1/A1/…) so the graph can
+		 * label the same nodes, or null when simplified names are off. */
+		onNames?: (map: Map<string, string> | null) => void;
+		/** A node was clicked in the alignment; flash it in the graph. */
+		onNodeFlash?: (segId: string) => void;
 	} = $props();
 
-	const WINDOW_PRESETS = [60, 150, 300, 700, 1500, 4000];
-	let windowBp = $state(limits.defaultMsaWindowBp);
+	// The alignment always builds a generous window (up to the column cap) so the
+	// user can zoom out to reveal context; the canvas opens focused on the clicked
+	// node (see MsaCanvas.fit), so there is no window-size control to set.
 	// Dim shared backbone sequence so variant columns pop (on by default).
 	let emphasizeVariants = $state(true);
+	// Rename nodes to short local R1/A1 names within the window (on by default).
+	let simplifiedNames = $state(true);
+	// The settings gear popover.
+	let settingsOpen = $state(false);
+	let gearWrap = $state<HTMLElement>();
+	// Close the popover on a click outside it.
+	$effect(() => {
+		if (!settingsOpen) return;
+		const onDoc = (e: PointerEvent) => {
+			if (gearWrap && !gearWrap.contains(e.target as Node)) settingsOpen = false;
+		};
+		window.addEventListener('pointerdown', onDoc);
+		return () => window.removeEventListener('pointerdown', onDoc);
+	});
 
 	const alignment = $derived(
 		selectedSegId
 			? buildAlignment(gfa, {
 					referenceSample,
 					selectedSegId,
-					windowBp,
+					windowBp: limits.maxMsaColumns,
 					maxColumns: limits.maxMsaColumns,
 					maxRows: limits.maxMsaRows
 				})
 			: null
 	);
 
-	const theme = $derived(lightMode ? baseThemeLight : baseThemeDark);
+	// Publish (or clear) the short-name map for the graph to mirror.
+	$effect(() => {
+		onNames?.(simplifiedNames && alignment && !alignment.note ? alignment.nameBySeg : null);
+	});
+	$effect(() => {
+		// Clear the graph labels when the panel unmounts.
+		return () => onNames?.(null);
+	});
 
 	// Whether this graph carries individual haplotypes at all. A reduced graph
 	// aggregates non-reference walks into coverage counts, so only the reference
@@ -59,9 +87,11 @@
 			<span class="badge">MSA</span>
 			{#if selectedSegId && alignment && !alignment.note}
 				<span class="node">
-					node <b>{alignment.selectedSegId}</b>
+					node <b>{simplifiedNames
+						? (alignment.nameBySeg.get(alignment.selectedSegId) ?? alignment.selectedSegId)
+						: alignment.selectedSegId}</b>
 					<span class="dim">
-						{alignment.selectedOnBackbone ? 'on reference' : 'alt allele'}
+						{#if simplifiedNames && alignment.nameBySeg.has(alignment.selectedSegId)}· {alignment.selectedSegId} · {:else}·{' '}{/if}{alignment.selectedOnBackbone ? 'on reference' : 'alt allele'}
 						{#if alignment.window && alignment.contig}
 							· {alignment.contig}:{Math.round(alignment.window.start).toLocaleString()}–{Math.round(
 								alignment.window.end
@@ -76,27 +106,40 @@
 
 		<div class="controls">
 			{#if selectedSegId && alignment && !alignment.note}
-				<label class="win">
-					window
-					<select bind:value={windowBp}>
-						{#each WINDOW_PRESETS as w (w)}
-							<option value={w}>±{w.toLocaleString()} bp</option>
-						{/each}
-					</select>
-				</label>
 				<span class="count">
-					{totalHaplotypes} path{totalHaplotypes === 1 ? '' : 's'}
+					{totalHaplotypes} walk{totalHaplotypes === 1 ? '' : 's'}
 					{#if pathRows !== totalHaplotypes}<span class="dim">({pathRows} distinct)</span>{/if}
 				</span>
-				<label class="hv" title="Dim sequence shared with the reference so the variant columns stand out">
-					<input type="checkbox" bind:checked={emphasizeVariants} /> highlight variants
+				<label class="hv" title="Dim the sequence shared with the reference so the variant columns stand out">
+					<input type="checkbox" bind:checked={emphasizeVariants} /> hide non-variants
 				</label>
+				<div class="gear-wrap" bind:this={gearWrap}>
+					<button
+						class="gear"
+						class:active={settingsOpen}
+						title="Alignment settings"
+						aria-label="Alignment settings"
+						aria-expanded={settingsOpen}
+						onclick={() => (settingsOpen = !settingsOpen)}
+					>⚙</button>
+					{#if settingsOpen}
+						<div class="settings-pop">
+							<div class="settings-title">Alignment settings</div>
+							<label class="set-row">
+								<input type="checkbox" bind:checked={simplifiedNames} />
+								<span>
+									Simplified node names
+									<span class="set-sub">R1, R2… along the reference; A1, A2… for alt nodes. Also labels these nodes in the graph.</span>
+								</span>
+							</label>
+							<label class="set-row">
+								<input type="checkbox" bind:checked={emphasizeVariants} />
+								<span>Hide non-variant bases</span>
+							</label>
+						</div>
+					{/if}
+				</div>
 			{/if}
-			<div class="legend" aria-hidden="true">
-				{#each ['A', 'C', 'G', 'T'] as b (b)}
-					<span class="sw" style="background:{theme[b as 'A' | 'C' | 'G' | 'T']}">{b}</span>
-				{/each}
-			</div>
 			{#if onClose}
 				<button class="close" title="Close MSA view" onclick={onClose}>✕</button>
 			{/if}
@@ -113,7 +156,7 @@
 					<span class="warn">This graph carries node lengths but not sequences — showing blocks without bases.</span>
 				{/if}
 				{#if alignment.truncatedWindow}
-					<span>Window clamped to {limits.maxMsaColumns.toLocaleString()} columns; narrow the window for full detail.</span>
+					<span>{limits.maxMsaColumns.toLocaleString()} bp of context loaded around this node (zoom out to see it).</span>
 				{/if}
 				{#if alignment.truncatedRows > 0}
 					<span>{alignment.truncatedRows} more distinct path{alignment.truncatedRows === 1 ? '' : 's'} not shown.</span>
@@ -138,7 +181,13 @@
 				{/if}
 			</div>
 		{:else if alignment}
-			<MsaCanvas {alignment} {lightMode} {emphasizeVariants} />
+			<MsaCanvas
+				{alignment}
+				{lightMode}
+				{emphasizeVariants}
+				{simplifiedNames}
+				onNodeClick={(segId) => onNodeFlash?.(segId)}
+			/>
 		{/if}
 	</div>
 </section>
@@ -199,25 +248,6 @@
 		gap: 0.9rem;
 		flex-wrap: wrap;
 	}
-	.win {
-		font-size: 0.78rem;
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-		opacity: 0.85;
-	}
-	.win select {
-		font: inherit;
-		font-size: 0.78rem;
-		padding: 2px 4px;
-		border-radius: 5px;
-		border: 1px solid rgba(140, 155, 180, 0.35);
-		background: transparent;
-		color: inherit;
-	}
-	.win select option {
-		color: #111;
-	}
 	.count {
 		font-size: 0.78rem;
 		opacity: 0.9;
@@ -231,20 +261,66 @@
 		cursor: pointer;
 		user-select: none;
 	}
-	.legend {
-		display: flex;
-		gap: 3px;
+	.gear-wrap {
+		position: relative;
 	}
-	.sw {
-		width: 18px;
-		height: 18px;
-		border-radius: 4px;
-		display: grid;
-		place-items: center;
-		font-size: 0.68rem;
+	.gear {
+		background: transparent;
+		border: 1px solid rgba(140, 155, 180, 0.3);
+		color: inherit;
+		width: 26px;
+		height: 26px;
+		border-radius: 6px;
+		cursor: pointer;
+		font-size: 0.85rem;
+		line-height: 1;
+	}
+	.gear:hover,
+	.gear.active {
+		background: rgba(140, 155, 180, 0.15);
+	}
+	.settings-pop {
+		position: absolute;
+		top: calc(100% + 6px);
+		right: 0;
+		z-index: 20;
+		width: 260px;
+		background: #12151c;
+		color: #e6ebf5;
+		border: 1px solid rgba(140, 155, 180, 0.28);
+		border-radius: 9px;
+		padding: 0.7rem 0.8rem;
+		box-shadow: 0 8px 26px rgba(0, 0, 0, 0.4);
+	}
+	.light .settings-pop {
+		background: #ffffff;
+		color: #1e293b;
+		border-color: rgba(100, 116, 139, 0.3);
+	}
+	.settings-title {
+		font-size: 0.72rem;
 		font-weight: 700;
-		color: #fff;
-		font-family: ui-monospace, monospace;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		opacity: 0.6;
+		margin-bottom: 0.6rem;
+	}
+	.set-row {
+		display: flex;
+		gap: 0.5rem;
+		align-items: flex-start;
+		font-size: 0.82rem;
+		padding: 0.3rem 0;
+		cursor: pointer;
+	}
+	.set-row input {
+		margin-top: 2px;
+	}
+	.set-sub {
+		display: block;
+		font-size: 0.72rem;
+		opacity: 0.6;
+		margin-top: 2px;
 	}
 	.close {
 		background: transparent;

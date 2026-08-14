@@ -78,6 +78,18 @@ describe('buildAlignment — SNP substitution', () => {
 		expect(a.contig).toBe('chr1');
 	});
 
+	it('assigns simplified R/A names (ref left-to-right, alts as A1…)', () => {
+		const a = buildAlignment(gfa, { referenceSample: 'ref', selectedSegId: '2', windowBp: 10000 });
+		// Backbone 1,2,3,4,5 → R1..R5 in order; alt 20 → A1.
+		expect(a.nameBySeg.get('1')).toBe('R1');
+		expect(a.nameBySeg.get('2')).toBe('R2');
+		expect(a.nameBySeg.get('3')).toBe('R3');
+		expect(a.nameBySeg.get('20')).toBe('A1');
+		const b20 = a.blocks.find((b) => b.segId === '20')!;
+		expect(b20.simpleName).toBe('A1');
+		expect(b20.isBackbone).toBe(false);
+	});
+
 	it('assigns cumulative colStart matching bp lengths', () => {
 		const a = buildAlignment(gfa, { referenceSample: 'ref', selectedSegId: '2', windowBp: 10000 });
 		let col = 0;

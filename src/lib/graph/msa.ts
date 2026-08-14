@@ -19,6 +19,10 @@ export type Orient = '+' | '-';
 export interface AlignBlock {
 	/** Displayed segment id this block draws. */
 	segId: string;
+	/** Short local name within this window: R1,R2,… along the reference (left to
+	 * right), A1,A2,… for the alt nodes. Stable for the life of the window; shared
+	 * with the graph view so the same node reads the same in both. */
+	simpleName: string;
 	/** Node length in bp = number of base columns in the block. */
 	bpLen: number;
 	/** Cumulative bp offset of the block's left edge from the window's left. */
@@ -53,6 +57,8 @@ export interface AlignRow {
 export interface Alignment {
 	blocks: AlignBlock[];
 	rows: AlignRow[];
+	/** Displayed segment id → its short local name (R1/A1/…) within this window. */
+	nameBySeg: Map<string, string>;
 	/** Total bp across all blocks (the horizontal extent, in base columns). */
 	totalBp: number;
 	selectedSegId: string;
@@ -191,7 +197,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	} = opts;
 
 	const empty = (note: string): Alignment => ({
-		blocks: [], rows: [], totalBp: 0, selectedSegId,
+		blocks: [], rows: [], nameBySeg: new Map(), totalBp: 0, selectedSegId,
 		selectedOnBackbone: false, contig: null, window: null,
 		truncatedRows: 0, truncatedWindow: false, hasSequence: false, note
 	});
@@ -337,15 +343,20 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 
 	// --- assemble blocks in global left-to-right order -------------------------
 	const blocks: AlignBlock[] = [];
+	const nameBySeg = new Map<string, string>();
 	let col = 0;
 	let hasSequence = false;
+	let refCount = 0;
+	let altCount = 0;
 	const pushBlock = (segId: string, isBackbone: boolean, bb?: BackboneNode) => {
 		const seg = gfa.segments.get(segId);
 		const bpLen = seg?.length ?? 0;
 		if (bpLen <= 0) return;
 		if (seg?.seq && seg.seq.length > 0) hasSequence = true;
+		const simpleName = isBackbone ? `R${++refCount}` : `A${++altCount}`;
+		nameBySeg.set(segId, simpleName);
 		blocks.push({
-			segId, bpLen, colStart: col,
+			segId, simpleName, bpLen, colStart: col,
 			isBackbone, isSelected: segId === selected,
 			refStart: bb?.refStart, contig: isBackbone ? contig ?? undefined : undefined
 		});
@@ -419,7 +430,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	for (const sig of order) rows.push(bySig.get(sig)!);
 
 	return {
-		blocks, rows, totalBp, selectedSegId: selected, selectedOnBackbone,
+		blocks, rows, nameBySeg, totalBp, selectedSegId: selected, selectedOnBackbone,
 		contig, window: { start: lo, end: hi },
 		truncatedRows, truncatedWindow, hasSequence
 	};
@@ -431,7 +442,10 @@ function referenceLabel(w: Walkish): string {
 }
 
 function walkLabel(w: Walkish): string {
-	if (w.sample === 'unknown') return `${w.seqId}`;
+	// Anonymised walks (a gbz-base subgraph extract labels every haplotype
+	// 'unknown', so only the contig — e.g. "chr5" — distinguishes them, which says
+	// nothing useful): call them what they are rather than repeating the contig.
+	if (w.sample === 'unknown') return 'non-reference walk';
 	const hap = w.hapIndex != null ? ` (hap ${w.hapIndex})` : '';
 	return `${w.sample}${hap}`;
 }
