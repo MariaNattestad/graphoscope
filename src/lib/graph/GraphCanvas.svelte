@@ -268,6 +268,11 @@
 	const toScreenY = (wy: number) =>
 		uniformZoom ? transform.y + wy * transform.k : panY + wy * baseScaleY;
 
+	// True once a pan or zoom has moved the view off the fitted framing. Only drives
+	// how loudly the reset button presents itself — it's always there and always
+	// works, but it stays near-invisible while there's nothing to go back to.
+	let viewMoved = $state(false);
+
 	let hoveredSegment: string | null = $state(null);
 	let hoverPos: { x: number; y: number } = $state({ x: 0, y: 0 });
 	let hoverLabel: string | null = $state(null);
@@ -416,6 +421,9 @@
 			prevK = k;
 			prevY = next.y;
 			select(canvasEl).call(zoomBehavior.transform, next);
+			// After the call: applying the transform runs the zoom handler, which sets
+			// the flag.
+			viewMoved = false;
 			return;
 		}
 
@@ -430,6 +438,7 @@
 		prevK = scaleX;
 		prevY = 0;
 		select(canvasEl).call(zoomBehavior.transform, next);
+		viewMoved = false;
 	}
 
 	function draw() {
@@ -502,23 +511,52 @@
 				// still bows visibly and a whole-locus deletion doesn't balloon.
 				const span = Math.abs(bx - ax);
 				const amp = Math.min(64, Math.max(16, span * 0.22));
-				const qx = (ax + bx) / 2;
-				const qy = (ay + by) / 2 - 2 * amp;
-				// Quadratic control at 2× amp so the curve's peak sits ~amp above the line.
-				ctx.quadraticCurveTo(qx, qy, bx, by);
+				// The bow is drawn as two steep shoulders joined by a flat top, not as
+				// one arc across the whole span. A single arc meets the backbone almost
+				// horizontally once the span is wide, so zoomed in on a big deletion the
+				// line crawls away from its node at a hair's angle and you can no longer
+				// tell which node it leaves — it just merges into the backbone. Fixed
+				// shoulders in *screen* px mean the take-off angle stays steep however
+				// far you zoom in. Each shoulder's control point sits where the take-off
+				// tangent meets the flat top, so the curve leaves the node at a set angle
+				// and arrives at the plateau horizontally (no kink at the join). When the
+				// span is short the shoulders meet in the middle and the whole thing
+				// degenerates back into the familiar rounded bow.
+				const dir = Math.sign(bx - ax) || 1;
+				const peakY = Math.min(ay, by) - amp;
+				const shoulder = Math.min(span * 0.42, 90);
+				const run = Math.min(amp * 0.577, shoulder * 0.6); // 0.577 = 1/tan(60°)
+				const x1 = ax + dir * shoulder;
+				const x2 = bx - dir * shoulder;
+				ctx.quadraticCurveTo(ax + dir * run, peakY, x1, peakY);
+				ctx.lineTo(x2, peakY);
+				ctx.quadraticCurveTo(bx - dir * run, peakY, bx, by);
 				ctx.lineWidth = skipActive ? 3 : 1.5;
 				if (skipActive) ctx.strokeStyle = theme.bubbleHighlight;
 				else if (anyHighlight) ctx.globalAlpha = 0.15;
-				// Record a sampled polyline of the bow so the pointer can hit-test it.
+				// Record a sampled polyline of the bow so the pointer can hit-test it:
+				// both shoulders sampled, the flat top left as one long segment (the hit
+				// test measures distance to each segment, not to the samples).
 				if (skip) {
 					const pts: { x: number; y: number }[] = [];
-					for (let t = 0; t <= 1.0001; t += 1 / 16) {
-						const u = 1 - t;
-						pts.push({
-							x: u * u * ax + 2 * u * t * qx + t * t * bx,
-							y: u * u * ay + 2 * u * t * qy + t * t * by
-						});
-					}
+					const arc = (
+						px0: number,
+						py0: number,
+						cxp: number,
+						cyp: number,
+						px1: number,
+						py1: number
+					) => {
+						for (let t = 0; t <= 1.0001; t += 1 / 8) {
+							const u = 1 - t;
+							pts.push({
+								x: u * u * px0 + 2 * u * t * cxp + t * t * px1,
+								y: u * u * py0 + 2 * u * t * cyp + t * t * py1
+							});
+						}
+					};
+					arc(ax, ay, ax + dir * run, peakY, x1, peakY);
+					arc(x2, peakY, bx - dir * run, peakY, bx, by);
 					skipHits.push({ pts, skip });
 				}
 			} else {
@@ -996,58 +1034,65 @@
 		exitHits = [];
 		if (!showExits) return;
 		ctx.save();
-		ctx.setLineDash([4, 4]);
-		ctx.lineWidth = 1.5;
-		ctx.lineCap = 'butt';
-		// Clickable band around each dashed line: a few px tall, and only the near
-		// stretch (the cue fades out well before the frame edge anyway).
-		const HIT_TOL = 5;
-		const HIT_LEN = 90;
-		for (const chain of layout.chains) {
-			if (layout.backboneSegIds.has(chain.segId)) continue; // the reference axis marks its own ends
-			const ids = chain.nodeIds;
-			const endIdx: number[] = [];
-			if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
-			if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
-			const emph = exitHighlightSegments?.has(chain.segId) ?? false;
-			for (const i of endIdx) {
-				const n = layout.nodesById.get(ids[i]);
-				if (!n) continue;
-				const ex = toScreenX(n.x);
-				const ey = toScreenY(n.y);
-				const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
-				const edgeX = side === 'left' ? 0 : width;
-				if (emph) {
-					// This strand belongs to the active bubble/walk: draw its cue bright and
-					// solid-cored so the leaving haplotype is unmistakable.
-					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
-					grad.addColorStop(0, theme.bubbleHighlight);
-					grad.addColorStop(1, theme.exitCueFade);
-					ctx.strokeStyle = grad;
-					ctx.lineWidth = 2.5;
-				} else {
-					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
-					grad.addColorStop(0, theme.exitCue);
-					grad.addColorStop(1, theme.exitCueFade);
-					ctx.strokeStyle = grad;
-					ctx.lineWidth = 1.5;
+		// The dashed line style is set on the shared 2D context, so it has to come back
+		// off it no matter how this function leaves — a throw in here (createLinearGradient
+		// rejects a non-finite coordinate, for one) would otherwise skip the reset below
+		// and leave *every* strand drawn dashed from the next frame on.
+		try {
+			ctx.setLineDash([4, 4]);
+			ctx.lineWidth = 1.5;
+			ctx.lineCap = 'butt';
+			// Clickable band around each dashed line: a few px tall, and only the near
+			// stretch (the cue fades out well before the frame edge anyway).
+			const HIT_TOL = 5;
+			const HIT_LEN = 90;
+			for (const chain of layout.chains) {
+				if (layout.backboneSegIds.has(chain.segId)) continue; // the reference axis marks its own ends
+				const ids = chain.nodeIds;
+				const endIdx: number[] = [];
+				if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
+				if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
+				const emph = exitHighlightSegments?.has(chain.segId) ?? false;
+				for (const i of endIdx) {
+					const n = layout.nodesById.get(ids[i]);
+					if (!n) continue;
+					const ex = toScreenX(n.x);
+					const ey = toScreenY(n.y);
+					const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
+					const edgeX = side === 'left' ? 0 : width;
+					if (emph) {
+						// This strand belongs to the active bubble/walk: draw its cue bright and
+						// solid-cored so the leaving haplotype is unmistakable.
+						const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+						grad.addColorStop(0, theme.bubbleHighlight);
+						grad.addColorStop(1, theme.exitCueFade);
+						ctx.strokeStyle = grad;
+						ctx.lineWidth = 2.5;
+					} else {
+						const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+						grad.addColorStop(0, theme.exitCue);
+						grad.addColorStop(1, theme.exitCueFade);
+						ctx.strokeStyle = grad;
+						ctx.lineWidth = 1.5;
+					}
+					ctx.beginPath();
+					ctx.moveTo(ex, ey);
+					ctx.lineTo(edgeX, ey);
+					ctx.stroke();
+					const nearX = side === 'left' ? Math.max(edgeX, ex - HIT_LEN) : Math.min(edgeX, ex + HIT_LEN);
+					exitHits.push({
+						x0: Math.min(ex, nearX),
+						x1: Math.max(ex, nearX),
+						yTop: ey - HIT_TOL,
+						yBot: ey + HIT_TOL,
+						exit: { segId: chain.segId, side }
+					});
 				}
-				ctx.beginPath();
-				ctx.moveTo(ex, ey);
-				ctx.lineTo(edgeX, ey);
-				ctx.stroke();
-				const nearX = side === 'left' ? Math.max(edgeX, ex - HIT_LEN) : Math.min(edgeX, ex + HIT_LEN);
-				exitHits.push({
-					x0: Math.min(ex, nearX),
-					x1: Math.max(ex, nearX),
-					yTop: ey - HIT_TOL,
-					yBot: ey + HIT_TOL,
-					exit: { segId: chain.segId, side }
-				});
 			}
+		} finally {
+			ctx.setLineDash([]);
+			ctx.restore();
 		}
-		ctx.setLineDash([]);
-		ctx.restore();
 	}
 
 	function findSegmentAt(px: number, py: number): string | null {
@@ -1132,14 +1177,19 @@
 		return null;
 	}
 
-	// The skip-bubble arc under the pointer: nearest sampled point on any bow within a
-	// few pixels. Reverse order so a later-drawn arc wins where they overlap.
+	// The skip-bubble arc under the pointer: within a few pixels of any span of the
+	// sampled bow. Measured against the segments *between* samples, not the samples
+	// themselves — a wide arc's samples sit hundreds of px apart, so point-matching
+	// would leave most of its length unhoverable. Reverse order so a later-drawn arc
+	// wins where they overlap.
 	function findSkipAt(px: number, py: number): CanvasSkip | null {
 		const TOL = 6;
 		for (let i = skipHits.length - 1; i >= 0; i--) {
 			const { pts, skip } = skipHits[i];
-			for (const p of pts) {
-				if (Math.abs(px - p.x) <= TOL && Math.abs(py - p.y) <= TOL) return skip;
+			for (let j = 1; j < pts.length; j++) {
+				const a = pts[j - 1];
+				const b = pts[j];
+				if (distToSegment(px, py, a.x, a.y, b.x, b.y) <= TOL) return skip;
 			}
 		}
 		return null;
@@ -1206,6 +1256,7 @@
 			prevK = t.k;
 			prevY = t.y;
 			transform = t;
+			viewMoved = true;
 			draw();
 		});
 		// Plain two-finger trackpad scrolling and mouse-wheel scrolling both show
@@ -1374,6 +1425,30 @@
 
 <div class="canvas-container" bind:this={containerEl}>
 	<canvas bind:this={canvasEl}></canvas>
+	<!-- Reset to the whole locus: the one gesture back when panning and zooming have
+	     left the view somewhere unhelpful. Kept faint until the view has been moved. -->
+	<button
+		class="reset-view"
+		class:light={lightMode}
+		class:armed={viewMoved}
+		onclick={() => {
+			fitToView();
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'reset_view' });
+		}}
+		title="Reset the view to the whole locus"
+		aria-label="Reset the view to the whole locus"
+	>
+		<svg viewBox="0 0 16 16" aria-hidden="true">
+			<path
+				d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"
+				fill="none"
+				stroke="currentColor"
+				stroke-width="1.5"
+				stroke-linecap="round"
+				stroke-linejoin="round"
+			/>
+		</svg>
+	</button>
 	{#if hoverLabel}
 		<div
 			class="tooltip"
@@ -1399,6 +1474,57 @@
 	}
 	canvas:active {
 		cursor: grabbing;
+	}
+	/* Corner-brackets "fit to frame" button, floated over the top-right of the
+	   graph. Deliberately quiet: a thin outline with no fill until hovered, so it
+	   reads as chrome rather than as part of the graph. */
+	.reset-view {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		/* Over the trace badges (z-index 6) that share this corner. */
+		z-index: 8;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		border-radius: 6px;
+		border: 1px solid rgba(154, 163, 178, 0.22);
+		background: rgba(11, 13, 18, 0.55);
+		color: rgba(214, 224, 245, 0.55);
+		opacity: 0.5;
+		cursor: pointer;
+		transition:
+			opacity 0.15s ease,
+			color 0.15s ease,
+			border-color 0.15s ease;
+	}
+	.reset-view.light {
+		border-color: rgba(71, 85, 105, 0.22);
+		background: rgba(255, 255, 255, 0.7);
+		color: rgba(30, 41, 59, 0.55);
+	}
+	/* Once the view has been moved there is somewhere to go back to, so the button
+	   steps forward — still quiet, just no longer ignorable. */
+	.reset-view.armed {
+		opacity: 0.85;
+	}
+	.reset-view:hover {
+		opacity: 1;
+		color: #e6e8ee;
+		border-color: rgba(154, 163, 178, 0.5);
+	}
+	.reset-view.light:hover {
+		color: #0f172a;
+		border-color: rgba(71, 85, 105, 0.5);
+	}
+	.reset-view svg {
+		width: 14px;
+		height: 14px;
+		display: block;
+		flex: 0 0 auto;
 	}
 	.tooltip {
 		position: absolute;
