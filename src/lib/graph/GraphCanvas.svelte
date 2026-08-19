@@ -312,6 +312,15 @@
 		skip: CanvasSkip;
 	}
 	let skipHits: SkipHit[] = [];
+	// Screen-space rects of the short-name (R1/A1…) pills, rebuilt each draw, so hovering
+	// a pill can explain what it is — the pills themselves aren't otherwise interactive.
+	interface MsaLabelHit {
+		x0: number;
+		y0: number;
+		x1: number;
+		y1: number;
+	}
+	let msaLabelHits: MsaLabelHit[] = [];
 	// Flip the tooltip above the cursor near the bottom of the stage (the gene
 	// track lives there, and a tooltip below would clip against the frame).
 	const tooltipAbove = $derived(hoverPos.y > 360);
@@ -626,6 +635,7 @@
 	// node reads the same in the graph and the alignment. Drawn on a small pill at
 	// each node's midpoint, in screen space so they stay a constant size.
 	function drawMsaLabels(ctx: CanvasRenderingContext2D) {
+		msaLabelHits = [];
 		if (!nodeLabels || nodeLabels.size === 0) return;
 		ctx.save();
 		ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
@@ -636,6 +646,7 @@
 			if (!pts) continue;
 			const mid = pts[Math.floor(pts.length / 2)];
 			const w = ctx.measureText(label).width;
+			msaLabelHits.push({ x0: mid.x - w / 2 - 3, y0: mid.y - 15, x1: mid.x + w / 2 + 3, y1: mid.y - 2 });
 			// The flashed node's name flashes white alongside its strand (a node clicked
 			// in the MSA), so the eye lands on the same label in both views.
 			const flashing = segId === flashSegment && flashAlpha > 0;
@@ -1392,6 +1403,20 @@
 			// pinpointing nodes — turning into a pointer only over something clickable.
 			if (clickStart && Math.hypot(e.clientX - clickStart.x, e.clientY - clickStart.y) > 4) {
 				canvasEl!.style.cursor = 'grabbing';
+				return;
+			}
+
+			// A short-name (R1/A1…) pill sits just above its node. Hovering it explains
+			// what the pill is — the pills aren't otherwise interactive — rather than
+			// crowding the node's own tooltip with it.
+			const pill = msaLabelHits.find((h) => px >= h.x0 && px <= h.x1 && py >= h.y0 && py <= h.y1);
+			if (pill) {
+				if (hoveredSegment !== null) {
+					setHovered(null);
+					draw();
+				}
+				hoverLabel = 'Short node ID · see MSA panel settings';
+				canvasEl!.style.cursor = 'help';
 				return;
 			}
 

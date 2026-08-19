@@ -1389,11 +1389,6 @@
 		if (showSequence && seg?.seq) {
 			parts.push(seg.seq.length > 40 ? `${seg.seq.slice(0, 40)}…` : seg.seq);
 		}
-		// When this node carries a short MSA name (R1/A1…) shown on it, explain what
-		// that pill is and where to toggle it.
-		if (msaNames?.has(segId)) {
-			parts.push(`${msaNames.get(segId)} — short node ID, see MSA panel settings`);
-		}
 		return parts.join(' · ') || segId;
 	}
 
