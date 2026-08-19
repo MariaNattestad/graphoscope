@@ -40,6 +40,7 @@
 		allNodesTooMany = false,
 		onToggleSimplify,
 		onRequestMoreContext,
+		context,
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
@@ -122,7 +123,83 @@
 		 * just a genuine graph terminus — so the "off-locus exit" cues, which only
 		 * make sense against a wider graph, are suppressed there. */
 		windowedSubgraph?: boolean;
+		/** Current subgraph context radius (bp). When a re-query of the same locus comes
+		 * back with a larger value, the newly-pulled-in nodes are glowed until dismissed. */
+		context?: number;
 	} = $props();
+
+	// --- context-increase glow -------------------------------------------------
+	// When the user re-queries the SAME locus with a larger context (from the query
+	// pop-up, the "Increase context & re-query" button, or any other path — they all
+	// funnel through the `context` prop and a new `gfa`), the graph gains nodes that
+	// were outside the previous window. Glow those new nodes until the info message is
+	// dismissed, and glow GREEN the ones that used to show as alt but now sit on the
+	// reference walk. "Don't change the colour scheme" — the glow is a halo behind the
+	// node (see GraphCanvas), not a recolour.
+	let glowSegments = $state<Set<string>>(new Set());
+	let glowGreenSegments = $state<Set<string>>(new Set());
+	let contextGlowMsg = $state(false);
+	function dismissContextGlow() {
+		contextGlowMsg = false;
+		glowSegments = new Set();
+		glowGreenSegments = new Set();
+	}
+	// Non-reactive memory of the previous query, to diff the next one against. Node ids
+	// are expanded to the original ids they stand for, so the diff survives unchop
+	// renaming the u-chains between queries.
+	let prevOrigIds: Set<string> | null = null;
+	let prevAltOrigIds: Set<string> | null = null;
+	let prevContext = -Infinity;
+	// Keyed on `gfa` ALONE: the context prop updates the instant the user asks for more
+	// (before the re-query returns), so keying on it too would consume the "increased"
+	// signal against the still-current graph. We read context untracked when the new
+	// graph actually arrives, comparing it to the context of the previous graph.
+	$effect(() => {
+		gfa;
+		untrack(() => {
+			const ctx = context;
+			const origOf = (seg: { id: string; members?: string[] }) =>
+				seg.members && seg.members.length ? seg.members : [seg.id];
+			const curOrig = new Set<string>();
+			const curAltOrig = new Set<string>();
+			for (const seg of gfa.segments.values()) {
+				const isRef = refCoords.has(seg.id);
+				for (const id of origOf(seg)) {
+					curOrig.add(id);
+					if (!isRef) curAltOrig.add(id);
+				}
+			}
+			// Same locus? Measure how much of the previous graph is still here. A context
+			// increase keeps ~every previous node (the window only grows), so overlap is
+			// near-total; a different locus shares almost none. This is robust to the
+			// query label flipping between a gene name and coordinates.
+			let shared = 0;
+			if (prevOrigIds) for (const id of prevOrigIds) if (curOrig.has(id)) shared++;
+			const overlap = prevOrigIds && prevOrigIds.size ? shared / prevOrigIds.size : 0;
+			const increased = ctx != null && prevOrigIds !== null && ctx > prevContext && overlap > 0.5;
+			if (increased) {
+				const gNew = new Set<string>();
+				const gGreen = new Set<string>();
+				for (const seg of gfa.segments.values()) {
+					const ids = origOf(seg);
+					const existed = ids.some((id) => prevOrigIds!.has(id));
+					if (!existed) gNew.add(seg.id);
+					else if (refCoords.has(seg.id) && ids.some((id) => prevAltOrigIds!.has(id)))
+						gGreen.add(seg.id);
+				}
+				glowSegments = gNew;
+				glowGreenSegments = gGreen;
+				contextGlowMsg = gNew.size > 0 || gGreen.size > 0;
+			} else {
+				if (glowSegments.size) glowSegments = new Set();
+				if (glowGreenSegments.size) glowGreenSegments = new Set();
+				contextGlowMsg = false;
+			}
+			prevOrigIds = curOrig;
+			prevAltOrigIds = curAltOrig;
+			prevContext = ctx ?? prevContext;
+		});
+	});
 
 	// The primary layout control: a named mode that picks a whole recipe (family +
 	// all the per-mode force tuning, resolved in the worker). Persists across graphs
@@ -1701,6 +1778,17 @@
 		</aside>
 
 	<div class="stage-col">
+			{#if contextGlowMsg}
+				<div class="context-glow-msg" role="status">
+					<span class="cgm-dot"></span>
+					<span class="cgm-text">
+						Context increased. New nodes are shown glowing until this message is dismissed. Nodes
+						that were previously shown as alt nodes but now appear in the reference walk are shown
+						with a <span class="cgm-green">green glow</span>.
+					</span>
+					<button class="cgm-dismiss" onclick={dismissContextGlow} aria-label="Dismiss">Dismiss</button>
+				</div>
+			{/if}
 			<div class="stage">
 				{#if displayLayout}
 					<GraphCanvas
@@ -1723,6 +1811,8 @@
 						{bubbleIdBySeg}
 						{bubbleLongestBySeg}
 						{maxBubbleLongest}
+						{glowSegments}
+						{glowGreenSegments}
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
 						onSelectSegment={(id) => {
@@ -2223,6 +2313,48 @@
 		   of .stage) so it can float over the graph on desktop but flow below it on
 		   mobile. */
 		position: relative;
+	}
+	.context-glow-msg {
+		display: flex;
+		align-items: center;
+		gap: 0.6rem;
+		padding: 0.5rem 0.7rem;
+		border-radius: 9px;
+		background: #eaf6fb;
+		border: 1px solid #b8dff0;
+		color: #0d5b70;
+		font-size: 0.78rem;
+		line-height: 1.4;
+	}
+	.cgm-dot {
+		flex: none;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: #ffffff;
+		border: 1px solid #7cc7e0;
+		box-shadow: 0 0 7px 2px rgba(124, 199, 224, 0.9);
+	}
+	.cgm-text {
+		flex: 1 1 auto;
+	}
+	.cgm-green {
+		color: #15803d;
+		font-weight: 600;
+	}
+	.cgm-dismiss {
+		flex: none;
+		font: inherit;
+		font-size: 0.74rem;
+		cursor: pointer;
+		border: 1px solid #9ecfe2;
+		background: #fff;
+		color: #0d5b70;
+		padding: 0.28rem 0.6rem;
+		border-radius: 6px;
+	}
+	.cgm-dismiss:hover {
+		background: #f3fbfe;
 	}
 	.sidebar {
 		flex: 0 0 224px;
