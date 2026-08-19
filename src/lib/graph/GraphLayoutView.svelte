@@ -230,10 +230,28 @@
 	// When "Load MSA" is clicked on a simplified graph, we switch to the full graph
 	// (which carries the walks the alignment needs). That swap fires the graph-reset
 	// effect below, which would normally close the MSA and drop the selection — so we
-	// stash the full-graph node to focus on here, and the reset effect re-opens the MSA
-	// on it once the full graph arrives. Holds an *original* node id (a member of the
-	// clicked reduced node), which is what the full graph is keyed by.
+	// stash the intent here and the reset effect re-opens the MSA (on `pendingMsaNode`
+	// when a node was selected) once the full graph arrives. `pendingMsaNode` holds an
+	// *original* node id (a member of the clicked reduced node), which is what the full
+	// graph is keyed by; it's null when the MSA is opened without a selection.
+	let pendingMsaOpen = $state(false);
 	let pendingMsaNode = $state<string | null>(null);
+	// Open the base-alignment view. On a simplified graph the MSA needs the full graph's
+	// walks, so switch to it automatically — but only when this device can show it
+	// (`discoAvailable`); on a low-memory/phone tab we don't force the load and the panel
+	// explains why it can't align there. Shared by the sidebar button and any other entry.
+	function openMsa() {
+		if (gfa.reduced && !showingAllNodes && discoAvailable && onToggleSimplify) {
+			const members = selected ? gfa.segments.get(selected)?.members : undefined;
+			pendingMsaNode =
+				members && members.length ? members[Math.floor(members.length / 2)] : selected;
+			pendingMsaOpen = true;
+			onToggleSimplify();
+		} else {
+			msaOpen = true;
+		}
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
+	}
 	// Short local names (R1/A1/…) the MSA assigns to the nodes in its window, so the
 	// graph can label the same nodes; null when simplified names are off/closed.
 	let msaNames = $state<Map<string, string> | null>(null);
@@ -348,18 +366,19 @@
 		// clear it before the switch lands. Untrack keeps the graph swap the only trigger.
 		untrack(() => {
 			// A "Load MSA" switch to the full graph: instead of dropping everything, re-open
-			// the alignment on the corresponding full-graph node. Guarded on !gfa.reduced so
-			// it only fires once the full graph has actually arrived.
-			const resuming = pendingMsaNode != null && !gfa.reduced;
+			// the alignment (on the corresponding full-graph node when one was selected).
+			// Guarded on !gfa.reduced so it only fires once the full graph has arrived.
+			const resuming = pendingMsaOpen && !gfa.reduced;
 			if (resuming) {
-				selected = gfa.segments.has(pendingMsaNode!) ? pendingMsaNode : null;
-				msaOpen = selected != null;
+				selected = pendingMsaNode && gfa.segments.has(pendingMsaNode) ? pendingMsaNode : null;
+				msaOpen = true;
 			} else {
 				selected = null;
 				// A new graph has different nodes; close the base-alignment view rather than
 				// leaving it pinned to a node id that no longer exists.
 				msaOpen = false;
 			}
+			pendingMsaOpen = false;
 			pendingMsaNode = null;
 			inspectorDismissed = false;
 			selectedFeature = null;
@@ -1437,11 +1456,11 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Pinned primary controls: the two most-reached-for switches. Only the
-			     hosted locus browser has these (Simplify needs the full/reduced graph
-			     swap), so on a plain GFA the whole group is dropped rather than left as
-			     an empty box. -->
-			{#if discoAvailable || showingAllNodes || allNodesTooMany}
+			<!-- Pinned primary controls: the Simplify switch and the Load MSA button, the
+			     two most-reached-for actions, share one box. Only the hosted locus browser
+			     has Simplify (it needs the full/reduced graph swap); the box still renders
+			     for the MSA button on a plain GFA. -->
+			{#if discoAvailable || showingAllNodes || allNodesTooMany || !msaOpen}
 			<section class="group primary">
 				{#if discoAvailable || showingAllNodes}
 					<label
@@ -1474,6 +1493,13 @@
 							? 'too much memory to show in full on this device'
 							: 'too slow to render in full'}</span
 					>
+				{/if}
+				<!-- Base alignment (MSA): opens the split panel below the graph. Aligns the
+				     selected node's sequences, or prompts for a node if none is selected. -->
+				{#if !msaOpen}
+					<button class="msa-load-btn" onclick={openMsa} title="Open the base-alignment (MSA) panel below the graph — aligns the selected node's sequences (click a node first if none is selected)">
+						≡ Load MSA
+					</button>
 				{/if}
 			</section>
 			{/if}
@@ -2045,34 +2071,6 @@
 									>
 								{/if}
 							</div>
-						{/if}
-
-						{#if !msaOpen}
-							<button
-								class="ni-msa-btn"
-								onclick={() => {
-									// The MSA needs the full graph's per-haplotype walks. On a simplified
-									// (reduced) graph, switch to the full graph automatically — but only when
-									// this device can show it (`discoAvailable`). On a low-memory/phone tab where
-									// the full graph is too heavy, we don't force the load; the panel opens and
-									// explains why it can't align here.
-									if (gfa.reduced && !showingAllNodes && discoAvailable && onToggleSimplify) {
-										// Stash the full-graph node to align on (an original member of the clicked
-										// reduced node); the reset effect re-opens the MSA on it once the full
-										// graph arrives, since the swap would otherwise drop the selection.
-										const members = selected ? gfa.segments.get(selected)?.members : undefined;
-										pendingMsaNode =
-											members && members.length ? members[Math.floor(members.length / 2)] : selected;
-										onToggleSimplify();
-									} else {
-										msaOpen = true;
-									}
-									trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
-								}}
-								title="Load the full graph and align this node's sequences"
-							>
-								≡ Load MSA
-							</button>
 						{/if}
 
 						{#if hoverMode === 'bubble'}
@@ -2771,7 +2769,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		max-height: 260px;
+		max-height: 150px;
 		overflow-y: auto;
 	}
 	.haplo-row {
@@ -3221,11 +3219,10 @@
 		flex: 1 1 auto;
 		min-height: 0;
 	}
-	.ni-msa-btn {
+	.msa-load-btn {
 		display: block;
 		width: 100%;
-		margin: 0.5rem 0 0.1rem;
-		padding: 0.4rem 0.6rem;
+		padding: 0.45rem 0.6rem;
 		font: inherit;
 		font-size: 0.82rem;
 		font-weight: 600;
@@ -3236,7 +3233,7 @@
 		color: #0e7490;
 		cursor: pointer;
 	}
-	.ni-msa-btn:hover {
+	.msa-load-btn:hover {
 		background: rgba(103, 232, 249, 0.22);
 	}
 
