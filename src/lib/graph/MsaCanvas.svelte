@@ -9,7 +9,8 @@
 	// fights. `pxPerBp` is the horizontal scale, `panX` the horizontal offset (px),
 	// `scrollY` the vertical row offset (px).
 	import { untrack } from 'svelte';
-	import { baseThemeDark, baseThemeLight, baseFill, type BaseTheme } from './colors';
+	import { baseThemeDark, baseThemeLight, baseFill, BACKBONE_COLOR, type BaseTheme } from './colors';
+	import type { ColorMode } from './colors';
 	import type { Alignment } from './msa';
 
 	let {
@@ -17,7 +18,11 @@
 		lightMode = false,
 		emphasizeVariants = true,
 		simplifiedNames = true,
-		onNodeClick
+		colorForSeg,
+		colorMode,
+		rowHighlights = null,
+		onNodeClick,
+		onWalkClick
 	}: {
 		alignment: Alignment;
 		lightMode?: boolean;
@@ -26,8 +31,19 @@
 		emphasizeVariants?: boolean;
 		/** Label nodes with their short local R1/A1 names instead of raw segment ids. */
 		simplifiedNames?: boolean;
+		/** The graph view's fill colour for a node id. When given, a per-node colour
+		 * track is drawn just under the ruler (backbone forced to white), mirroring the
+		 * graph's "color by" setting. Omitted → no track. */
+		colorForSeg?: (segId: string) => string;
+		/** The graph's active colour mode — read only so the track redraws on a change. */
+		colorMode?: ColorMode;
+		/** Walk key → highlight colour, for rows whose walk is currently spotlit in the
+		 * graph: their label is drawn in that colour with a swatch. */
+		rowHighlights?: Map<string, string> | null;
 		/** A node column was clicked (not dragged); its displayed segment id. */
 		onNodeClick?: (segId: string) => void;
+		/** A walk row's label was clicked; its walk key — so the graph can spotlight it. */
+		onWalkClick?: (walkKey: string) => void;
 	} = $props();
 
 	const theme = $derived<BaseTheme>(lightMode ? baseThemeLight : baseThemeDark);
@@ -37,7 +53,17 @@
 	// diagonal to avoid trimming; the short R1/A1 names sit horizontally in a
 	// shorter band.
 	const RULER_H = $derived(simplifiedNames ? 40 : 56);
+	// A per-node colour track sits between the ruler and the matrix when the graph
+	// hands us a colour function. MATRIX_TOP is where the alignment rows begin.
+	const TRACK_H = $derived(colorForSeg ? 11 : 0);
+	const MATRIX_TOP = $derived(RULER_H + TRACK_H);
 	const ROW_H = 20;
+	// The reference row (rows[0]) is frozen as a header band directly under the ruler,
+	// so it stays in view while the walk rows below it scroll. BODY_TOP is where the
+	// scrolling rows (rows[1..]) begin.
+	const hasRef = $derived(alignment.rows.length > 0 && alignment.rows[0].isReference);
+	const FROZEN_H = $derived(hasRef ? ROW_H : 0);
+	const BODY_TOP = $derived(MATRIX_TOP + FROZEN_H);
 	const LETTER_MIN_PX = 7.5; // draw glyphs once a base is at least this wide
 	const MIN_PX_PER_BP = 0.02;
 	const MAX_PX_PER_BP = 26;
@@ -58,8 +84,10 @@
 	let userAdjusted = false;
 
 	const matrixW = $derived(Math.max(10, width - GUTTER_W));
-	const contentH = $derived(alignment.rows.length * ROW_H);
-	const maxScrollY = $derived(Math.max(0, contentH - (height - RULER_H)));
+	// Scrollable body = every row after the frozen reference row.
+	const bodyRowCount = $derived(Math.max(0, alignment.rows.length - (hasRef ? 1 : 0)));
+	const contentH = $derived(bodyRowCount * ROW_H);
+	const maxScrollY = $derived(Math.max(0, contentH - (height - BODY_TOP)));
 
 	interface HoverInfo {
 		x: number;
@@ -148,6 +176,20 @@
 	let downX = 0;
 	let downY = 0;
 	let dragDist = 0;
+	// The default arrow gives a fine tip for pinpointing node columns; it becomes a
+	// pointer over something clickable (a node column or a walk-row label) and a
+	// grabbing hand only while an actual drag/pan is under way.
+	let cursorStyle = $state('default');
+	/** What the cursor should be at a screen point (when not dragging). */
+	function cursorFor(px: number, py: number): string {
+		if (px < GUTTER_W) {
+			const r = rowAtY(py);
+			return r >= 0 && !alignment.rows[r].isReference && onWalkClick ? 'pointer' : 'default';
+		}
+		// A whole node column — its ruler title, colour-track swatch, and cells — is
+		// clickable (flashes that node in the graph).
+		return segIdAtColumn(px) ? 'pointer' : 'default';
+	}
 	function onPointerDown(e: PointerEvent) {
 		dragging = true;
 		lastX = e.clientX;
@@ -155,6 +197,7 @@
 		downX = e.clientX;
 		downY = e.clientY;
 		dragDist = 0;
+		cursorStyle = 'grabbing';
 		canvasEl?.setPointerCapture(e.pointerId);
 	}
 	function onPointerMove(e: PointerEvent) {
@@ -172,20 +215,39 @@
 			hover = null;
 			return;
 		}
-		updateHover(e.clientX - rect.left, e.clientY - rect.top);
+		const px = e.clientX - rect.left;
+		const py = e.clientY - rect.top;
+		cursorStyle = cursorFor(px, py);
+		updateHover(px, py);
 	}
 	function onPointerUp(e: PointerEvent) {
 		dragging = false;
 		canvasEl?.releasePointerCapture(e.pointerId);
-		// A press that didn't drag is a click on a node column → flash it in the graph.
-		if (dragDist <= 3 && onNodeClick) {
-			const rect = canvasEl!.getBoundingClientRect();
-			const segId = segIdAtPointer(e.clientX - rect.left, e.clientY - rect.top);
+		const rect = canvasEl!.getBoundingClientRect();
+		const px = e.clientX - rect.left;
+		const py = e.clientY - rect.top;
+		cursorStyle = cursorFor(px, py);
+		if (dragDist > 3) return; // a drag, not a click
+		if (px < GUTTER_W) {
+			// A click on a walk's row label (left gutter) spotlights that walk in the
+			// graph, disco-style. The reference row isn't a spotlightable walk.
+			const r = rowAtY(py);
+			if (r >= 0 && !alignment.rows[r].isReference && onWalkClick) {
+				onWalkClick(alignment.rows[r].key);
+			}
+			return;
+		}
+		// A click anywhere in a node column — including its ruler title — flashes it.
+		if (onNodeClick) {
+			const segId = segIdAtColumn(px);
 			if (segId) onNodeClick(segId);
 		}
 	}
 	function onLeave() {
-		if (!dragging) hover = null;
+		if (!dragging) {
+			hover = null;
+			cursorStyle = 'default';
+		}
 	}
 	function onDblClick(e: MouseEvent) {
 		const rect = canvasEl!.getBoundingClientRect();
@@ -194,12 +256,26 @@
 		const bp = (px - GUTTER_W - panX) / pxPerBp;
 		zoomBy(2, bp);
 	}
-	/** The displayed segment id under a screen point in the matrix, or null. */
-	function segIdAtPointer(px: number, py: number): string | null {
-		if (px < GUTTER_W || py < RULER_H) return null;
+	/** The displayed segment id in the node column under a screen x — anywhere in the
+	 * column counts (the ruler title, the colour track, or the cells below), so
+	 * clicking a node's *header* flashes it just like clicking its cells. */
+	function segIdAtColumn(px: number): string | null {
+		if (px < GUTTER_W) return null;
 		const bp = (px - GUTTER_W - panX) / pxPerBp;
 		const bi = blockAtBp(bp);
 		return bi >= 0 ? alignment.blocks[bi].segId : null;
+	}
+
+	/** The alignment row index under a screen y, accounting for the frozen reference
+	 * row (pinned at the top) and the scrolling body below it. -1 if none. */
+	function rowAtY(py: number): number {
+		if (py < MATRIX_TOP) return -1;
+		if (hasRef && py < BODY_TOP) return 0; // in the frozen reference band
+		if (py < BODY_TOP) return -1;
+		const bi = Math.floor((py - BODY_TOP + scrollY) / ROW_H);
+		if (bi < 0) return -1;
+		const r = hasRef ? bi + 1 : bi;
+		return r < alignment.rows.length ? r : -1;
 	}
 
 	function blockAtBp(bp: number): number {
@@ -221,13 +297,13 @@
 	}
 
 	function updateHover(px: number, py: number) {
-		if (px < GUTTER_W || py < RULER_H || px > width || py > height) {
+		if (px < GUTTER_W || py < MATRIX_TOP || px > width || py > height) {
 			hover = null;
 			return;
 		}
 		const bp = (px - GUTTER_W - panX) / pxPerBp;
-		const rowIdx = Math.floor((py - RULER_H + scrollY) / ROW_H);
-		if (rowIdx < 0 || rowIdx >= alignment.rows.length) {
+		const rowIdx = rowAtY(py);
+		if (rowIdx < 0) {
 			hover = null;
 			return;
 		}
@@ -273,6 +349,9 @@
 		theme;
 		emphasizeVariants;
 		simplifiedNames;
+		colorForSeg;
+		colorMode;
+		rowHighlights;
 		pxPerBp;
 		panX;
 		scrollY;
@@ -302,16 +381,18 @@
 		const bpRight = Math.min(alignment.totalBp, (matrixW - panX) / k);
 		const drawLetters = k >= LETTER_MIN_PX;
 
-		const firstRow = Math.max(0, Math.floor(scrollY / ROW_H));
-		const lastRow = Math.min(alignment.rows.length - 1, Math.ceil((scrollY + height - RULER_H) / ROW_H));
+		// Visible span of the scrolling body rows (rows[1..] when the ref is frozen).
+		const firstBody = Math.max(0, Math.floor(scrollY / ROW_H));
+		const lastBody = Math.min(bodyRowCount - 1, Math.ceil((scrollY + height - BODY_TOP) / ROW_H));
 
-		// Clip the matrix region so cells never paint over the gutter/ruler.
+		// 1) node bands (behind cells) + selected highlight + dividers, spanning the
+		// whole matrix (behind both the frozen reference and the scrolling body).
+		// Boundaries are drawn at BOTH edges of every block, a touch stronger than the
+		// faint band tint, so adjacent nodes read as clearly separate blocks.
 		ctx.save();
 		ctx.beginPath();
-		ctx.rect(GUTTER_W, RULER_H, matrixW, height - RULER_H);
+		ctx.rect(GUTTER_W, MATRIX_TOP, matrixW, height - MATRIX_TOP);
 		ctx.clip();
-
-		// 1) node bands (behind cells) + selected highlight + dividers
 		for (let i = 0; i < alignment.blocks.length; i++) {
 			const blk = alignment.blocks[i];
 			if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
@@ -322,24 +403,25 @@
 				: i % 2 === 0
 					? theme.nodeBandEven
 					: theme.nodeBandOdd;
-			ctx.fillRect(x0, RULER_H, x1 - x0, height - RULER_H);
+			ctx.fillRect(x0, MATRIX_TOP, x1 - x0, height - MATRIX_TOP);
 			ctx.strokeStyle = theme.nodeDivider;
 			ctx.lineWidth = 1;
 			ctx.beginPath();
-			ctx.moveTo(Math.round(x0) + 0.5, RULER_H);
+			ctx.moveTo(Math.round(x0) + 0.5, MATRIX_TOP);
 			ctx.lineTo(Math.round(x0) + 0.5, height);
+			ctx.moveTo(Math.round(x1) + 0.5, MATRIX_TOP);
+			ctx.lineTo(Math.round(x1) + 0.5, height);
 			ctx.stroke();
 		}
+		ctx.restore();
 
-		// 2) cells
+		// 2) cell painter, reused for the scrolling body and the frozen reference row.
 		if (drawLetters) {
 			ctx.font = `${Math.min(ROW_H - 6, Math.floor(k))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
 			ctx.textAlign = 'center';
 			ctx.textBaseline = 'middle';
 		}
-		for (let r = firstRow; r <= lastRow; r++) {
-			const row = alignment.rows[r];
-			const y0 = RULER_H + r * ROW_H - scrollY;
+		const paintRow = (row: (typeof alignment.rows)[number], y0: number) => {
 			for (let i = 0; i < alignment.blocks.length; i++) {
 				const blk = alignment.blocks[i];
 				if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
@@ -389,32 +471,61 @@
 					}
 				}
 			}
-			// reference row underline for emphasis
-			if (row.isReference) {
-				ctx.strokeStyle = theme.refRowLabel;
-				ctx.globalAlpha = 0.5;
-				ctx.beginPath();
-				ctx.moveTo(GUTTER_W, y0 + ROW_H - 0.5);
-				ctx.lineTo(width, y0 + ROW_H - 0.5);
-				ctx.stroke();
-				ctx.globalAlpha = 1;
-			}
-		}
+		};
 
-		// crosshair: highlight the hovered row and column, so a base can be traced
-		// across the wide matrix (which haplotype / which position).
-		if (hover && !dragging) {
-			const ry = RULER_H + hover.rowIdx * ROW_H - scrollY;
+		// 2a) scrolling body rows, clipped below the frozen reference band.
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(GUTTER_W, BODY_TOP, matrixW, height - BODY_TOP);
+		ctx.clip();
+		for (let bi = firstBody; bi <= lastBody; bi++) {
+			const r = hasRef ? bi + 1 : bi;
+			paintRow(alignment.rows[r], BODY_TOP + bi * ROW_H - scrollY);
+		}
+		// hovered-row highlight (a translucent tint over the cells) for a body row.
+		if (hover && !dragging && !(hasRef && hover.rowIdx === 0)) {
+			const bi = hasRef ? hover.rowIdx - 1 : hover.rowIdx;
 			ctx.fillStyle = theme.selectedBand;
-			ctx.fillRect(GUTTER_W, ry, matrixW, ROW_H);
-			const cx0 = screenX(hover.bpCol);
-			const cw = Math.max(1.5, pxPerBp);
-			ctx.fillStyle = theme.rulerText;
-			ctx.globalAlpha = 0.22;
-			ctx.fillRect(cx0, RULER_H, cw, height - RULER_H);
-			ctx.globalAlpha = 1;
+			ctx.fillRect(GUTTER_W, BODY_TOP + bi * ROW_H - scrollY, matrixW, ROW_H);
 		}
 		ctx.restore();
+
+		// 2b) frozen reference row, pinned directly under the ruler / colour track.
+		if (hasRef) {
+			ctx.save();
+			ctx.beginPath();
+			ctx.rect(GUTTER_W, MATRIX_TOP, matrixW, FROZEN_H);
+			ctx.clip();
+			paintRow(alignment.rows[0], MATRIX_TOP);
+			if (hover && !dragging && hover.rowIdx === 0) {
+				ctx.fillStyle = theme.selectedBand;
+				ctx.fillRect(GUTTER_W, MATRIX_TOP, matrixW, ROW_H);
+			}
+			// underline separating the frozen reference from the scrolling body.
+			ctx.strokeStyle = theme.refRowLabel;
+			ctx.globalAlpha = 0.5;
+			ctx.beginPath();
+			ctx.moveTo(GUTTER_W, MATRIX_TOP + ROW_H - 0.5);
+			ctx.lineTo(width, MATRIX_TOP + ROW_H - 0.5);
+			ctx.stroke();
+			ctx.globalAlpha = 1;
+			ctx.restore();
+		}
+
+		// 2c) crosshair column, so a base can be traced across the wide matrix.
+		if (hover && !dragging) {
+			const cx0 = screenX(hover.bpCol);
+			const cw = Math.max(1.5, pxPerBp);
+			ctx.save();
+			ctx.beginPath();
+			ctx.rect(GUTTER_W, MATRIX_TOP, matrixW, height - MATRIX_TOP);
+			ctx.clip();
+			ctx.fillStyle = theme.rulerText;
+			ctx.globalAlpha = 0.22;
+			ctx.fillRect(cx0, MATRIX_TOP, cw, height - MATRIX_TOP);
+			ctx.globalAlpha = 1;
+			ctx.restore();
+		}
 
 		// 3) top ruler (node ids + reference coords), pans horizontally
 		ctx.fillStyle = theme.gutter;
@@ -423,6 +534,23 @@
 		ctx.beginPath();
 		ctx.rect(GUTTER_W, 0, matrixW, RULER_H);
 		ctx.clip();
+		// Carry the node-block boundaries up through the name band, so each node's
+		// name reads as belonging to its own bordered column (the same dividers that
+		// separate the blocks below the ruler).
+		ctx.strokeStyle = theme.nodeDivider;
+		ctx.lineWidth = 1;
+		ctx.beginPath();
+		for (let i = 0; i < alignment.blocks.length; i++) {
+			const blk = alignment.blocks[i];
+			if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
+			const x0 = Math.round(screenX(blk.colStart)) + 0.5;
+			const x1 = Math.round(screenX(blk.colStart + blk.bpLen)) + 0.5;
+			ctx.moveTo(x0, 0);
+			ctx.lineTo(x0, RULER_H);
+			ctx.moveTo(x1, 0);
+			ctx.lineTo(x1, RULER_H);
+		}
+		ctx.stroke();
 		// Node names: kept in view by sticking each to the visible-left of its block
 		// (so zooming into a node's right edge doesn't scroll its name off), and drawn
 		// on a diagonal when the label is too long to fit horizontally — so a long raw
@@ -442,7 +570,13 @@
 			ctx.fillStyle = blk.isSelected ? theme.refRowLabel : theme.gutterText;
 			const textW = ctx.measureText(label).width;
 			const vis0 = Math.max(x0 + 2, GUTTER_W + 2); // sticky to the visible left edge
-			const availPx = Math.min(x1, width) - vis0;
+			// Budget the label the free space up to the NEXT node's left edge, not just
+			// this node's own width — a narrow node with room after it still labels
+			// horizontally instead of dropping to a diagonal that crosses the block
+			// dividers. Collisions between consecutive labels are still caught by
+			// `lastRight`.
+			const nextX = i + 1 < alignment.blocks.length ? screenX(alignment.blocks[i + 1].colStart) : width;
+			const availPx = Math.min(nextX, width) - vis0;
 			if (textW + 3 <= availPx && vis0 >= lastRight) {
 				// fits horizontally
 				ctx.textAlign = 'left';
@@ -476,6 +610,35 @@
 		}
 		ctx.restore();
 
+		// 3b) per-node colour track: a thin band under the ruler that paints each node
+		// its graph-view colour (backbone forced to white / the backbone tone), so the
+		// alignment carries the same "color by" reading the graph shows. Fixed under the
+		// ruler, so it stays put as the rows scroll.
+		if (colorForSeg && TRACK_H > 0) {
+			ctx.save();
+			ctx.beginPath();
+			ctx.rect(GUTTER_W, RULER_H, matrixW, TRACK_H);
+			ctx.clip();
+			for (let i = 0; i < alignment.blocks.length; i++) {
+				const blk = alignment.blocks[i];
+				if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
+				const x0 = screenX(blk.colStart);
+				const x1 = screenX(blk.colStart + blk.bpLen);
+				ctx.fillStyle = blk.isBackbone ? BACKBONE_COLOR : colorForSeg(blk.segId);
+				ctx.fillRect(x0, RULER_H, x1 - x0, TRACK_H);
+				// keep the node boundaries visible across the track too
+				ctx.strokeStyle = theme.nodeDivider;
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				ctx.moveTo(Math.round(x0) + 0.5, RULER_H);
+				ctx.lineTo(Math.round(x0) + 0.5, MATRIX_TOP);
+				ctx.moveTo(Math.round(x1) + 0.5, RULER_H);
+				ctx.lineTo(Math.round(x1) + 0.5, MATRIX_TOP);
+				ctx.stroke();
+			}
+			ctx.restore();
+		}
+
 		// 4) left gutter (row labels), scrolls vertically
 		ctx.fillStyle = theme.gutter;
 		ctx.fillRect(0, 0, GUTTER_W, height);
@@ -484,22 +647,25 @@
 		ctx.moveTo(GUTTER_W + 0.5, 0);
 		ctx.lineTo(GUTTER_W + 0.5, height);
 		ctx.stroke();
-		ctx.save();
-		ctx.beginPath();
-		ctx.rect(0, RULER_H, GUTTER_W, height - RULER_H);
-		ctx.clip();
-		ctx.textBaseline = 'middle';
-		ctx.textAlign = 'left';
-		for (let r = firstRow; r <= lastRow; r++) {
-			const row = alignment.rows[r];
-			const y0 = RULER_H + r * ROW_H - scrollY;
+		// One row label. A walk spotlit in the graph gets a colour swatch and its label
+		// drawn in that same highlight colour (matches the graph trace).
+		const paintRowLabel = (row: (typeof alignment.rows)[number], y0: number) => {
+			ctx.textBaseline = 'middle';
+			ctx.textAlign = 'left';
+			const hl = !row.isReference ? (rowHighlights?.get(row.key) ?? null) : null;
 			ctx.font = row.isReference
 				? '600 11px ui-sans-serif, system-ui, sans-serif'
 				: '11px ui-sans-serif, system-ui, sans-serif';
-			ctx.fillStyle = row.isReference ? theme.refRowLabel : theme.rowLabel;
-			const maxChars = Math.max(4, Math.floor((GUTTER_W - 46) / 6.3));
+			let textX = 8;
+			if (hl) {
+				ctx.fillStyle = hl;
+				ctx.fillRect(7, y0 + ROW_H / 2 - 4, 8, 8);
+				textX = 20;
+			}
+			ctx.fillStyle = row.isReference ? theme.refRowLabel : (hl ?? theme.rowLabel);
+			const maxChars = Math.max(4, Math.floor((GUTTER_W - 46 - (hl ? 12 : 0)) / 6.3));
 			const label = row.label.length > maxChars ? row.label.slice(0, maxChars - 1) + '…' : row.label;
-			ctx.fillText(label, 8, y0 + ROW_H / 2);
+			ctx.fillText(label, textX, y0 + ROW_H / 2);
 			// multiplicity + inversion badges, right-aligned in the gutter
 			let bx = GUTTER_W - 6;
 			ctx.textAlign = 'right';
@@ -514,16 +680,34 @@
 				ctx.fillText('⇄', bx, y0 + ROW_H / 2);
 			}
 			ctx.textAlign = 'left';
+		};
+		// scrolling body labels
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(0, BODY_TOP, GUTTER_W, height - BODY_TOP);
+		ctx.clip();
+		for (let bi = firstBody; bi <= lastBody; bi++) {
+			const r = hasRef ? bi + 1 : bi;
+			paintRowLabel(alignment.rows[r], BODY_TOP + bi * ROW_H - scrollY);
 		}
 		ctx.restore();
+		// frozen reference label
+		if (hasRef) {
+			ctx.save();
+			ctx.beginPath();
+			ctx.rect(0, MATRIX_TOP, GUTTER_W, FROZEN_H);
+			ctx.clip();
+			paintRowLabel(alignment.rows[0], MATRIX_TOP);
+			ctx.restore();
+		}
 
-		// 5) corner (gutter × ruler)
+		// 5) corner (gutter × head), covering the ruler and the colour track
 		ctx.fillStyle = theme.gutter;
-		ctx.fillRect(0, 0, GUTTER_W, RULER_H);
+		ctx.fillRect(0, 0, GUTTER_W, MATRIX_TOP);
 		ctx.strokeStyle = theme.nodeDivider;
 		ctx.beginPath();
-		ctx.moveTo(0, RULER_H + 0.5);
-		ctx.lineTo(width, RULER_H + 0.5);
+		ctx.moveTo(0, MATRIX_TOP + 0.5);
+		ctx.lineTo(width, MATRIX_TOP + 0.5);
 		ctx.moveTo(GUTTER_W + 0.5, 0);
 		ctx.lineTo(GUTTER_W + 0.5, height);
 		ctx.stroke();
@@ -538,11 +722,11 @@
 		ctx.fillText(GUTTER_W < 120 ? 'walks ↓' : 'walks ↓ · bases →', 8, RULER_H / 2);
 		ctx.restore();
 
-		// 6) vertical scrollbar hint
+		// 6) vertical scrollbar hint (spans the scrolling body, below the frozen ref)
 		if (maxScrollY > 0) {
-			const trackH = height - RULER_H;
+			const trackH = height - BODY_TOP;
 			const thumbH = Math.max(24, (trackH * trackH) / (contentH || 1));
-			const thumbY = RULER_H + (scrollY / maxScrollY) * (trackH - thumbH);
+			const thumbY = BODY_TOP + (scrollY / maxScrollY) * (trackH - thumbH);
 			ctx.fillStyle = theme.nodeDivider;
 			ctx.fillRect(width - 4, thumbY, 3, thumbH);
 		}
@@ -597,7 +781,7 @@
 <div class="msa-canvas-wrap">
 	<canvas
 		bind:this={canvasEl}
-		style="width:{width}px;height:{height}px"
+		style="width:{width}px;height:{height}px;cursor:{cursorStyle}"
 		onwheel={onWheel}
 		onpointerdown={onPointerDown}
 		onpointermove={onPointerMove}
@@ -640,11 +824,9 @@
 	}
 	canvas {
 		display: block;
-		cursor: grab;
+		/* cursor is set inline from the hover/drag state (arrow by default, pointer
+		   over a clickable node column or walk label, grabbing while panning). */
 		touch-action: none;
-	}
-	canvas:active {
-		cursor: grabbing;
 	}
 	.zoom-controls {
 		position: absolute;

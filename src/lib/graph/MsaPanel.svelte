@@ -5,6 +5,7 @@
 	// MsaCanvas does the drawing. Drop it under the graph and feed it the selected
 	// node — it re-derives whenever the selection or graph changes.
 	import type { Gfa } from '../gfa';
+	import type { ColorMode } from './colors';
 	import { buildAlignment } from './msa';
 	import { limits } from '../limits.svelte';
 	import MsaCanvas from './MsaCanvas.svelte';
@@ -14,20 +15,35 @@
 		referenceSample,
 		selectedSegId,
 		lightMode = false,
+		colorForSeg,
+		colorMode,
+		rowHighlights = null,
 		onClose,
 		onNames,
-		onNodeFlash
+		onNodeFlash,
+		onWalkSpotlight
 	}: {
 		gfa: Gfa;
 		referenceSample?: string;
 		selectedSegId: string | null;
 		lightMode?: boolean;
+		/** The graph view's fill colour for a displayed segment id, so the MSA's
+		 * per-node colour track matches the graph exactly. Omitted → no track. */
+		colorForSeg?: (segId: string) => string;
+		/** The graph's active "color by" mode — passed through purely so the canvas
+		 * redraws the colour track when the user switches modes. */
+		colorMode?: ColorMode;
+		/** Walk key → highlight colour for walks currently spotlit in the graph, so the
+		 * matching alignment rows echo that colour on their label. */
+		rowHighlights?: Map<string, string> | null;
 		onClose?: () => void;
 		/** Reports the window's segId → short-name map (R1/A1/…) so the graph can
 		 * label the same nodes, or null when simplified names are off. */
 		onNames?: (map: Map<string, string> | null) => void;
 		/** A node was clicked in the alignment; flash it in the graph. */
 		onNodeFlash?: (segId: string) => void;
+		/** A walk row was clicked; its walk key — spotlight it (disco-style) in the graph. */
+		onWalkSpotlight?: (walkKey: string) => void;
 	} = $props();
 
 	// The alignment always builds a generous window (up to the column cap) so the
@@ -106,13 +122,6 @@
 
 		<div class="controls">
 			{#if selectedSegId && alignment && !alignment.note}
-				<span class="count">
-					{totalHaplotypes} walk{totalHaplotypes === 1 ? '' : 's'}
-					{#if pathRows !== totalHaplotypes}<span class="dim">({pathRows} distinct)</span>{/if}
-				</span>
-				<label class="hv" title="Dim the sequence shared with the reference so the variant columns stand out">
-					<input type="checkbox" bind:checked={emphasizeVariants} /> hide non-variants
-				</label>
 				<div class="gear-wrap" bind:this={gearWrap}>
 					<button
 						class="gear"
@@ -128,7 +137,7 @@
 							<label class="set-row">
 								<input type="checkbox" bind:checked={simplifiedNames} />
 								<span>
-									Simplified node names
+									Short node IDs
 									<span class="set-sub">R1, R2… along the reference; A1, A2… for alt nodes. Also labels these nodes in the graph.</span>
 								</span>
 							</label>
@@ -150,7 +159,7 @@
 		{#if alignment.truncatedWindow || alignment.truncatedRows > 0 || !alignment.hasSequence || (isReduced && pathRows === 0)}
 			<div class="notes">
 				{#if isReduced && pathRows === 0}
-					<span class="warn">Simplified graph — individual haplotypes were aggregated into coverage counts. Switch on the full/unsimplified graph to align them here.</span>
+					<span class="warn">Simplified graph — individual haplotypes were aggregated into coverage counts. Switch off Simplify to align them here.</span>
 				{/if}
 				{#if !alignment.hasSequence}
 					<span class="warn">This graph carries node lengths but not sequences — showing blocks without bases.</span>
@@ -186,10 +195,23 @@
 				{lightMode}
 				{emphasizeVariants}
 				{simplifiedNames}
+				{colorForSeg}
+				{colorMode}
+				{rowHighlights}
 				onNodeClick={(segId) => onNodeFlash?.(segId)}
+				onWalkClick={(key) => onWalkSpotlight?.(key)}
 			/>
 		{/if}
 	</div>
+
+	{#if selectedSegId && alignment && !alignment.note}
+		<footer class="msa-foot">
+			<span class="count">
+				{totalHaplotypes} walk{totalHaplotypes === 1 ? '' : 's'}
+				{#if pathRows !== totalHaplotypes}<span class="dim">({pathRows} distinct)</span>{/if}
+			</span>
+		</footer>
+	{/if}
 </section>
 
 <style>
@@ -252,14 +274,14 @@
 		font-size: 0.78rem;
 		opacity: 0.9;
 	}
-	.hv {
-		font-size: 0.78rem;
+	/* Pinned footer: stays put at the bottom of the panel while the alignment rows
+	   scroll inside the canvas above it. */
+	.msa-foot {
+		flex: none;
 		display: flex;
 		align-items: center;
-		gap: 0.3rem;
-		opacity: 0.85;
-		cursor: pointer;
-		user-select: none;
+		padding: 0.3rem 0.75rem;
+		border-top: 1px solid rgba(140, 155, 180, 0.18);
 	}
 	.gear-wrap {
 		position: relative;

@@ -151,8 +151,12 @@
 		flashSegment?: string | null;
 		/** Bumps on every flash request so re-flashing the same node re-triggers. */
 		flashNonce?: number;
-		/** Hands the parent a small API (currently just PNG export) once mounted. */
-		onReady?: (api: { exportImage: (filename: string) => void }) => void;
+		/** Hands the parent a small API (PNG export + the live node-fill colour, so the
+		 * MSA colour track can mirror exactly what the graph draws) once mounted. */
+		onReady?: (api: {
+			exportImage: (filename: string) => void;
+			colorForSegment: (segId: string) => string;
+		}) => void;
 	} = $props();
 
 	const theme = $derived(lightMode ? lightTheme : darkTheme);
@@ -632,9 +636,19 @@
 			if (!pts) continue;
 			const mid = pts[Math.floor(pts.length / 2)];
 			const w = ctx.measureText(label).width;
+			// The flashed node's name flashes white alongside its strand (a node clicked
+			// in the MSA), so the eye lands on the same label in both views.
+			const flashing = segId === flashSegment && flashAlpha > 0;
 			ctx.fillStyle = theme.coordPill;
 			ctx.fillRect(mid.x - w / 2 - 3, mid.y - 15, w + 6, 13);
-			ctx.fillStyle = theme.coordText;
+			if (flashing) {
+				ctx.save();
+				ctx.globalAlpha = Math.max(0, Math.min(1, flashAlpha));
+				ctx.fillStyle = 'rgba(255,255,255,0.9)';
+				ctx.fillRect(mid.x - w / 2 - 3, mid.y - 15, w + 6, 13);
+				ctx.restore();
+			}
+			ctx.fillStyle = flashing ? '#0b0d12' : theme.coordText;
 			ctx.fillText(label, mid.x, mid.y - 8.5);
 		}
 		ctx.restore();
@@ -1287,7 +1301,7 @@
 
 	$effect(() => {
 		// Hand the parent the export API once the canvas exists.
-		if (canvasEl) onReady?.({ exportImage });
+		if (canvasEl) onReady?.({ exportImage, colorForSegment: colorForChain });
 	});
 
 	$effect(() => {
@@ -1373,6 +1387,14 @@
 			const py = e.clientY - rect.top;
 			hoverPos = { x: px, y: py };
 
+			// While actually panning (button held and moved), show the grabbing hand and
+			// skip hover work. Otherwise the cursor is a plain arrow — a fine tip for
+			// pinpointing nodes — turning into a pointer only over something clickable.
+			if (clickStart && Math.hypot(e.clientX - clickStart.x, e.clientY - clickStart.y) > 4) {
+				canvasEl!.style.cursor = 'grabbing';
+				return;
+			}
+
 			// Exons win: they live in the bottom band, clear of the strands.
 			const exon = findExonAt(px, py);
 			if (exon) {
@@ -1409,7 +1431,7 @@
 					}
 				} else {
 					if (hoverLabel !== null) hoverLabel = null;
-					canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
+					canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'default';
 					if (lastSkipKey !== null) {
 						lastSkipKey = null;
 						onHoverSkip?.(null);
@@ -1424,7 +1446,7 @@
 				lastSkipKey = null;
 				onHoverSkip?.(null);
 			}
-			canvasEl!.style.cursor = 'grab';
+			canvasEl!.style.cursor = 'default';
 			if (wasEmph) draw();
 		}
 		canvasEl.addEventListener('wheel', onWheelPan, { passive: false });
@@ -1505,7 +1527,9 @@
 		width: 100%;
 		height: 100%;
 		display: block;
-		cursor: grab;
+		/* Arrow by default (a fine tip for pinpointing nodes); the pointermove handler
+		   swaps in a pointer over clickable features and a grabbing hand while panning. */
+		cursor: default;
 	}
 	canvas:active {
 		cursor: grabbing;

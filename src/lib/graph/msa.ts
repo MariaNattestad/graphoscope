@@ -44,6 +44,10 @@ export interface AlignRow {
 	isReference: boolean;
 	/** Identical rows are collapsed; this many walks share this trace. */
 	multiplicity: number;
+	/** At least one walk in this (deduped) row passes through the selected node. Rows
+	 * through the selected node are ordered first (just under the reference); the rest
+	 * of the window's walks follow. */
+	throughSelected: boolean;
 	/** The path visits a shared backbone node in the opposite orientation — an
 	 * inversion relative to the reference axis. Flagged, not re-laid-out. */
 	hasInversion: boolean;
@@ -302,6 +306,33 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	const windowBackbone = new Set<string>();
 	for (let i = firstIdx; i <= lastIdx; i++) windowBackbone.add(backbone[i].segId);
 
+	// --- every walk that touches the window -------------------------------------
+	// Not just the walks through the selected node: we show all haplotypes crossing
+	// this window, so the alternative alleles at the locus are visible too. Each is
+	// flagged `through` (does it visit the selected node) so the rows can be ordered
+	// with the through-selected walks first, right under the reference.
+	const windowWalks: { w: Walkish; p: Projected; through: boolean }[] = [];
+	const seenWindowNames = new Set<string>();
+	for (const w of walks) {
+		if (w === ref || w.kind === 'synthetic' || w.steps.length < 1) continue;
+		const name = `${w.sample}#${w.hapIndex}#${w.seqId}`;
+		if (seenWindowNames.has(name)) continue;
+		const p = project(w.steps, o2d);
+		let hits = false;
+		let through = false;
+		for (const s of p.steps) {
+			if (s.id === selected) {
+				through = true;
+				hits = true;
+			} else if (windowBackbone.has(s.id)) {
+				hits = true;
+			}
+		}
+		if (!hits) continue; // the walk never enters this window
+		seenWindowNames.add(name);
+		windowWalks.push({ w, p, through });
+	}
+
 	// --- discover alt (non-backbone) nodes per inter-anchor gap ----------------
 	// Attribute each alt node to the gap after the last backbone-in-window node
 	// the walk was at, preserving first-seen order.
@@ -316,7 +347,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 		altSeen.add(segId);
 		gapAlts[windowPos].push(segId);
 	};
-	for (const { p } of projSelected) {
+	for (const { p } of windowWalks) {
 		let lastPos = -1;
 		let entered = false;
 		for (const s of p.steps) {
@@ -400,20 +431,28 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 		sample: ref.sample,
 		isReference: true,
 		multiplicity: 1,
+		throughSelected: false,
 		hasInversion: refRes.inversion,
 		cells: refRes.cells
 	});
 
 	// Dedup non-reference rows by their exact cell signature; collapse into one
-	// row carrying a multiplicity, so a 400-haplotype locus stays legible.
+	// row carrying a multiplicity, so a 400-haplotype locus stays legible. The
+	// walks through the selected node come first (right under the reference), then
+	// the rest of the window's walks — preserving first-seen order within each group.
 	const bySig = new Map<string, AlignRow>();
-	const order: string[] = [];
+	const orderThrough: string[] = [];
+	const orderOther: string[] = [];
 	let truncatedRows = 0;
-	for (const { w, p } of projSelected) {
+	for (const { w, p, through } of windowWalks) {
 		const { cells, inversion } = cellsFor(p);
 		const sig = cells.map((c) => (c === null ? '.' : c === '' ? '?' : c)).join('|');
 		const existing = bySig.get(sig);
-		if (existing) { existing.multiplicity++; continue; }
+		if (existing) {
+			existing.multiplicity++;
+			existing.throughSelected ||= through;
+			continue;
+		}
 		if (bySig.size >= maxRows - 1) { truncatedRows++; continue; }
 		const row: AlignRow = {
 			key: `${w.sample}#${w.hapIndex}#${w.seqId}`,
@@ -421,13 +460,15 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 			sample: w.sample,
 			isReference: false,
 			multiplicity: 1,
+			throughSelected: through,
 			hasInversion: inversion,
 			cells
 		};
 		bySig.set(sig, row);
-		order.push(sig);
+		(through ? orderThrough : orderOther).push(sig);
 	}
-	for (const sig of order) rows.push(bySig.get(sig)!);
+	for (const sig of orderThrough) rows.push(bySig.get(sig)!);
+	for (const sig of orderOther) rows.push(bySig.get(sig)!);
 
 	return {
 		blocks, rows, nameBySeg, totalBp, selectedSegId: selected, selectedOnBackbone,

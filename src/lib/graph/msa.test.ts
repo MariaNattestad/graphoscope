@@ -187,6 +187,43 @@ describe('buildAlignment — length-only (rGFA-style, no sequence)', () => {
 	});
 });
 
+describe('buildAlignment — includes all walks in the window', () => {
+	// Backbone 1>2>3>4>5 (ref allele at node 3); alt allele node 20 between 2 and 4.
+	// Two haplotypes take the alt (node 20); one takes the reference allele (node 3).
+	const gfa = parseGfa(
+		[
+			'H\tVN:Z:1.1\tRS:Z:ref',
+			'S\t1\tACGTACGT',
+			'S\t2\tAAAACCCC',
+			'S\t3\tG',
+			'S\t4\tGGGGTTTT',
+			'S\t5\tACGTACGT',
+			'S\t20\tC',
+			'W\tref\t0\tchr1\t0\t34\t>1>2>3>4>5',
+			'W\taltA\t0\tchr1\t0\t34\t>1>2>20>4>5',
+			'W\taltB\t0\tchr1\t0\t34\t>1>2>20>4>5',
+			'W\trefish\t0\tchr1\t0\t34\t>1>2>3>4>5'
+		].join('\n')
+	);
+
+	it('shows walks that avoid the selected node, ordered after the through-selected ones', () => {
+		// Select the alt node 20; the refish walk does NOT pass through it.
+		const a = buildAlignment(gfa, { referenceSample: 'ref', selectedSegId: '20', windowBp: 10000 });
+		const nonRef = a.rows.filter((r) => !r.isReference);
+		// One row through node 20 (altA+altB collapsed, ×2) and one that avoids it (refish).
+		const through = nonRef.filter((r) => r.throughSelected);
+		const avoiding = nonRef.filter((r) => !r.throughSelected);
+		expect(through.length).toBe(1);
+		expect(through[0].multiplicity).toBe(2);
+		expect(avoiding.length).toBe(1);
+		// Reference is first; the through-selected row precedes the avoiding one.
+		expect(a.rows[0].isReference).toBe(true);
+		const iThrough = a.rows.indexOf(through[0]);
+		const iAvoiding = a.rows.indexOf(avoiding[0]);
+		expect(iThrough).toBeLessThan(iAvoiding);
+	});
+});
+
 describe('buildAlignment — windowing', () => {
 	// A long backbone; clicking a middle node should only include nearby nodes.
 	const seg = (id: number, len: number) => `S\t${id}\t${'A'.repeat(len)}`;
