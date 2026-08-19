@@ -85,6 +85,8 @@
 		bubbleIdBySeg = null,
 		bubbleLongestBySeg = null,
 		maxBubbleLongest = 0,
+		glowSegments = null,
+		glowGreenSegments = null,
 		onReady,
 		nodeTooltip
 	}: {
@@ -148,6 +150,13 @@
 		bubbleLongestBySeg?: Map<string, number> | null;
 		/** The largest bubble longest-path bp, to normalize the `bubbleSize` heatmap. */
 		maxBubbleLongest?: number;
+		/** Displayed segment ids to draw a persistent glow halo behind — nodes newly
+		 * pulled in by a context increase. The halo sits under the strand so the node
+		 * keeps its own colour. Null/empty draws none. */
+		glowSegments?: Set<string> | null;
+		/** Like {@link glowSegments} but a green halo — nodes that were shown as alt
+		 * before and now appear on the reference walk. */
+		glowGreenSegments?: Set<string> | null;
 		/** Hands the parent a small API (currently just PNG export) once mounted. */
 		onReady?: (api: { exportImage: (filename: string) => void }) => void;
 	} = $props();
@@ -531,6 +540,43 @@
 				if (anyHighlight && !inBubble) ctx.globalAlpha = 0.15;
 			}
 			ctx.stroke();
+			ctx.restore();
+		}
+
+		// Glow halos for nodes newly pulled in by a context increase. Drawn UNDER the
+		// strands (before the strand loop) so the halo surrounds each node while its own
+		// colour still reads on top. Green = a node that was alt before and is now on the
+		// reference walk; neutral = any other newly-fetched node.
+		if ((glowSegments && glowSegments.size) || (glowGreenSegments && glowGreenSegments.size)) {
+			ctx.save();
+			ctx.lineJoin = 'round';
+			ctx.lineCap = 'round';
+			ctx.globalAlpha = 1;
+			const halo = (set: Set<string> | null, color: string) => {
+				if (!set) return;
+				ctx.shadowColor = color;
+				ctx.shadowBlur = 18;
+				ctx.strokeStyle = color;
+				ctx.lineWidth = strokeWidth + 6;
+				for (const segId of set) {
+					const chain = chainBySeg.get(segId);
+					if (!chain) continue;
+					const pts: { x: number; y: number }[] = [];
+					for (const id of chain.nodeIds) {
+						const n = layout.nodesById.get(id);
+						if (n) pts.push({ x: toScreenX(n.x), y: toScreenY(n.y) });
+					}
+					if (pts.length === 0) continue;
+					ctx.beginPath();
+					traceSmooth(ctx, pts.length > 1 ? pts : [pts[0], { x: pts[0].x + 0.1, y: pts[0].y }]);
+					ctx.stroke();
+				}
+			};
+			// Two passes each, so the halo builds up to a stronger glow than one stroke.
+			halo(glowGreenSegments, 'rgba(74, 222, 128, 0.9)');
+			halo(glowGreenSegments, 'rgba(74, 222, 128, 0.9)');
+			halo(glowSegments, 'rgba(226, 235, 255, 0.85)');
+			halo(glowSegments, 'rgba(226, 235, 255, 0.85)');
 			ctx.restore();
 		}
 
@@ -1177,6 +1223,8 @@
 		bubbleIdBySeg;
 		bubbleLongestBySeg;
 		maxBubbleLongest;
+		glowSegments;
+		glowGreenSegments;
 		untrack(() => draw());
 	});
 

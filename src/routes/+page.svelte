@@ -642,6 +642,7 @@
 							allNodesTooMany={unsimplifiedNodes > 0 && !canShowUnsimplified}
 							onToggleSimplify={toggleUnsimplified}
 							onRequestMoreContext={requestMoreContext}
+							context={contextBp}
 							locusLabel={queriedGene ?? locusText}
 							showHaplotypes={true}
 							windowedSubgraph={true}
