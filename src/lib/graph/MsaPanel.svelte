@@ -18,6 +18,8 @@
 		colorForSeg,
 		colorMode,
 		rowHighlights = null,
+		loadingFullGraph = false,
+		fullGraphBlocked = false,
 		onClose,
 		onNames,
 		onNodeFlash,
@@ -36,6 +38,12 @@
 		/** Walk key → highlight colour for walks currently spotlit in the graph, so the
 		 * matching alignment rows echo that colour on their label. */
 		rowHighlights?: Map<string, string> | null;
+		/** The graph is switching to the full (walk-bearing) graph so the alignment can
+		 * build — show a loading state instead of the reduced-graph note. */
+		loadingFullGraph?: boolean;
+		/** The full graph is too heavy to load on this device, so the alignment can't be
+		 * built here — show the protected-device note instead of offering to switch. */
+		fullGraphBlocked?: boolean;
 		onClose?: () => void;
 		/** Reports the window's segId → short-name map (R1/A1/…) so the graph can
 		 * label the same nodes, or null when simplified names are off. */
@@ -66,8 +74,14 @@
 		return () => window.removeEventListener('pointerdown', onDoc);
 	});
 
+	// Whether this graph carries individual haplotypes at all. A reduced graph
+	// aggregates non-reference walks into coverage counts, so it has no haplotype rows
+	// to align — the panel loads the full graph (see GraphLayoutView) rather than
+	// building a lone-reference alignment here.
+	const isReduced = $derived(gfa.reduced !== undefined);
+
 	const alignment = $derived(
-		selectedSegId
+		selectedSegId && !isReduced
 			? buildAlignment(gfa, {
 					referenceSample,
 					selectedSegId,
@@ -87,10 +101,6 @@
 		return () => onNames?.(null);
 	});
 
-	// Whether this graph carries individual haplotypes at all. A reduced graph
-	// aggregates non-reference walks into coverage counts, so only the reference
-	// remains — worth saying, rather than showing a lone reference row unexplained.
-	const isReduced = $derived(gfa.reduced !== undefined);
 	const pathRows = $derived(alignment ? alignment.rows.filter((r) => !r.isReference).length : 0);
 	const totalHaplotypes = $derived(
 		alignment ? alignment.rows.reduce((s, r) => s + (r.isReference ? 0 : r.multiplicity), 0) : 0
@@ -114,6 +124,10 @@
 							).toLocaleString()}
 						{/if}
 					</span>
+				</span>
+			{:else if selectedSegId && isReduced}
+				<span class="dim">
+					{#if fullGraphBlocked}full graph unavailable on this device{:else if loadingFullGraph}loading the full graph…{:else}full graph needed to align{/if}
 				</span>
 			{:else}
 				<span class="dim">click a node in the graph to align its sequences</span>
@@ -155,12 +169,9 @@
 		</div>
 	</header>
 
-	{#if alignment && !alignment.note}
-		{#if alignment.truncatedWindow || alignment.truncatedRows > 0 || !alignment.hasSequence || (isReduced && pathRows === 0)}
+	{#if alignment && !alignment.note && !isReduced}
+		{#if alignment.truncatedWindow || alignment.truncatedRows > 0 || !alignment.hasSequence}
 			<div class="notes">
-				{#if isReduced && pathRows === 0}
-					<span class="warn">Simplified graph — individual haplotypes were aggregated into coverage counts. Switch off Simplify to align them here.</span>
-				{/if}
 				{#if !alignment.hasSequence}
 					<span class="warn">This graph carries node lengths but not sequences — showing blocks without bases.</span>
 				{/if}
@@ -179,15 +190,29 @@
 			<div class="placeholder">
 				<p>Select a node to open its base alignment.</p>
 			</div>
+		{:else if isReduced}
+			<!-- The alignment needs the full graph's per-haplotype walks. The panel opens
+			     the full graph automatically; while that loads (or if this device can't
+			     hold it) we say so here rather than showing a bare reference row. -->
+			{#if fullGraphBlocked}
+				<div class="placeholder">
+					<p>This locus's full graph is too large to load on this device, so the base alignment can't be shown here.</p>
+					<p class="dim">Open this locus on a desktop to align its haplotypes.</p>
+				</div>
+			{:else if loadingFullGraph}
+				<div class="placeholder">
+					<span class="msa-spinner"></span>
+					<p>Loading the full graph to align these sequences…</p>
+				</div>
+			{:else}
+				<div class="placeholder">
+					<p>Couldn't load the full graph to align here.</p>
+					<p class="dim">Toggle Simplify off to try again.</p>
+				</div>
+			{/if}
 		{:else if alignment?.note}
 			<div class="placeholder">
 				<p>{alignment.note}</p>
-				{#if isReduced}
-					<p class="dim">
-						This is the simplified graph — individual haplotypes were aggregated into coverage. Load the
-						full haplotypes (haplotype panel) to align them here.
-					</p>
-				{/if}
 			</div>
 		{:else if alignment}
 			<MsaCanvas
@@ -389,5 +414,21 @@
 	.placeholder p {
 		margin: 0;
 		max-width: 42ch;
+	}
+	.msa-spinner {
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		border: 2px solid rgba(140, 155, 180, 0.3);
+		border-top-color: #67e8f9;
+		animation: msa-spin 0.8s linear infinite;
+	}
+	.light .msa-spinner {
+		border-top-color: #0891b2;
+	}
+	@keyframes msa-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 </style>

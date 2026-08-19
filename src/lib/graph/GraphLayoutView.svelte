@@ -227,6 +227,13 @@
 	// changes, so a user can click node after node and watch the alignment update.
 	let msaOpen = $state(false);
 	let msaHeight = $state(360);
+	// When "Load MSA" is clicked on a simplified graph, we switch to the full graph
+	// (which carries the walks the alignment needs). That swap fires the graph-reset
+	// effect below, which would normally close the MSA and drop the selection — so we
+	// stash the full-graph node to focus on here, and the reset effect re-opens the MSA
+	// on it once the full graph arrives. Holds an *original* node id (a member of the
+	// clicked reduced node), which is what the full graph is keyed by.
+	let pendingMsaNode = $state<string | null>(null);
 	// Short local names (R1/A1/…) the MSA assigns to the nodes in its window, so the
 	// graph can label the same nodes; null when simplified names are off/closed.
 	let msaNames = $state<Map<string, string> | null>(null);
@@ -335,31 +342,47 @@
 
 	$effect(() => {
 		gfa;
-		selected = null;
-		selectedFeature = null;
-		selectedExit = null;
-		// A new graph has different nodes; close the base-alignment view rather than
-		// leaving it pinned to a node id that no longer exists.
-		msaOpen = false;
-		// A new graph clears any pinned haplotype traces (its walk keys won't exist).
-		pinnedKeys = [];
-		// …and any walks spotlit from the MSA (same reason).
-		msaWalkKeys = [];
-		straightenKey = null;
-		// …and any node-restricted haplotype filter (node ids won't carry over).
-		nodeFilter = null;
-		// A new graph gets a fresh automatic bendy/rough decision (see effectiveBendy)
-		// and drops any per-graph layout overrides back to the mode's defaults.
-		bendyOverride = null;
-		// …and a fresh chance to surface the slow-layout tip for the new graph.
-		slowTipDismissed = false;
-		// Hover highlighting doesn't carry across graphs (node ids won't match), and the
-		// walk-graph load is per-graph.
-		hoveredNode = null;
-		hoveredSkip = null;
-		selectedSkip = null;
-		inspectorDismissed = false;
-		walkLoadRequested = false;
+		// Depend on `gfa` ALONE. The body reads/writes `pendingMsaNode` and other state;
+		// left tracked, reading `pendingMsaNode` would make setting it (in the Load-MSA
+		// handler) fire this effect immediately — while the graph is still reduced — and
+		// clear it before the switch lands. Untrack keeps the graph swap the only trigger.
+		untrack(() => {
+			// A "Load MSA" switch to the full graph: instead of dropping everything, re-open
+			// the alignment on the corresponding full-graph node. Guarded on !gfa.reduced so
+			// it only fires once the full graph has actually arrived.
+			const resuming = pendingMsaNode != null && !gfa.reduced;
+			if (resuming) {
+				selected = gfa.segments.has(pendingMsaNode!) ? pendingMsaNode : null;
+				msaOpen = selected != null;
+			} else {
+				selected = null;
+				// A new graph has different nodes; close the base-alignment view rather than
+				// leaving it pinned to a node id that no longer exists.
+				msaOpen = false;
+			}
+			pendingMsaNode = null;
+			inspectorDismissed = false;
+			selectedFeature = null;
+			selectedExit = null;
+			// A new graph clears any pinned haplotype traces (its walk keys won't exist).
+			pinnedKeys = [];
+			// …and any walks spotlit from the MSA (same reason).
+			msaWalkKeys = [];
+			straightenKey = null;
+			// …and any node-restricted haplotype filter (node ids won't carry over).
+			nodeFilter = null;
+			// A new graph gets a fresh automatic bendy/rough decision (see effectiveBendy)
+			// and drops any per-graph layout overrides back to the mode's defaults.
+			bendyOverride = null;
+			// …and a fresh chance to surface the slow-layout tip for the new graph.
+			slowTipDismissed = false;
+			// Hover highlighting doesn't carry across graphs (node ids won't match), and the
+			// walk-graph load is per-graph.
+			hoveredNode = null;
+			hoveredSkip = null;
+			selectedSkip = null;
+			walkLoadRequested = false;
+		});
 	});
 
 	// Walks that start or end exactly at the selected node — the tell for a
@@ -1957,6 +1980,8 @@
 							colorForSeg={msaColorForSeg}
 							{colorMode}
 							rowHighlights={msaRowHighlights}
+							loadingFullGraph={discoLoading && !showingAllNodes}
+							fullGraphBlocked={!!gfa.reduced && !discoAvailable}
 							onClose={() => (msaOpen = false)}
 							onNames={(m) => (msaNames = m)}
 							onNodeFlash={flashGraphNode}
@@ -2031,12 +2056,27 @@
 							<button
 								class="ni-msa-btn"
 								onclick={() => {
-									msaOpen = true;
+									// The MSA needs the full graph's per-haplotype walks. On a simplified
+									// (reduced) graph, switch to the full graph automatically — but only when
+									// this device can show it (`discoAvailable`). On a low-memory/phone tab where
+									// the full graph is too heavy, we don't force the load; the panel opens and
+									// explains why it can't align here.
+									if (gfa.reduced && !showingAllNodes && discoAvailable && onToggleSimplify) {
+										// Stash the full-graph node to align on (an original member of the clicked
+										// reduced node); the reset effect re-opens the MSA on it once the full
+										// graph arrives, since the swap would otherwise drop the selection.
+										const members = selected ? gfa.segments.get(selected)?.members : undefined;
+										pendingMsaNode =
+											members && members.length ? members[Math.floor(members.length / 2)] : selected;
+										onToggleSimplify();
+									} else {
+										msaOpen = true;
+									}
 									trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
 								}}
-								title="Open multiple sequence alignment panel"
+								title="Load the full graph and align this node's sequences"
 							>
-								≡ Show MSA
+								≡ Load MSA
 							</button>
 						{/if}
 
