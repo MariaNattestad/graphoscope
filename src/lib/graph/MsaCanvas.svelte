@@ -551,11 +551,13 @@
 			ctx.lineTo(x1, RULER_H);
 		}
 		ctx.stroke();
-		// Node names: kept in view by sticking each to the visible-left of its block
-		// (so zooming into a node's right edge doesn't scroll its name off), and drawn
-		// on a diagonal when the label is too long to fit horizontally — so a long raw
-		// id is never trimmed. `lastRight` skips a name only when it would collide with
-		// the previous one (dense zoom-out), keeping the rest readable.
+		// Node names: kept in view by sticking each to the visible-left of its block (so
+		// zooming into a node's right edge doesn't scroll its name off). The short R#/A#
+		// names are always drawn horizontally at the top of the band — they're a few
+		// characters and don't meaningfully overflow, so a diagonal would only crowd the
+		// coordinate below and cross the dividers. Long *raw* segment ids can genuinely
+		// overflow, so those keep a diagonal fallback rather than being trimmed. Either
+		// way `lastRight` skips a name only when it would collide with the previous one.
 		ctx.textBaseline = 'alphabetic';
 		let lastRight = -Infinity;
 		for (let i = 0; i < alignment.blocks.length; i++) {
@@ -570,20 +572,19 @@
 			ctx.fillStyle = blk.isSelected ? theme.refRowLabel : theme.gutterText;
 			const textW = ctx.measureText(label).width;
 			const vis0 = Math.max(x0 + 2, GUTTER_W + 2); // sticky to the visible left edge
-			// Budget the label the free space up to the NEXT node's left edge, not just
-			// this node's own width — a narrow node with room after it still labels
-			// horizontally instead of dropping to a diagonal that crosses the block
-			// dividers. Collisions between consecutive labels are still caught by
-			// `lastRight`.
+			// Space to the NEXT node's left edge — only used to decide whether a long raw
+			// id needs the diagonal fallback (short names ignore it and stay horizontal).
 			const nextX = i + 1 < alignment.blocks.length ? screenX(alignment.blocks[i + 1].colStart) : width;
 			const availPx = Math.min(nextX, width) - vis0;
-			if (textW + 3 <= availPx && vis0 >= lastRight) {
-				// fits horizontally
-				ctx.textAlign = 'left';
-				ctx.fillText(label, vis0, 14);
-				lastRight = vis0 + textW + 6;
+			if (simplifiedNames || textW + 3 <= availPx) {
+				// horizontal at the top of the band (all short names; raw ids that fit)
+				if (vis0 >= lastRight) {
+					ctx.textAlign = 'left';
+					ctx.fillText(label, vis0, 14);
+					lastRight = vis0 + textW + 6;
+				}
 			} else if (vis0 >= lastRight - 2) {
-				// diagonal so a long id isn't trimmed; rises up-right from the left edge
+				// a long raw id that won't fit: diagonal so it isn't trimmed
 				ctx.save();
 				ctx.translate(vis0, RULER_H - 10);
 				ctx.rotate(-Math.PI / 4);
