@@ -22,6 +22,7 @@
 	import { resolveGene, geneToLocus } from '$lib/genes';
 	import { graphById, MAX_GFA_BYTES } from '$lib/graphs';
 	import { graphComplexity, type ApiReport, type ApiError } from '$lib/apiReport';
+	import { pageTitle } from '$lib/pageTitle';
 
 	type Status = 'loading' | 'done' | 'error';
 	let status = $state<Status>('loading');
@@ -179,7 +180,7 @@
 </script>
 
 <svelte:head>
-	<title>Graphoscope API — {status}</title>
+	<title>{pageTitle(`Graphoscope API — ${status}`)}</title>
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
