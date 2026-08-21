@@ -32,8 +32,9 @@
 	// outright, and the fallback that avoided the crash also left the graph
 	// unsimplified. Measured now: LPA 9,406 → 635 nodes in ~6 s, MUC5B
 	// 3,218 → 169, C4A 758 → 58. Keeping them visible is the point — they are
-	// where the pangenome is actually interesting.
-	const EXAMPLE_GENES = ['HLA-A', 'AMY1A', 'SMN1', 'CYP2D6', 'LPA', 'MUC5B', 'C4A'];
+	// where the pangenome is actually interesting. MLPH is the same locus the /gfa
+	// page ships as a bundled example, so the two entry points share a gene.
+	const EXAMPLE_GENES = ['HLA-A', 'AMY1A', 'SMN1', 'CYP2D6', 'LPA', 'MUC5B', 'C4A', 'MLPH'];
 
 	let graphId = $state<GraphId>('grch38');
 	const graph = $derived(GRAPHS.find((g) => g.id === graphId)!);
@@ -68,8 +69,8 @@
 	// One-line explanation of each hosted graph, shown in that popover so the
 	// choice isn't just two opaque labels.
 	const GRAPH_BLURB: Record<GraphId, string> = {
-		grch38: 'The standard human reference. Coordinates most tools and papers use.',
-		chm13: 'The T2T complete assembly — gapless, including centromeres and other regions GRCh38 leaves out.'
+		grch38: 'HPRCv2.1 Minigraph-Cactus graph with the standard human reference as backbone.',
+		chm13: 'HPRCv2.1 Minigraph-Cactus graph with T2T-CHM13 as backbone.'
 	};
 	// The graph the widgets see. It arrives already simplified + walk-counted from
 	// the wasm `query --format reduced` step (small-variant popping, unchop, and
@@ -342,6 +343,12 @@
 	// in both caps at their device-scaled values, so this one check covers "too slow
 	// on desktop" and "would crash a phone" alike; the message names which.
 	const canShowUnsimplified = $derived(unsimplifiedNodes > 0 && unsimplifiedTier !== 'risky');
+	// Risky *and* memory-constrained: parsing every walk would likely crash the tab,
+	// so the Raw-data Walks tab shows an info note instead of a load button (same
+	// call the Haplotypes box makes).
+	const unsimplifiedBlocked = $derived(
+		unsimplifiedNodes > 0 && unsimplifiedTier === 'risky' && limits.lowMemory
+	);
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
 
@@ -635,13 +642,25 @@
 							allNodesTooMany={unsimplifiedNodes > 0 && !canShowUnsimplified}
 							onToggleSimplify={toggleUnsimplified}
 							onRequestMoreContext={requestMoreContext}
+							context={contextBp}
 							locusLabel={queriedGene ?? locusText}
 							showHaplotypes={true}
+							windowedSubgraph={true}
 							{fetchInfo}
 							querying={running}
 						/>
 					{:else if view === 'data'}
-						<RawDataView {gfa} rawText={rawGfa} {downloadRaw} {downloadingRaw} />
+						<RawDataView
+							{gfa}
+							rawText={rawGfa}
+							{downloadRaw}
+							{downloadingRaw}
+							allWalksGfa={unsimplified}
+							loadingAllWalks={loadingUnsimplified}
+							canLoadAllWalks={canShowUnsimplified}
+							allWalksBlocked={unsimplifiedBlocked}
+							onLoadAllWalks={ensureUnsimplifiedParsed}
+						/>
 					{/if}
 				</div>
 			</section>
