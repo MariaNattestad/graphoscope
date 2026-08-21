@@ -399,7 +399,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 		for (const alt of gapAlts[pos]) pushBlock(alt, false);
 	}
 	const totalBp = col;
-	if (blocks.length === 0) return empty('Nothing to align in this window.');
+	if (blocks.length === 0) return empty('Nothing to show in this window.');
 
 	// --- fill rows -------------------------------------------------------------
 	const blockIndex = new Map<string, number>();

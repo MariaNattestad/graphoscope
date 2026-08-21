@@ -127,10 +127,10 @@
 				</span>
 			{:else if selectedSegId && isReduced}
 				<span class="dim">
-					{#if fullGraphBlocked}full graph unavailable on this device{:else if loadingFullGraph}loading the full graph…{:else}full graph needed to align{/if}
+					{#if fullGraphBlocked}full graph unavailable on this device{:else if loadingFullGraph}loading the full graph…{:else}needs the full graph{/if}
 				</span>
 			{:else}
-				<span class="dim">click a node in the graph to align its sequences</span>
+				<span class="dim">Multiple sequence alignment, a base-level view of the same graph shown above.</span>
 			{/if}
 		</div>
 
@@ -188,25 +188,25 @@
 	<div class="canvas-host">
 		{#if !selectedSegId}
 			<div class="placeholder">
-				<p>Select a node to open its base alignment.</p>
+				<p>Select a node in the graph above to see it here at base level.</p>
 			</div>
 		{:else if isReduced}
-			<!-- The alignment needs the full graph's per-haplotype walks. The panel opens
-			     the full graph automatically; while that loads (or if this device can't
-			     hold it) we say so here rather than showing a bare reference row. -->
+			<!-- The base-level view needs the full graph's per-haplotype walks. The panel
+			     opens the full graph automatically; while that loads (or if this device
+			     can't hold it) we say so here rather than showing a bare reference row. -->
 			{#if fullGraphBlocked}
 				<div class="placeholder">
-					<p>This locus's full graph is too large to load on this device, so the base alignment can't be shown here.</p>
-					<p class="dim">Open this locus on a desktop to align its haplotypes.</p>
+					<p>This locus's full graph is too large to load on this device, so the base-level view can't be shown here.</p>
+					<p class="dim">Open this locus on a desktop to see its haplotypes.</p>
 				</div>
 			{:else if loadingFullGraph}
 				<div class="placeholder">
 					<span class="msa-spinner"></span>
-					<p>Loading the full graph to align these sequences…</p>
+					<p>Loading the full graph to show its sequences…</p>
 				</div>
 			{:else}
 				<div class="placeholder">
-					<p>Couldn't load the full graph to align here.</p>
+					<p>Couldn't load the full graph to show it here.</p>
 					<p class="dim">Toggle Simplify off to try again.</p>
 				</div>
 			{/if}

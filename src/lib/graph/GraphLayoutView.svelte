@@ -1580,10 +1580,10 @@
 							: 'too slow to render in full'}</span
 					>
 				{/if}
-				<!-- Base alignment (MSA): opens the split panel below the graph. Aligns the
-				     selected node's sequences, or prompts for a node if none is selected. -->
+				<!-- Base alignment (MSA): opens the split panel below the graph — a base-level
+				     view of the selected node's sequences, or prompts for a node if none. -->
 				{#if !msaOpen}
-					<button class="msa-load-btn" onclick={openMsa} title="Open the base-alignment (MSA) panel below the graph — aligns the selected node's sequences (click a node first if none is selected)">
+					<button class="msa-load-btn" onclick={openMsa} title="Open the multiple sequence alignment (MSA) panel below the graph — a base-level view of the selected node's sequences (click a node first if none is selected)">
 						≡ Load MSA
 					</button>
 				{/if}
