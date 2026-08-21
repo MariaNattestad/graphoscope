@@ -1935,9 +1935,7 @@
 				{#if selected && !inspectorDismissed}
 					<div class="inspector">
 						<div class="insp-head">
-							<span class="insp-title">
-								{#if showNodeId}Node <code>{selected}</code>{:else}Node{/if}
-							</span>
+							<span class="insp-title">Node</span>
 							<div class="insp-actions">
 								<button
 									class="insp-gear"
@@ -1970,8 +1968,13 @@
 							</div>
 						{/if}
 
-						{#if showLength || (showCoords && !referenceFree)}
+						{#if showNodeId || showLength || (showCoords && !referenceFree)}
 							<div class="ni-fields">
+								{#if showNodeId}
+									<span class="ni-field"
+										><span class="ni-key">node id</span> <code>{selected}</code></span
+									>
+								{/if}
 								{#if showLength}
 									<span class="ni-field"
 										><span class="ni-key">length</span> {selectedLen?.toLocaleString() ?? '—'} bp</span
@@ -2072,12 +2075,6 @@
 											Filter haplotypes to the {selectedThroughCount} through this node
 										{/if}
 									</button>
-									<span class="ni-haplo-hint"
-										>disco-walks will then cycle only these {selectedThroughCount} walk{selectedThroughCount ===
-										1
-											? ''
-											: 's'}</span
-									>
 								{:else}
 									<span class="ni-haplo-hint muted">no named haplotype passes through this node</span>
 								{/if}
@@ -2113,14 +2110,12 @@
 								{#if endpointCounts}
 									{@const total = endpointCounts.starts + endpointCounts.ends}
 									<span class="etag"
-										>{total.toLocaleString()} walk{total === 1 ? ' starts/ends' : 's start/end'} here</span
+										>{total.toLocaleString()} walk{total === 1 ? ' is' : 's are'} cut off here</span
 									>
 								{:else}
 									<div class="erow">
 										<span class="etag"
-											>{endpoints.length} walk{endpoints.length === 1
-												? ' starts/ends'
-												: 's start/end'} here</span
+											>{endpoints.length} walk{endpoints.length === 1 ? ' is' : 's are'} cut off here</span
 										>
 										{#each endpoints.slice(0, 6) as e (e.label)}
 											<span class="chip">{e.label} · {e.length.toLocaleString()}bp</span>
@@ -2132,10 +2127,6 @@
 									<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
 										Increase context &amp; re-query
 									</button>
-									<span class="exit-hint">
-										Widens the window past the locus so the query follows these haplotypes further —
-										fewer dangling exits, more nodes shown.
-									</span>
 								{/if}
 							</div>
 						{/if}
@@ -2234,10 +2225,6 @@
 							<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
 								Increase context &amp; re-query
 							</button>
-							<span class="exit-hint">
-								Widens the window past the locus so the query follows these haplotypes further — fewer
-								dangling exits, more nodes shown.
-							</span>
 						{/if}
 					</div>
 				{/if}
@@ -2645,8 +2632,8 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 1.6rem;
-		height: 1.6rem;
+		width: 1.3rem;
+		height: 1.3rem;
 		padding: 0;
 		line-height: 1;
 		border-radius: 5px;
@@ -2655,7 +2642,7 @@
 		border: none;
 		background: transparent;
 		color: #9aa0aa;
-		font-size: 0.9rem;
+		font-size: 0.8rem;
 		cursor: pointer;
 	}
 	.insp-gear:hover,
@@ -2666,14 +2653,14 @@
 	.ni-settings {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
-		margin: 0.1rem 0 0.5rem;
-		padding: 0.5rem;
-		border-radius: 7px;
+		gap: 0.2rem;
+		margin: 0.1rem 0 0.35rem;
+		padding: 0.4rem;
+		border-radius: 6px;
 		background: rgba(255, 255, 255, 0.05);
 	}
 	.ni-settings-title {
-		font-size: 0.68rem;
+		font-size: 0.64rem;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.03em;
@@ -2681,7 +2668,7 @@
 	}
 	.ni-settings .check {
 		color: #d7dae0;
-		font-size: 0.8rem;
+		font-size: 0.72rem;
 	}
 	.ni-settings .check.disabled {
 		opacity: 0.45;
@@ -2948,18 +2935,18 @@
 	.ni-haplo {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
+		gap: 0.25rem;
 	}
 	.ni-haplo-btn {
 		font: inherit;
-		font-size: 0.78rem;
+		font-size: 0.72rem;
 		font-weight: 600;
 		cursor: pointer;
 		border: 1px solid #d1c4f0;
 		background: #f6f2ff;
 		color: #5b21b6;
-		padding: 0.35rem 0.5rem;
-		border-radius: 7px;
+		padding: 0.28rem 0.4rem;
+		border-radius: 6px;
 		text-align: left;
 		line-height: 1.3;
 	}
@@ -2973,20 +2960,20 @@
 		color: #fff;
 	}
 	.ni-haplo-hint {
-		font-size: 0.7rem;
-		line-height: 1.35;
+		font-size: 0.66rem;
+		line-height: 1.3;
 		color: #9aa0aa;
 	}
 	/* Bubble/walk block in the node inspector. */
 	.ni-bubble {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
-		padding-top: 0.35rem;
+		gap: 0.2rem;
+		padding-top: 0.3rem;
 		border-top: 1px solid #eceef2;
 	}
 	.ni-bubble-title {
-		font-size: 0.68rem;
+		font-size: 0.64rem;
 		font-weight: 700;
 		letter-spacing: 0.03em;
 		text-transform: uppercase;
@@ -2996,15 +2983,16 @@
 		opacity: 0.7;
 	}
 	.ni-exit-note {
-		font-size: 0.7rem;
-		line-height: 1.35;
+		font-size: 0.66rem;
+		line-height: 1.3;
 		color: #0e7490;
 	}
 	/* Floating "tracing X" badge over the graph while a haplotype is pinned. */
 	.trace-badge {
 		position: absolute;
 		top: 10px;
-		right: 10px;
+		/* Clear of the canvas's reset button, which owns the very corner. */
+		right: 44px;
 		z-index: 6;
 		display: flex;
 		align-items: center;
@@ -3024,7 +3012,7 @@
 	.trace-legend {
 		position: absolute;
 		top: 10px;
-		right: 10px;
+		right: 44px;
 		z-index: 6;
 		display: flex;
 		flex-direction: column;
@@ -3298,18 +3286,22 @@
 		   otherwise land on top of the × and steal the tap. The interactive panel
 		   always wins over a passive badge. */
 		z-index: 7;
-		width: 272px;
+		/* Deliberately compact: this floats over the graph, so every millimetre it
+		   gives back is graph the user can see. Narrow column, small type, tight
+		   gaps — it stays a readout, not a sidebar. */
+		width: 216px;
 		max-width: calc(100% - 20px);
 		max-height: calc(100% - 20px);
 		overflow: auto;
 		display: flex;
 		flex-direction: column;
-		gap: 0.55rem;
-		font-size: 0.82rem;
+		gap: 0.4rem;
+		font-size: 0.74rem;
+		line-height: 1.35;
 		background: #fff;
 		border: 1px solid #d7dbe2;
-		border-radius: 8px;
-		padding: 0.55rem 0.7rem;
+		border-radius: 7px;
+		padding: 0.4rem 0.5rem;
 		box-shadow: 0 10px 28px rgba(16, 24, 40, 0.22);
 	}
 	/* Phone: drop the inspector below the graph instead of floating over it — on a
@@ -3329,26 +3321,37 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 0.5rem;
+		gap: 0.4rem;
+		/* The header row is only a label plus two icon buttons — pull it in tight so
+		   it doesn't cost a full line of height. */
+		margin: -0.15rem 0 -0.2rem;
 	}
 	.insp-title {
 		font-weight: 600;
-		color: #1f2430;
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: #6b7280;
 	}
+	/* The gene inspector still names its subject in the header (there's no field
+	   list to move it into), so opt that chip out of the header's label styling. */
 	.insp-title code {
 		background: #eef1f5;
-		padding: 0 4px;
-		border-radius: 4px;
+		padding: 0 3px;
+		border-radius: 3px;
+		font-size: 0.72rem;
+		text-transform: none;
+		letter-spacing: 0;
 	}
 	.insp-explain {
 		margin: 0;
-		font-size: 0.76rem;
-		line-height: 1.45;
+		font-size: 0.7rem;
+		line-height: 1.4;
 		color: #4b5563;
 		background: #f6f8fc;
 		border: 1px solid #e3e7ee;
 		border-radius: 6px;
-		padding: 0.4rem 0.55rem;
+		padding: 0.35rem 0.45rem;
 	}
 	.insp-explain b {
 		color: #1f2430;
@@ -3357,7 +3360,7 @@
 		flex: 0 0 auto;
 		background: none;
 		border: none;
-		font-size: 1.2rem;
+		font-size: 1rem;
 		color: #98a0ac;
 		cursor: pointer;
 	}
@@ -3367,19 +3370,27 @@
 	.ni-fields {
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
+		gap: 0.15rem;
 	}
 	.ni-key {
 		color: #9aa0aa;
-		font-size: 0.7rem;
+		font-size: 0.64rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		margin-right: 0.15rem;
 	}
+	/* Node ID sits at the top of the field list, so it gets the code chip the
+	   header used to carry. */
+	.ni-field code {
+		background: #eef1f5;
+		padding: 0 3px;
+		border-radius: 3px;
+		font-size: 0.72rem;
+	}
 	.ni-seq {
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
+		gap: 0.2rem;
 	}
 	.ni-seq-head {
 		display: flex;
@@ -3405,8 +3416,8 @@
 		box-sizing: border-box;
 		resize: vertical;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.74rem;
-		line-height: 1.5;
+		font-size: 0.68rem;
+		line-height: 1.4;
 		color: #1f2937;
 		background: #fff;
 		border: 1px solid #e5e7eb;
@@ -3418,15 +3429,15 @@
 	.endpoints {
 		display: flex;
 		flex-direction: column;
-		gap: 0.35rem;
-		font-size: 0.8rem;
+		gap: 0.3rem;
+		font-size: 0.72rem;
 		background: #fffbeb;
 		border: 1px solid #fde68a;
 		border-radius: 6px;
-		padding: 0.5rem 0.7rem;
+		padding: 0.4rem 0.5rem;
 	}
 	.endpoints .exit-note {
-		font-size: 0.78rem;
+		font-size: 0.7rem;
 	}
 	.erow {
 		display: flex;
@@ -3472,10 +3483,5 @@
 	.exit-more:hover {
 		background: #dbeafe;
 		border-color: #93c5fd;
-	}
-	.exit-hint {
-		font-size: 0.72rem;
-		line-height: 1.4;
-		color: #9aa0aa;
 	}
 </style>
