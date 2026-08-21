@@ -67,4 +67,37 @@ describe('computeBubbles', () => {
 	it('returns null when there is no reference walk', () => {
 		expect(computeBubbles(parseGfa('H\tVN:Z:1.1'), 'REF')).toBeNull();
 	});
+
+	// The full/unsimplified graph carries no WC tags, but it does carry the walks —
+	// so coverage (node walk counts and a skip's walk count) is counted from them,
+	// rather than defaulting to a misleading 0.
+	const FULL = [
+		'H\tVN:Z:1.1\tRS:Z:REF',
+		`S\t1\t${seq(100)}`,
+		`S\t2\t${seq(100)}`,
+		`S\t3\t${seq(100)}`,
+		`S\t10\t${seq(40)}`, // an alternate allele of node 2
+		'W\tREF\t0\tchr1\t1000\t1300\t>1>2>3',
+		'W\tsampleA\t0\tchr1\t0\t200\t>1>3', // takes the deletion (skips node 2)
+		'W\tsampleB\t0\tchr1\t0\t200\t>1>3', // takes the deletion
+		'W\tsampleC\t0\tchr1\t0\t240\t>1>10>3', // takes the alt allele
+		'L\t1\t+\t2\t+\t0M',
+		'L\t2\t+\t3\t+\t0M',
+		'L\t1\t+\t10\t+\t0M',
+		'L\t10\t+\t3\t+\t0M',
+		'L\t1\t+\t3\t+\t0M' // skip edge: deletes node 2
+	].join('\n');
+
+	it('counts skip and node walk coverage from the walks when WC tags are absent', () => {
+		const model = computeBubbles(parseGfa(FULL), 'REF');
+		expect(model).not.toBeNull();
+		const m = model!;
+		const skip = m.bubbles.find((b) => b.isSkip)!;
+		// Two walks (sampleA, sampleB) route 1→3 directly, so the deletion reports 2 —
+		// not 0, which is what a raw `l.coverage ?? 0` would have shown on this graph.
+		expect(skip.coverage).toBe(2);
+		const comp = m.bubbles.find((b) => !b.isSkip)!;
+		expect([...comp.nodeIds]).toEqual(['10']);
+		expect(comp.coverage).toBe(1); // only sampleC traverses node 10
+	});
 });

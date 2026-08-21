@@ -20,9 +20,10 @@
 		type LayoutFamily
 	} from './layoutModes';
 	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
+	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
-	import { COLOR_MODES, legendGradientCss, darkTheme, lightTheme, type ColorMode } from './colors';
+	import { COLOR_MODES, legendGradientCss, darkTheme, lightTheme, BACKBONE_COLOR, type ColorMode } from './colors';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
@@ -249,7 +250,7 @@
 	// on a large locus they carry a slow-down warning (see hoverModeHeavy). This is
 	// Graphoscope's general rule: show context by default unless it slows the app, and
 	// then keep it one switch away with a warning.
-	let hoverMode = $state<'info' | 'bubble' | 'walk'>('info');
+	let hoverMode = $state<'none' | 'info' | 'bubble' | 'walk'>('info');
 	// The strand currently under the pointer (reported by the canvas), which drives
 	// the two hover modes. Independent of `selected` (a click), so highlighting
 	// follows the pointer without pinning an inspector open.
@@ -270,7 +271,10 @@
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
 	let lightMode = $state(false);
-	let canvasApi = $state<{ exportImage: (filename: string) => void } | null>(null);
+	let canvasApi = $state<{
+		exportImage: (filename: string) => void;
+		colorForSegment: (segId: string) => string;
+	} | null>(null);
 
 	// What each node's fill encodes. Defaults to walk coverage (the original heatmap),
 	// except on a graph with no real walks/paths — there every node's coverage is 0, so
@@ -278,6 +282,15 @@
 	// meaningful. The picker lives in the on-graph legend at the foot of the canvas.
 	let colorMode = $state<ColorMode>(untrack(() => hasTraversals) ? 'coverage' : 'length');
 	const colorModeInfo = $derived(COLOR_MODES.find((m) => m.mode === colorMode) ?? COLOR_MODES[0]);
+	// The graph's fill colour for a node, handed to the MSA colour track so it mirrors
+	// the graph exactly. `colorMode`/`lightMode` are read only so this re-derives (and
+	// the track redraws) when the "color by" setting or theme changes.
+	const msaColorForSeg = $derived.by(() => {
+		colorMode;
+		lightMode;
+		const api = canvasApi;
+		return api ? (segId: string) => api.colorForSegment(segId) : undefined;
+	});
 	// The legend swatch is drawn from the same ramp the canvas uses, so it tracks the
 	// light/dark theme (the picker itself sits on the app's light chrome regardless).
 	const legendTheme = $derived(lightMode ? lightTheme : darkTheme);
@@ -293,6 +306,104 @@
 	let nodeFieldsOpen = $state(false);
 
 	let selected = $state<string | null>(null);
+
+	// The base-alignment (MSA) view: a resizable split below the graph showing the
+	// reference plus the haplotypes through the selected node, aligned base-by-base.
+	// Opened from the node inspector; stays open and re-derives as the selection
+	// changes, so a user can click node after node and watch the alignment update.
+	let msaOpen = $state(false);
+	let msaHeight = $state(360);
+	// When "Load MSA" is clicked on a simplified graph, we switch to the full graph
+	// (which carries the walks the alignment needs). That swap fires the graph-reset
+	// effect below, which would normally close the MSA and drop the selection — so we
+	// stash the intent here and the reset effect re-opens the MSA (on `pendingMsaNode`
+	// when a node was selected) once the full graph arrives. `pendingMsaNode` holds an
+	// *original* node id (a member of the clicked reduced node), which is what the full
+	// graph is keyed by; it's null when the MSA is opened without a selection.
+	let pendingMsaOpen = $state(false);
+	let pendingMsaNode = $state<string | null>(null);
+	// Open the base-alignment view. On a simplified graph the MSA needs the full graph's
+	// walks, so switch to it automatically — but only when this device can show it
+	// (`discoAvailable`); on a low-memory/phone tab we don't force the load and the panel
+	// explains why it can't align there. Shared by the sidebar button and any other entry.
+	function openMsa() {
+		if (gfa.reduced && !showingAllNodes && discoAvailable && onToggleSimplify) {
+			const members = selected ? gfa.segments.get(selected)?.members : undefined;
+			pendingMsaNode =
+				members && members.length ? members[Math.floor(members.length / 2)] : selected;
+			pendingMsaOpen = true;
+			onToggleSimplify();
+		} else {
+			msaOpen = true;
+		}
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
+	}
+	// Short local names (R1/A1/…) the MSA assigns to the nodes in its window, so the
+	// graph can label the same nodes; null when simplified names are off/closed.
+	let msaNames = $state<Map<string, string> | null>(null);
+	// A node clicked in the MSA gets flashed in the graph so the user can spot it.
+	// `flashNonce` bumps on every click so re-clicking the same node re-triggers.
+	let flashSegment = $state<string | null>(null);
+	let flashNonce = $state(0);
+	function flashGraphNode(segId: string) {
+		flashSegment = segId;
+		flashNonce++;
+	}
+	// Walks the user clicked in the MSA rows: each is traced (disco-style) in the graph
+	// in its own colour, and that colour is echoed back onto the MSA row label. Cleared
+	// on a new graph (its walk keys won't carry over).
+	let msaWalkKeys = $state<string[]>([]);
+	function toggleMsaWalk(key: string) {
+		msaWalkKeys = msaWalkKeys.includes(key)
+			? msaWalkKeys.filter((k) => k !== key)
+			: [...msaWalkKeys, key];
+	}
+	/** Find a walk by its `sample#hap#seq` key in the walk-bearing graph (the MSA rows
+	 * use the same key format). Falls back to the displayed graph. */
+	function findWalkByKey(key: string): { steps: { id: string; orient: '+' | '-' }[] } | null {
+		const src = walksGfa ?? gfa;
+		for (const w of src.walks) {
+			if (w.kind === 'synthetic') continue;
+			if (`${w.sample}#${w.hapIndex}#${w.seqId}` === key) return w;
+		}
+		return null;
+	}
+	const msaWalkColor = (key: string) => colorForSeed(Math.max(0, msaWalkKeys.indexOf(key)));
+	// The traces the MSA-clicked walks add to the graph overlay.
+	const msaWalkPaths = $derived.by((): { path: DiscoStep[]; color: string }[] => {
+		const out: { path: DiscoStep[]; color: string }[] = [];
+		for (const key of msaWalkKeys) {
+			const w = findWalkByKey(key);
+			const p = w ? projectWalk(w.steps) : null;
+			if (p) out.push({ path: p, color: msaWalkColor(key) });
+		}
+		return out;
+	});
+	// Walk key → highlight colour for every walk currently spotlit in the graph, so the
+	// MSA can echo the colour on the matching row. Covers MSA-clicked walks plus any
+	// haplotype-panel pins/hover that happen to be lit.
+	const msaRowHighlights = $derived.by((): Map<string, string> => {
+		const m = new Map<string, string>();
+		for (const key of msaWalkKeys) m.set(key, msaWalkColor(key));
+		for (const w of pinnedWalks) m.set(w.key, colorForKey(w.key));
+		if (hoverWalk) m.set(hoverWalk.key, colorForKey(hoverWalk.key));
+		return m;
+	});
+	function startMsaResize(e: PointerEvent) {
+		e.preventDefault();
+		const startY = e.clientY;
+		const startH = msaHeight;
+		const onMove = (ev: PointerEvent) => {
+			// Drag up grows the panel; clamp so neither the graph nor the panel vanish.
+			msaHeight = Math.max(160, Math.min(720, startH + (startY - ev.clientY)));
+		};
+		const onUp = () => {
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+		};
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+	}
 
 	// The node the highlighting is keyed to: the one under the pointer while hovering,
 	// otherwise the clicked (selected) one. So a click *freezes* the highlight — you
@@ -335,26 +446,48 @@
 
 	$effect(() => {
 		gfa;
-		selected = null;
-		selectedFeature = null;
-		selectedExit = null;
-		// A new graph clears any pinned haplotype traces (its walk keys won't exist).
-		pinnedKeys = [];
-		straightenKey = null;
-		// …and any node-restricted haplotype filter (node ids won't carry over).
-		nodeFilter = null;
-		// A new graph gets a fresh automatic bendy/rough decision (see effectiveBendy)
-		// and drops any per-graph layout overrides back to the mode's defaults.
-		bendyOverride = null;
-		// …and a fresh chance to surface the slow-layout tip for the new graph.
-		slowTipDismissed = false;
-		// Hover highlighting doesn't carry across graphs (node ids won't match), and the
-		// walk-graph load is per-graph.
-		hoveredNode = null;
-		hoveredSkip = null;
-		selectedSkip = null;
-		inspectorDismissed = false;
-		walkLoadRequested = false;
+		// Depend on `gfa` ALONE. The body reads/writes `pendingMsaNode` and other state;
+		// left tracked, reading `pendingMsaNode` would make setting it (in the Load-MSA
+		// handler) fire this effect immediately — while the graph is still reduced — and
+		// clear it before the switch lands. Untrack keeps the graph swap the only trigger.
+		untrack(() => {
+			// A "Load MSA" switch to the full graph: instead of dropping everything, re-open
+			// the alignment (on the corresponding full-graph node when one was selected).
+			// Guarded on !gfa.reduced so it only fires once the full graph has arrived.
+			const resuming = pendingMsaOpen && !gfa.reduced;
+			if (resuming) {
+				selected = pendingMsaNode && gfa.segments.has(pendingMsaNode) ? pendingMsaNode : null;
+				msaOpen = true;
+			} else {
+				selected = null;
+				// A new graph has different nodes; close the base-alignment view rather than
+				// leaving it pinned to a node id that no longer exists.
+				msaOpen = false;
+			}
+			pendingMsaOpen = false;
+			pendingMsaNode = null;
+			inspectorDismissed = false;
+			selectedFeature = null;
+			selectedExit = null;
+			// A new graph clears any pinned haplotype traces (its walk keys won't exist).
+			pinnedKeys = [];
+			// …and any walks spotlit from the MSA (same reason).
+			msaWalkKeys = [];
+			straightenKey = null;
+			// …and any node-restricted haplotype filter (node ids won't carry over).
+			nodeFilter = null;
+			// A new graph gets a fresh automatic bendy/rough decision (see effectiveBendy)
+			// and drops any per-graph layout overrides back to the mode's defaults.
+			bendyOverride = null;
+			// …and a fresh chance to surface the slow-layout tip for the new graph.
+			slowTipDismissed = false;
+			// Hover highlighting doesn't carry across graphs (node ids won't match), and the
+			// walk-graph load is per-graph.
+			hoveredNode = null;
+			hoveredSkip = null;
+			selectedSkip = null;
+			walkLoadRequested = false;
+		});
 	});
 
 	// Walks that start or end exactly at the selected node — the tell for a
@@ -866,10 +999,12 @@
 	});
 
 	// What the canvas actually spotlights: in walk mode a live hover supersedes the
-	// disco/haplotype traces; otherwise the existing disco paths.
-	const overlayPaths = $derived(
-		hoverMode === 'walk' && walkHoverPaths.length > 0 ? walkHoverPaths : discoPaths
-	);
+	// disco/haplotype traces; otherwise the existing disco paths. MSA-clicked walk
+	// traces are always layered on, so a walk picked in the alignment stays lit.
+	const overlayPaths = $derived([
+		...(hoverMode === 'walk' && walkHoverPaths.length > 0 ? walkHoverPaths : discoPaths),
+		...msaWalkPaths
+	]);
 	const traceActive = $derived(overlayPaths.length > 0);
 	// Show the button whenever disco is either already possible or loadable.
 	const showDiscoButton = $derived(canDiscoNow || discoAvailable || disco || pendingDisco);
@@ -1407,11 +1542,11 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Pinned primary controls: the two most-reached-for switches. Only the
-			     hosted locus browser has these (Simplify needs the full/reduced graph
-			     swap), so on a plain GFA the whole group is dropped rather than left as
-			     an empty box. -->
-			{#if discoAvailable || showingAllNodes || allNodesTooMany}
+			<!-- Pinned primary controls: the Simplify switch and the Load MSA button, the
+			     two most-reached-for actions, share one box. Only the hosted locus browser
+			     has Simplify (it needs the full/reduced graph swap); the box still renders
+			     for the MSA button on a plain GFA. -->
+			{#if discoAvailable || showingAllNodes || allNodesTooMany || !msaOpen}
 			<section class="group primary">
 				{#if discoAvailable || showingAllNodes}
 					<label
@@ -1445,6 +1580,13 @@
 							: 'too slow to render in full'}</span
 					>
 				{/if}
+				<!-- Base alignment (MSA): opens the split panel below the graph — a base-level
+				     view of the selected node's sequences, or prompts for a node if none. -->
+				{#if !msaOpen}
+					<button class="msa-load-btn" onclick={openMsa} title="Open the multiple sequence alignment (MSA) panel below the graph — a base-level view of the selected node's sequences (click a node first if none is selected)">
+						≡ Load MSA
+					</button>
+				{/if}
 			</section>
 			{/if}
 
@@ -1452,8 +1594,15 @@
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
 			     over the graph, so they read as opt-in and warn on a large locus. -->
 			<section class="group hover-group">
-				<span class="group-title">On node hover</span>
-				<div class="seg" role="radiogroup" aria-label="Hover mode">
+				<span class="group-title">Node inspector</span>
+				<div class="seg" role="radiogroup" aria-label="Node inspector mode">
+					<button
+						class:active={hoverMode === 'none'}
+						role="radio"
+						aria-checked={hoverMode === 'none'}
+						onclick={() => (hoverMode = 'none')}
+						title="Don't open the inspector on click — click node to node to switch the MSA view without the box popping up.">None</button
+					>
 					<button
 						class:active={hoverMode === 'info'}
 						role="radio"
@@ -1478,7 +1627,9 @@
 						>Walks</button
 					>
 				</div>
-				{#if hoverMode === 'info'}
+				{#if hoverMode === 'none'}
+					<span class="switch-sub">no inspector on click · MSA still switches</span>
+				{:else if hoverMode === 'info'}
 					<span class="switch-sub">tooltip only · click to inspect</span>
 				{:else if hoverMode === 'bubble'}
 					<span class="switch-sub">hover a node to light up its whole bubble</span>
@@ -1789,7 +1940,7 @@
 					<button class="cgm-dismiss" onclick={dismissContextGlow} aria-label="Dismiss">Dismiss</button>
 				</div>
 			{/if}
-			<div class="stage">
+			<div class="stage" class:msa-open={msaOpen}>
 				{#if displayLayout}
 					<GraphCanvas
 						layout={displayLayout}
@@ -1811,6 +1962,9 @@
 						{bubbleIdBySeg}
 						{bubbleLongestBySeg}
 						{maxBubbleLongest}
+						nodeLabels={msaNames}
+						{flashSegment}
+						{flashNonce}
 						{glowSegments}
 						{glowGreenSegments}
 						discoActive={traceActive}
@@ -1927,12 +2081,44 @@
 				{/if}
 			</div>
 
+			<!-- Base-alignment (MSA) split: a resizable panel below the graph, driven by
+			     the selected node. A drag handle on top resizes it; the graph (flex:1)
+			     shrinks to make room. -->
+			{#if msaOpen}
+				<div class="msa-split" style="height:{msaHeight}px">
+					<div
+						class="msa-resize"
+						onpointerdown={startMsaResize}
+						role="separator"
+						aria-label="Resize the alignment panel"
+						title="Drag to resize"
+					></div>
+					<div class="msa-split-inner">
+						<MsaPanel
+							{gfa}
+							{referenceSample}
+							selectedSegId={selected}
+							{lightMode}
+							colorForSeg={msaColorForSeg}
+							{colorMode}
+							rowHighlights={msaRowHighlights}
+							loadingFullGraph={discoLoading && !showingAllNodes}
+							fullGraphBlocked={!!gfa.reduced && !discoAvailable}
+							onClose={() => (msaOpen = false)}
+							onNames={(m) => (msaNames = m)}
+							onNodeFlash={flashGraphNode}
+							onWalkSpotlight={toggleMsaWalk}
+						/>
+					</div>
+				</div>
+			{/if}
+
 				<!-- Node inspector: lives OUTSIDE .stage (which clips with overflow:hidden)
 				     so on mobile it can drop below the graph instead of overlapping it. On
 				     desktop it still floats over the graph's top-left corner — absolute,
 				     anchored to .stage-col. The × only hides the box (keeping the frozen
 				     highlight lit); clicking the empty graph clears the selection. -->
-				{#if selected && !inspectorDismissed}
+				{#if selected && !inspectorDismissed && hoverMode !== 'none'}
 					<div class="inspector">
 						<div class="insp-head">
 							<span class="insp-title">Node</span>
@@ -2103,9 +2289,11 @@
 						{#if endpointCounts || endpoints.length > 0}
 							<div class="endpoints">
 								<p class="exit-note">
-									A haplotype starts or ends here rather than passing through — it connects to another
-									locus and continues into the graph <b>beyond the region that was fetched</b>. We can't
-									show where it goes: that node is outside this subgraph.
+									A haplotype leaves the queried window here and continues into the graph
+									<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
+									is outside this subgraph (exit point shown as dashed line). Note that reference nodes outside this locus that
+									are pulled in by their connections to this locus are unfortunately not marked as reference
+									(a limitation of querying because they don't appear in the reference walk).
 								</p>
 								{#if endpointCounts}
 									{@const total = endpointCounts.starts + endpointCounts.ends}
@@ -2219,7 +2407,10 @@
 							A haplotype leaves the queried window here and continues into the graph
 							<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
 							is outside this subgraph — so it's marked with a short dashed cue trailing off the
-							edge. The cue only flags the loose end; its direction carries no information.
+							edge. The cue only flags the loose end; its direction carries no information. Note that
+							reference nodes outside this locus that are pulled in by their connections to this locus
+							are unfortunately not marked as reference (a limitation of querying because they don't
+							appear in the reference walk).
 						</p>
 						{#if onRequestMoreContext}
 							<button class="exit-more" onclick={() => onRequestMoreContext?.()}>
@@ -2710,7 +2901,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		max-height: 260px;
+		max-height: 150px;
 		overflow-y: auto;
 	}
 	.haplo-row {
@@ -3121,6 +3312,62 @@
 		border-radius: 8px;
 		overflow: hidden;
 		background: #0b0d12;
+	}
+	/* When the MSA panel is open below it, the graph must be free to shrink so the
+	   two together don't overflow the column (which would flicker a scrollbar and
+	   thrash both canvases' resize observers). */
+	.stage.msa-open {
+		min-height: 140px;
+	}
+
+	/* Base-alignment split panel below the graph. Fixed (drag-resizable) height, so
+	   the graph above it (flex:1) yields the remaining space. */
+	.msa-split {
+		flex: 0 0 auto;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		border: 1px solid #eee;
+		border-radius: 8px;
+		overflow: hidden;
+	}
+	.msa-resize {
+		height: 8px;
+		flex: 0 0 auto;
+		cursor: ns-resize;
+		background: repeating-linear-gradient(
+			90deg,
+			transparent 0 6px,
+			rgba(140, 155, 180, 0.5) 6px 10px
+		);
+		background-position: center;
+		background-size: 32px 2px;
+		background-repeat: no-repeat;
+		background-color: rgba(140, 155, 180, 0.12);
+	}
+	.msa-resize:hover {
+		background-color: rgba(140, 155, 180, 0.28);
+	}
+	.msa-split-inner {
+		flex: 1 1 auto;
+		min-height: 0;
+	}
+	.msa-load-btn {
+		display: block;
+		width: 100%;
+		padding: 0.45rem 0.6rem;
+		font: inherit;
+		font-size: 0.82rem;
+		font-weight: 600;
+		text-align: center;
+		border: 1px solid rgba(103, 232, 249, 0.5);
+		border-radius: 7px;
+		background: rgba(103, 232, 249, 0.12);
+		color: #0e7490;
+		cursor: pointer;
+	}
+	.msa-load-btn:hover {
+		background: rgba(103, 232, 249, 0.22);
 	}
 
 	/* Stack the sidebar above the canvas on narrow screens. */

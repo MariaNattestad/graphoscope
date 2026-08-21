@@ -101,6 +101,22 @@ class Limits {
 		return this.narrow ? 8000 : 15000;
 	}
 
+	// ---- MSA / base-alignment view ------------------------------------------
+	// The base-alignment view holds one string per (row, node block); a window of
+	// `maxMsaColumns` bp over `maxMsaRows` rows bounds both that memory and the
+	// per-frame cell draw. Phones get a tighter window so the letters stay legible
+	// on a small screen and the canvas fill stays cheap.
+	get maxMsaColumns(): number {
+		return this.narrow ? 3000 : 6000;
+	}
+	get maxMsaRows(): number {
+		return this.narrow ? 150 : 400;
+	}
+	/** Default half-window (bp each side of the clicked node) for the MSA view. */
+	get defaultMsaWindowBp(): number {
+		return this.narrow ? 150 : 300;
+	}
+
 	/** Classify how the full-walk graph load should be offered for a locus,
 	 *  from the reduced graph's own stats (known before anything is fetched). */
 	walkLoadTier(reduced: ReducedStats | null | undefined): WalkLoadTier {

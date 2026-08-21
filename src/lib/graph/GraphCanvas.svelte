@@ -85,6 +85,9 @@
 		bubbleIdBySeg = null,
 		bubbleLongestBySeg = null,
 		maxBubbleLongest = 0,
+		nodeLabels = null,
+		flashSegment = null,
+		flashNonce = 0,
 		glowSegments = null,
 		glowGreenSegments = null,
 		onReady,
@@ -150,6 +153,13 @@
 		bubbleLongestBySeg?: Map<string, number> | null;
 		/** The largest bubble longest-path bp, to normalize the `bubbleSize` heatmap. */
 		maxBubbleLongest?: number;
+		/** Displayed segment id → short label (R1/A1/…) to draw on the node, mirroring
+		 * the MSA window's simplified names. Null draws no such labels. */
+		nodeLabels?: Map<string, string> | null;
+		/** A displayed segment id to flash (a fading white glow), or null. */
+		flashSegment?: string | null;
+		/** Bumps on every flash request so re-flashing the same node re-triggers. */
+		flashNonce?: number;
 		/** Displayed segment ids to draw a persistent glow halo behind — nodes newly
 		 * pulled in by a context increase. The halo sits under the strand so the node
 		 * keeps its own colour. Null/empty draws none. */
@@ -157,8 +167,12 @@
 		/** Like {@link glowSegments} but a green halo — nodes that were shown as alt
 		 * before and now appear on the reference walk. */
 		glowGreenSegments?: Set<string> | null;
-		/** Hands the parent a small API (currently just PNG export) once mounted. */
-		onReady?: (api: { exportImage: (filename: string) => void }) => void;
+		/** Hands the parent a small API (PNG export + the live node-fill colour, so the
+		 * MSA colour track can mirror exactly what the graph draws) once mounted. */
+		onReady?: (api: {
+			exportImage: (filename: string) => void;
+			colorForSegment: (segId: string) => string;
+		}) => void;
 	} = $props();
 
 	const theme = $derived(lightMode ? lightTheme : darkTheme);
@@ -228,6 +242,10 @@
 	let zoomBehavior = zoom<HTMLCanvasElement, unknown>().scaleExtent([0.02, 40]);
 	// Non-null only during a PNG export, when draw() renders at this pixel ratio.
 	let exportScale: number | null = null;
+
+	// Flash animation: 1 → 0 over ~1s after a node is flashed from the MSA.
+	let flashAlpha = $state(0);
+	let flashRaf = 0;
 
 	// Render the current view to a PNG at a higher pixel ratio (for figures), then
 	// restore the on-screen render. Both draws are synchronous, so the user never
@@ -317,6 +335,15 @@
 		skip: CanvasSkip;
 	}
 	let skipHits: SkipHit[] = [];
+	// Screen-space rects of the short-name (R1/A1…) pills, rebuilt each draw, so hovering
+	// a pill can explain what it is — the pills themselves aren't otherwise interactive.
+	interface MsaLabelHit {
+		x0: number;
+		y0: number;
+		x1: number;
+		y1: number;
+	}
+	let msaLabelHits: MsaLabelHit[] = [];
 	// Flip the tooltip above the cursor near the bottom of the stage (the gene
 	// track lives there, and a tooltip below would clip against the frame).
 	const tooltipAbove = $derived(hoverPos.y > 360);
@@ -448,6 +475,29 @@
 		prevY = 0;
 		select(canvasEl).call(zoomBehavior.transform, next);
 		viewMoved = false;
+	}
+
+	// Re-fit only the vertical axis to a new height, preserving the horizontal
+	// (genomic) zoom/pan. Used when just the height changes — e.g. the MSA panel
+	// opening below the graph — so that doesn't throw away the user's zoom the way a
+	// full fitToView would. No-op in uniform mode, where one scale drives both axes.
+	function refitVertical() {
+		if (!canvasEl || uniformZoom) return;
+		let minY = Infinity,
+			maxY = -Infinity;
+		for (const node of layout.nodesById.values()) {
+			if (node.y < minY) minY = node.y;
+			if (node.y > maxY) maxY = node.y;
+		}
+		if (!Number.isFinite(minY)) return;
+		const height = canvasEl.clientHeight || 1;
+		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
+		const fitH = Math.max(1, height - axisBand - geneBand);
+		const graphHeight = Math.max(1, maxY - minY);
+		const cy = (minY + maxY) / 2;
+		baseScaleY = Math.min((fitH / graphHeight) * 0.9, 8);
+		panY = fitH / 2 - cy * baseScaleY;
+		draw();
 	}
 
 	function draw() {
@@ -662,6 +712,74 @@
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawRefCoordLabels(ctx, width, height);
 		drawGeneTrack(ctx, width, height);
+		drawFlash(ctx);
+		drawMsaLabels(ctx);
+	}
+
+	// Screen-space polyline of a segment's chain (its drawn strand), or null.
+	function chainScreenPts(segId: string): { x: number; y: number }[] | null {
+		const chain = chainBySeg.get(segId);
+		if (!chain) return null;
+		const pts: { x: number; y: number }[] = [];
+		for (const id of chain.nodeIds) {
+			const n = layout.nodesById.get(id);
+			if (n) pts.push({ x: toScreenX(n.x), y: toScreenY(n.y) });
+		}
+		return pts.length > 0 ? pts : null;
+	}
+
+	// Short R1/A1 labels on the nodes that the open MSA window covers, so the same
+	// node reads the same in the graph and the alignment. Drawn on a small pill at
+	// each node's midpoint, in screen space so they stay a constant size.
+	function drawMsaLabels(ctx: CanvasRenderingContext2D) {
+		msaLabelHits = [];
+		if (!nodeLabels || nodeLabels.size === 0) return;
+		ctx.save();
+		ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'middle';
+		for (const [segId, label] of nodeLabels) {
+			const pts = chainScreenPts(segId);
+			if (!pts) continue;
+			const mid = pts[Math.floor(pts.length / 2)];
+			const w = ctx.measureText(label).width;
+			msaLabelHits.push({ x0: mid.x - w / 2 - 3, y0: mid.y - 15, x1: mid.x + w / 2 + 3, y1: mid.y - 2 });
+			// The flashed node's name flashes white alongside its strand (a node clicked
+			// in the MSA), so the eye lands on the same label in both views.
+			const flashing = segId === flashSegment && flashAlpha > 0;
+			ctx.fillStyle = theme.coordPill;
+			ctx.fillRect(mid.x - w / 2 - 3, mid.y - 15, w + 6, 13);
+			if (flashing) {
+				ctx.save();
+				ctx.globalAlpha = Math.max(0, Math.min(1, flashAlpha));
+				ctx.fillStyle = 'rgba(255,255,255,0.9)';
+				ctx.fillRect(mid.x - w / 2 - 3, mid.y - 15, w + 6, 13);
+				ctx.restore();
+			}
+			ctx.fillStyle = flashing ? '#0b0d12' : theme.coordText;
+			ctx.fillText(label, mid.x, mid.y - 8.5);
+		}
+		ctx.restore();
+	}
+
+	// A fading white glow on the flashed node (clicked in the MSA), disco-style, so
+	// the eye can jump straight to it. `flashAlpha` is animated by the effect below.
+	function drawFlash(ctx: CanvasRenderingContext2D) {
+		if (!flashSegment || flashAlpha <= 0) return;
+		const pts = chainScreenPts(flashSegment);
+		if (!pts) return;
+		const path = new Path2D();
+		traceSmooth(path, pts.length > 1 ? pts : [pts[0], { x: pts[0].x + 0.1, y: pts[0].y }]);
+		ctx.save();
+		ctx.lineJoin = 'round';
+		ctx.lineCap = 'round';
+		ctx.globalAlpha = Math.max(0, Math.min(1, flashAlpha));
+		ctx.shadowColor = 'rgba(255,255,255,0.95)';
+		ctx.shadowBlur = 22;
+		ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+		ctx.lineWidth = strokeWidth + 3;
+		ctx.stroke(path);
+		ctx.restore();
 	}
 
 	// Bounds (world) of each reference segment's chain, so we can anchor genomic
@@ -1273,14 +1391,40 @@
 		bubbleIdBySeg;
 		bubbleLongestBySeg;
 		maxBubbleLongest;
+		nodeLabels;
 		glowSegments;
 		glowGreenSegments;
 		untrack(() => draw());
 	});
 
 	$effect(() => {
+		// Animate the flash: a new flashNonce restarts a ~1s fade on flashSegment.
+		flashNonce;
+		const seg = flashSegment;
+		untrack(() => {
+			if (!seg) return;
+			if (flashRaf) cancelAnimationFrame(flashRaf);
+			const start = performance.now();
+			const HOLD = 220; // full brightness, so the flash is easy to catch
+			const FADE = 900;
+			const tick = (t: number) => {
+				const e = t - start;
+				flashAlpha = e < HOLD ? 1 : Math.max(0, 1 - (e - HOLD) / FADE);
+				draw();
+				if (e < HOLD + FADE) flashRaf = requestAnimationFrame(tick);
+				else {
+					flashRaf = 0;
+					flashAlpha = 0;
+					draw();
+				}
+			};
+			flashRaf = requestAnimationFrame(tick);
+		});
+	});
+
+	$effect(() => {
 		// Hand the parent the export API once the canvas exists.
-		if (canvasEl) onReady?.({ exportImage });
+		if (canvasEl) onReady?.({ exportImage, colorForSegment: colorForChain });
 	});
 
 	$effect(() => {
@@ -1367,6 +1511,28 @@
 			const py = e.clientY - rect.top;
 			hoverPos = { x: px, y: py };
 
+			// While actually panning (button held and moved), show the grabbing hand and
+			// skip hover work. Otherwise the cursor is a plain arrow — a fine tip for
+			// pinpointing nodes — turning into a pointer only over something clickable.
+			if (clickStart && Math.hypot(e.clientX - clickStart.x, e.clientY - clickStart.y) > 4) {
+				canvasEl!.style.cursor = 'grabbing';
+				return;
+			}
+
+			// A short-name (R1/A1…) pill sits just above its node. Hovering it explains
+			// what the pill is — the pills aren't otherwise interactive — rather than
+			// crowding the node's own tooltip with it.
+			const pill = msaLabelHits.find((h) => px >= h.x0 && px <= h.x1 && py >= h.y0 && py <= h.y1);
+			if (pill) {
+				if (hoveredSegment !== null) {
+					setHovered(null);
+					draw();
+				}
+				hoverLabel = 'Short node ID · see MSA panel settings';
+				canvasEl!.style.cursor = 'help';
+				return;
+			}
+
 			// Exons win: they live in the bottom band, clear of the strands.
 			const exon = findExonAt(px, py);
 			if (exon) {
@@ -1403,7 +1569,7 @@
 					}
 				} else {
 					if (hoverLabel !== null) hoverLabel = null;
-					canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'grab';
+					canvasEl!.style.cursor = findExitAt(px, py) ? 'pointer' : 'default';
 					if (lastSkipKey !== null) {
 						lastSkipKey = null;
 						onHoverSkip?.(null);
@@ -1418,7 +1584,7 @@
 				lastSkipKey = null;
 				onHoverSkip?.(null);
 			}
-			canvasEl!.style.cursor = 'grab';
+			canvasEl!.style.cursor = 'default';
 			if (wasEmph) draw();
 		}
 		canvasEl.addEventListener('wheel', onWheelPan, { passive: false });
@@ -1441,18 +1607,23 @@
 			const w = canvasEl.clientWidth;
 			const h = canvasEl.clientHeight;
 			const hadSize = lastW > 1 && lastH > 1;
-			const significant =
-				hadSize && (Math.abs(w - lastW) > lastW * 0.2 || Math.abs(h - lastH) > lastH * 0.2);
+			const wChanged = hadSize && Math.abs(w - lastW) > lastW * 0.2;
+			const hChanged = hadSize && Math.abs(h - lastH) > lastH * 0.2;
 			lastW = w;
 			lastH = h;
 			draw(); // resize the backing store to the new dimensions right away
-			if (significant) {
+			if (wChanged || hChanged) {
 				// Debounce: a rotation can arrive as a couple of intermediate sizes, so
-				// settle before fitting to the final one.
+				// settle before fitting to the final one. A width change (rotation, window
+				// resize) does a full fit; a height-only change (the MSA panel opening
+				// below the graph) re-fits just the vertical axis, so the genomic X-zoom
+				// the user set is preserved rather than reset to fit-all.
 				if (refitTimer) clearTimeout(refitTimer);
+				const widthChanged = wChanged;
 				refitTimer = setTimeout(() => {
 					refitTimer = null;
-					fitToView();
+					if (widthChanged) fitToView();
+					else refitVertical();
 				}, 150);
 			}
 		});
@@ -1518,7 +1689,9 @@
 		width: 100%;
 		height: 100%;
 		display: block;
-		cursor: grab;
+		/* Arrow by default (a fine tip for pinpointing nodes); the pointermove handler
+		   swaps in a pointer over clickable features and a grabbing hand while panning. */
+		cursor: default;
 	}
 	canvas:active {
 		cursor: grabbing;

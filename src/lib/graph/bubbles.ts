@@ -149,7 +149,39 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 	}
 	const refLen = Math.max(1, off);
 	const len = (id: string) => gfa.segments.get(id)?.length ?? 0;
-	const cov = (id: string) => gfa.segments.get(id)?.coverage ?? 0;
+
+	// Walk-coverage fallback. The reduced graph tags every segment and link with a
+	// walk count (`coverage` / `WC`); the full/unsimplified graph does not — but it
+	// still carries the walks, so we count them ourselves. Built lazily (only when a
+	// tag is missing, i.e. the full graph) and once, so a deletion still reports its
+	// real walk count instead of a misleading 0.
+	const edgeKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
+	let walkCov: { node: Map<string, number>; edge: Map<string, number> } | null = null;
+	const ensureWalkCov = () => {
+		if (walkCov) return walkCov;
+		const node = new Map<string, number>();
+		const edge = new Map<string, number>();
+		for (const w of gfa.walks) {
+			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
+			const steps = w.steps;
+			const seenNode = new Set<string>();
+			for (let i = 0; i < steps.length; i++) {
+				const id = steps[i].id;
+				if (!seenNode.has(id)) {
+					seenNode.add(id);
+					node.set(id, (node.get(id) ?? 0) + 1);
+				}
+				if (i + 1 < steps.length) {
+					const k = edgeKey(id, steps[i + 1].id);
+					edge.set(k, (edge.get(k) ?? 0) + 1);
+				}
+			}
+		}
+		return (walkCov = { node, edge });
+	};
+	const cov = (id: string) => gfa.segments.get(id)?.coverage ?? ensureWalkCov().node.get(id) ?? 0;
+	const edgeCov = (a: string, b: string, tagged?: number) =>
+		tagged ?? ensureWalkCov().edge.get(edgeKey(a, b)) ?? 0;
 
 	// Undirected adjacency (for components) and forward directed adjacency (for
 	// path lengths). Skip edges are collected separately.
@@ -243,7 +275,7 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 			longest: 0, // …so both path lengths are 0 on the value axis
 			nodeCount: 0,
 			nodeIds: [],
-			coverage: l.coverage ?? 0,
+			coverage: edgeCov(l.from, l.to, l.coverage),
 			isSkip: true,
 			linkFrom: l.from,
 			linkTo: l.to
