@@ -10,6 +10,7 @@
 	// File, exactly like the query pipeline elsewhere. Deliberately separate from the
 	// front page — nothing here touches the hosted-graph flow.
 	import { parseGfa, gfaStats, type Gfa, type Walk } from '$lib/gfa';
+	import { pageTitle } from '$lib/pageTitle';
 	import { computeLongestPath } from '$lib/graph/longestPath';
 	import { rgfaBackbone } from '$lib/graph/rgfaBackbone';
 	import { computeAssemblyStats, type AssemblyStats } from '$lib/graph/assemblyStats';
@@ -244,7 +245,7 @@
 </script>
 
 <svelte:head>
-	<title>Graphoscope · GFA viewer</title>
+	<title>{pageTitle('Graphoscope · GFA viewer')}</title>
 </svelte:head>
 
 <div class="app">
