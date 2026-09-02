@@ -39,35 +39,37 @@
 				</p>
 				<p>
 					Querying one by genomic coordinate normally means downloading the whole thing. Instead we
-					use <b>GBZ-base</b> (<code>gbz2db</code> / <code>query</code>, part of the
+					build on <b>GBZ-base</b> (part of the
 					<a href="https://github.com/jltsiren/gbz-base" target="_blank" rel="noopener"
 						>vg / GBZ-base</a
 					>
-					tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database that
-					<i>can</i> be queried by position.
+					tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database
+					(<code>.gbz.db</code>) that <i>can</i> be queried by position. The HPRC publishes these
+					databases alongside the v2.1 graphs.
 				</p>
 				<p>
-					What <b>we</b> added: we compiled GBZ-base's <code>query</code> program to WebAssembly
-					(<code>wasm32-wasip1</code>) and wrote a small WASI filesystem shim that backs SQLite's
-					page reads with <b>HTTP range requests</b>. So the browser runs the real query engine in a
-					Web Worker and pulls only the few megabytes of database pages a locus actually touches —
-					served straight from the public HPRC S3 bucket. The
-					visualizations (the graph layout, with optional bubble and gene tracks beneath it, and the
-					simplification described next) are a few prototypes we built for inspecting a graph's
-					complex patterns around a particular reference locus.
+					What <b>we</b> added: a small Rust program that uses the GBZ-base library, unmodified, for
+					the coordinate lookup, compiled to WebAssembly (<code>wasm32-wasip1</code>), plus a WASI
+					filesystem shim that backs SQLite's page reads with <b>HTTP range requests</b>. So the
+					browser runs the real query engine in a Web Worker and pulls only the few megabytes of
+					database pages a locus actually touches — served straight from the public HPRC S3 bucket.
+					The visualizations (the graph layout with its gene track and node inspector, the base-level
+					MSA panel, and the simplification described next) are a few prototypes we built for
+					inspecting a graph's complex patterns around a particular reference locus.
 				</p>
 				<p>
 					A raw locus can still be far too tangled to read — and, more to the point, far too heavy to
 					hold in a browser tab, since the per-haplotype walks through the graph dominate the data
 					(for a repetitive locus like <b>LPA</b> they are the great majority of the bytes). So before
-					anything is drawn, Graphoscope runs its own <b>reference-guided simplification</b> — a second
-					WebAssembly module we wrote (<code>crates/reduce</code>, independent of GBZ-base) that reads
-					the query's output as a stream and never materialises the whole graph. Anchored on the
+					anything is drawn, the same WebAssembly module runs Graphoscope's own
+					<b>reference-guided simplification</b> (<code>crates/reduce</code>; this part is independent
+					of GBZ-base), reading the extracted walks as a stream and keeping only per-node and per-edge
+					aggregates rather than the walks themselves. Anchored on the
 					reference path, it detects the <i>superbubbles</i> hanging off it and collapses any whose
 					alternate alleles are shorter than a <b>collapse threshold</b> (50&nbsp;bp), then merges the
 					resulting non-branching runs of nodes into single segments. Crucially, instead of keeping
 					every walk it just <b>counts</b> how many pass through each node and edge — that count is
-					what the yellow&#8202;→&#8202;red colouring shows. The effect on memory is large: a locus
+					what the gold&#8202;→&#8202;red colouring shows. The effect on memory is large: a locus
 					like LPA drops from hundreds of megabytes of parsed graph to a few. A standalone
 					<a href="{base}/playground" target="_blank" rel="noopener">simplification playground</a>
 					(a testing sandbox) lets you tweak the collapse threshold and compare the original and
@@ -95,15 +97,15 @@
 					here.
 				</li>
 				<li>
-					<b>GBZ-base</b> and the <b>vg</b> toolkit (Jouni Sirén and colleagues) for
-					<code>gbz2db</code>/<code>query</code>, which make coordinate queries over a graph
+					<b>GBZ-base</b> and the <b>vg</b> toolkit (Jouni Sirén and colleagues) for the
+					<code>.gbz.db</code> format and the library that makes coordinate queries over a graph
 					possible.
 				</li>
 				<li>
 					<b>browser_wasi_shim</b> (@bjorn3) for running the WASI query binary in the browser, and
 					the <b>SQLite</b> and <b>Rust</b> projects underneath it.
 				</li>
-				<li><b>IGV.js</b> and <b>D3</b> for visualization frameworks.</li>
+				<li><b>D3</b> for the force simulation and zoom, and <b>IGV</b> for its nucleotide colours.</li>
 				<li>
 					<b>Bandage</b> for the strand-like node rendering style that the reference-anchored graph
 					layout draws inspiration from.
@@ -113,7 +115,8 @@
 			</ul>
 		</div>
 		<footer class="modal-foot muted small">
-			GBZ-base <code>query.wasm</code> · WASI in a Web Worker · SQLite pages served by range requests
+			<code>query.wasm</code> (Rust on the GBZ-base library) · WASI in a Web Worker · SQLite pages
+			served by range requests
 		</footer>
 	</div>
 </div>
