@@ -253,10 +253,10 @@
 			fetchInfo = result.stats ?? null;
 
 			if (gfaText.length > MAX_GFA_BYTES) {
-				// Backstop only. The walks are aggregated away before this point, so
-				// the reduced graph is governed by topology and is normally tiny —
-				// measured loci up to 3.2 Mb land three orders of magnitude under this
-				// ceiling. Reaching it means something pathological, so just refuse.
+				// The walks are aggregated away before this point, so the reduced
+				// graph is mostly segment sequence and grows with the window's width.
+				// In practice this trips on windows of roughly 10 Mb and up, not on
+				// complex loci (see MAX_GFA_BYTES). Refuse rather than try to render.
 				oversized = { bytes: gfaText.length };
 				gfa = null;
 				rawGfa = '';
@@ -684,9 +684,9 @@
 								</div>
 							{:else if oversized}
 								<div class="ph-inner warn">
-									<b>This region's graph is too tangled to render.</b> Even after simplification it came
-									back at ~{fmtBytes(oversized.bytes)}, far past anything we've seen from a normal locus —
-									try a smaller window or a specific gene.
+									<b>This region is too large to render.</b> Even after simplification its graph came
+									back at ~{fmtBytes(oversized.bytes)}, mostly the sequence of a very wide window — try a
+									window of a few Mb or less, or a specific gene.
 								</div>
 							{:else}
 								<div class="ph-inner light">Open the query menu at the top to choose a locus.</div>

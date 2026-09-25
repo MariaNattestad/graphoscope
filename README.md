@@ -1,27 +1,34 @@
 # Graphoscope
 
-Explore an HPRC human pangenome graph at any locus. We indexed the graphs so you don't have to. Pick a region to see the subgraph for that locus, visualized with a few early prototypes designed to highlight major graph patterns relative to the reference.
+Explore an HPRC human pangenome graph at any locus, straight from the browser. Pick a region to see the subgraph for that locus, visualized with a few early prototypes designed to highlight major graph patterns relative to the reference.
 
-Two HPRC **Release 2 (v2.0)** Minigraph-Cactus graphs are built in, switchable in
+Two HPRC **Release 2 (v2.1)** Minigraph-Cactus graphs are built in, switchable in
 the UI:
 
-- **GRCh38-based** (`hprc-v2.0-mc-grch38.gbz.db`, reference `GRCh38`)
-- **CHM13-based / T2T** (`hprc-v2.0-mc-chm13.gbz.db`, reference `CHM13`)
+- **GRCh38-based** (`hprc-v2.1-mc-grch38.gbz.db`, reference `GRCh38`)
+- **CHM13-based / T2T** (`hprc-v2.1-mc-chm13.gbz.db`, reference `CHM13`)
+
+Both are read directly from the public `human-pangenomics` S3 bucket (see
+[Data hosting](#data-hosting)); nothing is downloaded up front.
 
 ## How it works
 
-- **`gbz2db`** (from [GBZ-base](https://github.com/jltsiren/gbz-base)) converts a
-  `.gbz` into a random-access SQLite database (`.gbz.db`). This is a one-time,
-  offline step. The `.db` is ~2× the `.gbz` (topology + sequences re-stored so
-  they're seekable).
-- **`query.wasm`** is GBZ-base's `query` tool compiled to `wasm32-wasip1`. It runs
-  in a Web Worker and does the coordinate→subgraph extraction, emitting GFA.
+- **`.gbz.db`** files are [GBZ-base](https://github.com/jltsiren/gbz-base)'s
+  random-access SQLite form of a `.gbz` graph (its `gbz2db` tool). The HPRC
+  publishes them alongside the v2.1 graphs (~10 GB for GRCh38-based, ~11.6 GB
+  for CHM13-based, roughly 1.8× the `.gbz`, with topology + sequences re-stored
+  so they're seekable).
+- **`query.wasm`** is this repo's own Rust program (`crates/reduce`, see
+  [The locus query](#the-locus-query-cratesreduce)) compiled to `wasm32-wasip1`.
+  It uses the GBZ-base library, unmodified, for the coordinate→subgraph
+  extraction, then simplifies the subgraph and aggregates its haplotype walks
+  before emitting GFA. It runs in a Web Worker.
 - **Context window.** The extracted subgraph is the requested locus plus a
   **context** margin (GBZ-base's `--context`, default **100 bp**): how far past
   the locus the graph is followed before haplotypes are cut off at the boundary.
   A haplotype that continues beyond it has its walk chopped there — the "off-locus
-  exit" dangles you see in the graph view. It's adjustable in the UI (a *Context
-  (bp)* field next to the locus box) and via a `context=` URL param; larger
+  exit" dangles you see in the graph view. It's adjustable in the UI (the
+  *Context* field in the query popover) and via a `context=` URL param; larger
   reveals more of where those haplotypes go, at the cost of a bigger, denser
   subgraph.
 - **`src/lib/vfs.ts`** backs the WASI filesystem with range requests
@@ -30,9 +37,10 @@ the UI:
   a run of sequential block misses is coalesced into one larger range request
   (growing 1→2→…→32 blocks), which collapses round-trips to a remote host where
   latency dominates. SQLite only reads the pages it needs, so a locus query
-  transfers a few MB regardless of DB size. (Measured on R2: the MHC region went
-  from ~73 range round-trips to ~23 — ~16.6 s → ~1.1 s — fetching ~4.8 MiB of a
-  ~9.2 GiB DB.)
+  transfers a few MB regardless of DB size. (Measured against the v2.1 GRCh38
+  database on S3: the example genes each fetch 3.4–4.3 MiB in 19–31 range
+  requests of a ~10 GB DB; a 3.4 Mb window spanning the MHC fetches ~21 MiB in
+  124 requests.)
 
 ## Visualizations
 
@@ -45,17 +53,18 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   read from UCSC bigBed over HTTP range requests) sits under the backbone on the
   same reference axis.
 
-  A **hover mode** control ("On node hover") turns the graph itself into the
-  quantitative view — the default is a plain tooltip, and two richer modes are one
-  switch away:
+  A **node inspector** control (None / Info / Bubbles / Walks) turns the graph
+  itself into the quantitative view — the default, *Info*, is a plain tooltip
+  with click-to-inspect, and two richer modes are one switch away:
   - **Bubbles** — a *bubble* is anything that departs from the reference and
     survives simplification: a connected component of non-reference segments, or a
     skip edge (a deletion with no alternate node). They're catalogued straight from
     the reduced graph the viewer draws (`src/lib/graph/bubbles.ts`,
     `bubbles.test.ts`), anchored purely at the reference coordinates where they
     attach ("cut sites"). Hovering any node lights up every node of its bubble, and
-    the inspector reads out that bubble's **shortest and longest path** (in bases —
-    Minigraph-Cactus graphs are acyclic, so these are well-defined DAG paths),
+    the inspector reads out that bubble's **shortest and longest path** (in bases, as DAG
+    paths over the bubble's links; a bubble whose subgraph contains a cycle, e.g.
+    a self-looping tandem repeat, reports its total non-reference length for both),
     reference span, segment count and walk coverage. Deletion-only skip bubbles
     have no nodes, so their structural-link arc is made hoverable/clickable to
     inspect the same way.
@@ -110,8 +119,8 @@ graph layout: pick a fixture (synthetic edge cases or real HPRC loci), tweak the
 collapse threshold, and see the original graph and its simplified form side by
 side through the same layout widget. It's where the simplification approach
 gets prototyped and stress-tested independently of the main query flow — the
-exact fixtures it uses are also what the unit tests assert on
-(`src/lib/graph/simplify.test.ts`).
+exact fixtures it uses are also what the Rust unit tests assert on
+(`crates/reduce/src/tests.rs`).
 
 ## Gene-name lookup
 
@@ -167,20 +176,22 @@ https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=2
 ```jsonc
 {
   "ok": true,
-  "query": { "graph": "grch38", "input": "SMN1", "gene": "SMN1",
+  "query": { "graph": "grch38", "referenceSample": "GRCh38",
+             "input": "SMN1", "gene": "SMN1",
              "contig": "chr5", "start": 70925029, "end": 70953942, "span": 28913,
              "context": 100 },
   "complexity": {
-    "nodes": 35, "nodesBeforeSimplification": 1064,
-    "links": 56, "linksBeforeSimplification": 1476,
-    "walks": 935, "samples": 2,
-    "totalSequenceBp": 31526, "referencePathBp": 29263,
-    "variantSites": 334, "snps": 334,
-    "nodesRemoved": 346, "basesRemoved": 386, "unchopMerges": 683,
+    "nodes": 22, "nodesBeforeSimplification": 585,
+    "links": 41, "linksBeforeSimplification": 822,
+    "walks": 97, "walkRecords": 97,
+    "totalSequenceBp": 29320, "referencePathBp": 29264,
+    "variantSites": 183, "snps": 180,
+    "nodesRemoved": 185, "basesRemoved": 198, "unchopMerges": 378,
     "simplified": true
   },
-  "fetch": { "requestCount": 20, "bytesFetched": 4653056,
-             "dbSizeBytes": 9861406720, "elapsedMs": 1120 }
+  // elapsedMs varies with network latency and the browser's cache
+  "fetch": { "requestCount": 20, "bytesFetched": 3604480,
+             "dbSizeBytes": 10050412544, "elapsedMs": 1276 }
 }
 ```
 
@@ -201,19 +212,26 @@ An error returns `{ "ok": false, "error": "…", "query": { … } }` with the sa
 
 ## Data hosting
 
-The app points at the two `.gbz.db` files on Cloudflare R2 (see `R2_BASE` in
-`src/routes/+page.svelte`). To rebuild the databases from the public source graphs:
+The app reads the two `.gbz.db` files straight from the public
+`human-pangenomics` AWS Open Data bucket, which serves them with CORS and HTTP
+range support (see `DB_BASE` in `src/lib/graphs.ts`):
 
-```sh
-# public HPRC Release 2 graphs (~5.4 GB each)
-aws s3 cp --no-sign-request \
-  s3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/hprc-v2.0-mc-grch38.gbz .
-../gbz-base/target/release/gbz2db hprc-v2.0-mc-grch38.gbz   # → hprc-v2.0-mc-grch38.gbz.db
+```
+https://human-pangenomics.s3.amazonaws.com/pangenomes/freeze/release2/minigraph-cactus/v2.1/hprc-v2.1-mc-grch38/hprc-v2.1-mc-grch38.gbz.db
+https://human-pangenomics.s3.amazonaws.com/pangenomes/freeze/release2/minigraph-cactus/v2.1/hprc-v2.1-mc-chm13/hprc-v2.1-mc-chm13.gbz.db
 ```
 
-Host each `.gbz.db` on Cloudflare R2 / S3. The bucket **must**:
+To serve a different graph, build its database from the `.gbz` with GBZ-base:
 
-- support HTTP range requests (R2/S3 do), and
+```sh
+aws s3 cp --no-sign-request \
+  s3://human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/v2.1/hprc-v2.1-mc-grch38/hprc-v2.1-mc-grch38.gbz .
+../gbz-base/target/release/gbz2db hprc-v2.1-mc-grch38.gbz   # → hprc-v2.1-mc-grch38.gbz.db
+```
+
+and host the `.gbz.db` on S3 / R2 / any static host. The bucket **must**:
+
+- support HTTP range requests (S3/R2 do), and
 - send CORS headers **exposing `Content-Range`**, e.g.
   `Access-Control-Allow-Origin: *` and
   `Access-Control-Expose-Headers: Content-Range, Accept-Ranges, Content-Length`.
@@ -225,13 +243,13 @@ npm install
 npm run dev
 ```
 
-The app auto-loads the default locus from R2 on open. To develop against a local
+The app auto-loads the default locus from S3 on open. To develop against a local
 `.gbz.db` instead (no network), serve it with the included range+CORS helper and
-point `R2_BASE` at it temporarily:
+point the graph's `dbUrl` at it temporarily:
 
 ```sh
 node scripts/db-server.mjs /path/to/dir/with/db 8787
-# then set R2_BASE = 'http://localhost:8787' in src/routes/+page.svelte
+# then set dbUrl to 'http://localhost:8787/<file>.gbz.db' in src/lib/graphs.ts
 ```
 
 ## Analytics
@@ -248,7 +266,7 @@ so it never writes a cookie or other device storage — see the comments in
 ## Deploy
 
 `npm run build` emits a static SPA in `build/` (adapter-static). Host it anywhere;
-it needs no server of its own — only the `.gbz.db` files on R2/S3 as above.
+it needs no server of its own — only the `.gbz.db` files on S3 as above.
 
 ### GitHub Pages
 
@@ -270,13 +288,18 @@ Rust crate. It does three things per query:
    walks cross each node and edge, emit those as `WC` tags, and drop the walks.
 
 Step 3 is the reason large loci render at all. Haplotype walks are ~97% of a GFA's
-bytes on a repetitive locus (measured: 48.5 MB of a 49.8 MB LPA query), and once
-parsed into per-step JS objects they dominate the browser's heap. Counting them
-here instead means what the browser holds is governed by graph topology, not
-haplotype count — for LPA, 404 MB of parsed heap becomes 7.6 MB.
+bytes on a repetitive locus (measured on the v2.0 graph: 48.5 MB of a 49.8 MB LPA
+query), and once parsed into per-step JS objects they dominate the browser's
+heap. Counting them here instead means what the browser holds is governed by
+graph topology, not haplotype count — for that LPA query, 404 MB of parsed heap
+became 7.6 MB. (On the v2.1 GRCh38 graph, LPA reduces from 10,238 to 467 nodes.)
 
 The output is a "reduced" GFA: segments and links carrying `WC:i:<n>` coverage
-tags, an `X` line of locus-level counts, and only the reference `W` line.
+tags (plus `WS`/`WE` counts of walks starting/ending at a node), an `X` line of
+locus-level counts, and only the reference `W` line. The full, unsimplified
+subgraph with every walk (`--raw`) is fetched separately on demand — for the
+haplotype list, walk tracing, the MSA panel, the "show all nodes" view and the
+GFA download — when the device can hold it.
 
 ```sh
 scripts/build-wasm.sh     # → static/query.wasm
@@ -297,5 +320,5 @@ You can also run it natively, which is useful for debugging a locus:
 ```sh
 cd crates/reduce && cargo build --release
 ./target/release/graphoscope-reduce --sample GRCh38 --contig chr5 \
-  -i 70925029..70953942 /path/to/hprc-v2.0-mc-grch38.gbz.db
+  -i 70925029..70953942 /path/to/hprc-v2.1-mc-grch38.gbz.db
 ```
