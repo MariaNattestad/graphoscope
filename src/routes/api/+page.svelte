@@ -123,7 +123,7 @@
 				if (gfaText.length > MAX_GFA_BYTES) {
 					publish({
 						ok: false,
-						error: `Reduced graph is ${gfaText.length} bytes, over the ${MAX_GFA_BYTES}-byte ceiling; refusing (the locus is pathologically complex).`,
+						error: `Reduced graph is ${gfaText.length} bytes, over the ${MAX_GFA_BYTES}-byte ceiling; refusing (the window is too wide; try a few Mb or less).`,
 						query: {
 							graph: graph.id,
 							referenceSample: graph.referenceSample,
