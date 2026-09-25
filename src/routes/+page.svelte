@@ -253,10 +253,10 @@
 			fetchInfo = result.stats ?? null;
 
 			if (gfaText.length > MAX_GFA_BYTES) {
-				// Backstop only. The walks are aggregated away before this point, so
-				// the reduced graph is governed by topology and is normally tiny —
-				// measured loci up to 3.2 Mb land three orders of magnitude under this
-				// ceiling. Reaching it means something pathological, so just refuse.
+				// The walks are aggregated away before this point, so the reduced
+				// graph is mostly segment sequence and grows with the window's width.
+				// In practice this trips on windows of roughly 10 Mb and up, not on
+				// complex loci (see MAX_GFA_BYTES). Refuse rather than try to render.
 				oversized = { bytes: gfaText.length };
 				gfa = null;
 				rawGfa = '';

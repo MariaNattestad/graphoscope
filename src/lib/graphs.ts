@@ -58,9 +58,12 @@ export function graphById(id: string | null | undefined): GraphDef | undefined {
  * responsive on mobile — a sensible default when no locus is requested. */
 export const DEFAULT_GENE = 'SMN1';
 
-// Backstop only. The walks that used to dominate GFA size are aggregated away in
-// the wasm query, so a reduced response is governed by topology: measured loci
-// from 10 kb to 3.2 Mb all came back three orders of magnitude under this
-// ceiling. Reaching it means something pathological, and we refuse rather than
-// try to render.
+// Ceiling on the reduced GFA the browser will parse. The walks that used to
+// dominate GFA size are aggregated away in the wasm query, so what's left is
+// topology plus the sequence of every kept segment — and the sequence dominates,
+// so the size grows with the window's width (roughly 1.3 MiB per Mb of reference).
+// Gene-sized loci land two to three orders of magnitude under this; the ceiling
+// is reached by wide windows, not by tangled ones. Measured on the v2.1 GRCh38
+// graph (2026-09-25): a 5 Mb window (chr20:40–45 Mb) loads fine, while a 10 Mb
+// window (chr20:40–50 Mb) came back at 13.4 MiB and is refused.
 export const MAX_GFA_BYTES = 13 * 1024 * 1024;

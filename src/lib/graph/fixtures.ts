@@ -290,12 +290,12 @@ export const REAL_FIXTURES: Fixture[] = [
 		id: 'chr20_200kb',
 		label: 'chr20 ~200 kb (real, complex)',
 		description:
-			'chr20:30,000,000–30,200,000 from HPRC GRCh38 — 9,892 nodes, 422 haplotype walks (vs ~90-100 typical; ' +
-			'likely a segmental duplication). Simplifies far less (only ~5.7×, to ~1,750 nodes) than the MHC ' +
-			'examples (~50×) because most of its sites are large/nested and correctly left untouched — this is ' +
-			'the practical scaling ceiling for the current single-pass algorithm: layout alone takes ~15-20s in ' +
-			'the browser (vs ~0.5s for MHC). Bigger chr20 windows we benchmarked (500kb/1Mb) pushed layout past ' +
-			'20-45s+, well beyond what feels reasonable to wait for interactively.',
+			'chr20:30,000,000–30,200,000 from the HPRC v1.1 GRCh38 graph — 9,892 nodes, 422 haplotype walks ' +
+			'(vs ~90-100 typical; likely a segmental duplication). Simplifies far less (only ~5.7×, to ~1,750 ' +
+			'nodes) than the MHC examples (~50×) because most of its sites are large/nested and correctly left ' +
+			'untouched. This is the slow case for layout, not a hard ceiling: on the v2.1 graph the same 200 kb ' +
+			'window lays out in ~12 s and a 1 Mb window (chr20:30–31 Mb) in ~13 s, versus ~4 s for a typical ' +
+			'5 Mb window (measured 2026-09-25).',
 		kind: 'real',
 		referenceSample: 'GRCh38',
 		gfaText: chr20_200kb
