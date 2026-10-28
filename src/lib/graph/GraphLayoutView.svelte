@@ -23,6 +23,14 @@
 	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
+	import {
+		buildOrigToDisplayed,
+		buildWalkIndex,
+		countDistinctTraces,
+		countWalks,
+		projectWalk as projectWalkOnto,
+		type DiscoStep
+	} from './walkIndex';
 	import { COLOR_MODES, legendGradientCss, darkTheme, lightTheme, BACKBONE_COLOR, type ColorMode } from './colors';
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
@@ -594,14 +602,7 @@
 	// Map every original node id to the displayed segment that represents it — the
 	// segment itself, or the unchop-merged u-chain that swallowed it (`members`).
 	// Popped small variants aren't in the map. On the full graph this is 1:1.
-	const origToDisplayed = $derived.by(() => {
-		const m = new Map<string, string>();
-		for (const seg of gfa.segments.values()) {
-			m.set(seg.id, seg.id);
-			if (seg.members) for (const orig of seg.members) m.set(orig, seg.id);
-		}
-		return m;
-	});
+	const origToDisplayed = $derived(buildOrigToDisplayed(gfa));
 
 	const canDiscoNow = $derived(discoWalks.length > 0);
 
@@ -801,23 +802,10 @@
 	const currentDiscoWalk = $derived(
 		disco && discoWalks.length > 0 ? discoWalks[discoIndex % discoWalks.length] : null
 	);
-	// Project a walk onto the displayed segments: map each step through
-	// origToDisplayed, drop steps with no representative here (popped), and collapse
-	// a run of steps that all landed in the same displayed segment into one.
-	function projectWalk(steps: { id: string; orient: '+' | '-' }[]): DiscoStep[] | null {
-		const out: DiscoStep[] = [];
-		let lastId: string | null = null;
-		for (const step of steps) {
-			const id = origToDisplayed.get(step.id);
-			if (!id || id === lastId) continue;
-			out.push({ id, orient: step.orient });
-			lastId = id;
-		}
-		return out.length > 0 ? out : null;
-	}
-	interface DiscoStep {
-		id: string;
-		orient: '+' | '-';
+	// Project a walk onto the displayed segments (popped steps dropped, runs within
+	// one merged segment collapsed) — see walkIndex.ts.
+	function projectWalk(steps: DiscoStep[]): DiscoStep[] | null {
+		return projectWalkOnto(steps, origToDisplayed);
 	}
 	// The set of coloured paths the canvas draws. Priority: a hover preview (single),
 	// then — while disco is cycling — the blinking walk (so straighten + disco shows
@@ -853,53 +841,10 @@
 	// Both are built in one pass over `walksGfa` (the full-walk graph, loaded on demand)
 	// when walk mode turns on, so a hover is an O(1) lookup instead of a re-scan.
 	const MAX_WALK_HOVER_PATHS = 48; // cap the glowing overlays so a hover stays smooth
-	// Displayed node pair "a>b" (either orientation) -> the skip edge it is.
-	const skipEdgeLookup = $derived.by((): Map<string, string> => {
-		const m = new Map<string, string>();
-		if (hoverMode !== 'walk') return m;
-		for (const s of skipBubbles) {
-			m.set(`${s.from}>${s.to}`, s.key);
-			m.set(`${s.to}>${s.from}`, s.key);
-		}
-		return m;
-	});
 	const walkIndex = $derived.by(() => {
-		const byNode = new Map<string, { id: string; orient: '+' | '-' }[][]>();
-		const bySkip = new Map<string, DiscoStep[][]>();
-		if (hoverMode !== 'walk' || !walksGfa) return { byNode, bySkip };
-		for (const w of walksGfa.walks) {
-			if (w.kind === 'synthetic') continue; // the computed backbone isn't a real walk
-			if (w.steps.length < 2) continue;
-			// File the walk under every displayed segment it touches (deduped).
-			const touched = new Set<string>();
-			for (const s of w.steps) {
-				const d = origToDisplayed.get(s.id);
-				if (d) touched.add(d);
-			}
-			for (const d of touched) {
-				let arr = byNode.get(d);
-				if (!arr) byNode.set(d, (arr = []));
-				arr.push(w.steps);
-			}
-			// …and under every skip edge its projected path traverses.
-			if (skipEdgeLookup.size > 0) {
-				const p = projectWalk(w.steps);
-				if (p && p.length >= 2) {
-					let matched: Set<string> | null = null;
-					for (let i = 0; i + 1 < p.length; i++) {
-						const key = skipEdgeLookup.get(`${p[i].id}>${p[i + 1].id}`);
-						if (key) (matched ??= new Set()).add(key);
-					}
-					if (matched)
-						for (const k of matched) {
-							let arr = bySkip.get(k);
-							if (!arr) bySkip.set(k, (arr = []));
-							arr.push(p);
-						}
-				}
-			}
-		}
-		return { byNode, bySkip };
+		if (hoverMode !== 'walk' || !walksGfa)
+			return { byNode: new Map<string, DiscoStep[][]>(), bySkip: new Map<string, DiscoStep[][]>() };
+		return buildWalkIndex(walksGfa.walks, origToDisplayed, skipBubbles);
 	});
 
 	// What walk mode is currently tracing: a hovered target takes precedence over a
@@ -933,11 +878,6 @@
 		}
 		return out;
 	}
-	function countTraces(paths: (DiscoStep[] | null)[]): number {
-		const seen = new Set<string>();
-		for (const p of paths) if (p && p.length > 0) seen.add(p.map((s) => s.id).join('>'));
-		return seen.size;
-	}
 	// Projected traces for a target — node walks are projected here; skip walks were
 	// already projected when the index was built (that's how the edge was detected).
 	function tracesFor(target: WalkTarget): (DiscoStep[] | null)[] {
@@ -949,14 +889,20 @@
 	const walkHoverPaths = $derived(
 		hoverMode === 'walk' ? traceOverlays(tracesFor(walkTarget)) : []
 	);
-	const activeWalkCount = $derived(hoverMode === 'walk' ? countTraces(tracesFor(walkTarget)) : 0);
+	// Counts are of walks, not of distinct projected paths: walks differing only in
+	// popped variants draw as one trace but are separate walks (and Bubbles mode's
+	// WC-coverage count counts them separately too).
+	const activeWalkCount = $derived(hoverMode === 'walk' ? countWalks(tracesFor(walkTarget)) : 0);
+	const activeTraceCount = $derived(
+		hoverMode === 'walk' ? countDistinctTraces(tracesFor(walkTarget)) : 0
+	);
 	// Counts for the inspectors of a clicked node / clicked skip.
 	const selectedWalkCount = $derived(
-		hoverMode === 'walk' && selected ? countTraces(tracesFor({ type: 'node', id: selected })) : 0
+		hoverMode === 'walk' && selected ? countWalks(tracesFor({ type: 'node', id: selected })) : 0
 	);
 	const selectedSkipWalkCount = $derived(
 		hoverMode === 'walk' && selectedSkip
-			? countTraces(tracesFor({ type: 'skip', key: selectedSkip.key }))
+			? countWalks(tracesFor({ type: 'skip', key: selectedSkip.key }))
 			: 0
 	);
 
@@ -2051,8 +1997,11 @@
 				{:else if hoverMode === 'walk' && activeWalkCount > 0}
 					<div class="trace-badge">
 						tracing <b>{activeWalkCount.toLocaleString()}</b> walk{activeWalkCount === 1 ? '' : 's'}
-						{walkTarget?.type === 'skip' ? 'taking this deletion' : 'through this node'}{#if activeWalkCount > MAX_WALK_HOVER_PATHS}
-							<span class="tb-more">· showing {MAX_WALK_HOVER_PATHS}</span>{/if}
+						{walkTarget?.type === 'skip' ? 'taking this deletion' : 'through this node'}{#if activeTraceCount > MAX_WALK_HOVER_PATHS}
+							<span class="tb-more">· showing {MAX_WALK_HOVER_PATHS} paths</span>{:else if activeTraceCount < activeWalkCount}
+							<span class="tb-more"
+								>· {activeTraceCount.toLocaleString()} distinct path{activeTraceCount === 1 ? '' : 's'}</span
+							>{/if}
 					</div>
 				{/if}
 
