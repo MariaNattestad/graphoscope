@@ -519,10 +519,22 @@
 		}
 		return out;
 	}
-	const endpoints = $derived(selected ? walkEndpointsAt(selected) : []);
+	// The reference walk's first and last nodes sit on the edge of the queried
+	// locus, where every walk is clipped by the window — expected, not an exit —
+	// so they get no endpoints section.
+	const locusEdgeNodes = $derived.by(() => {
+		const edges = new Set<string>();
+		for (const w of gfa.walks) {
+			if (w.sample !== referenceSample || w.steps.length === 0) continue;
+			edges.add(w.steps[0].id);
+			edges.add(w.steps[w.steps.length - 1].id);
+		}
+		return edges;
+	});
+	const endpoints = $derived(selected && !locusEdgeNodes.has(selected) ? walkEndpointsAt(selected) : []);
 	// Reduced mode: counts from the `WS`/`WE` tags on the selected segment.
 	const endpointCounts = $derived.by(() => {
-		if (!gfa.reduced || !selected) return null;
+		if (!gfa.reduced || !selected || locusEdgeNodes.has(selected)) return null;
 		const seg = gfa.segments.get(selected);
 		const s = seg?.walkStarts ?? 0;
 		const e = seg?.walkEnds ?? 0;
