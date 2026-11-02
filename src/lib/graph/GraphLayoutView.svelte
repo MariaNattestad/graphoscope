@@ -2,7 +2,8 @@
 	// Reference-anchored "stringy" graph layout (ported from mini-web-viz-for-gfa).
 	// Each segment is drawn as a strand whose length ∝ its sequence length; the
 	// reference/backbone path is pinned to a straight horizontal line and variant
-	// bubbles relax locally around it. The force layout runs in a Web Worker so a
+	// bubbles are laid out above it (in lanes, or force-relaxed, depending on the
+	// mode). The layout runs in a Web Worker so a
 	// dense subgraph never freezes the tab. Graph simplification happens upstream,
 	// so this component just lays out and draws whatever graph it's given.
 	import { onDestroy, untrack } from 'svelte';
@@ -1278,7 +1279,7 @@
 		if (ms <= limits.slowLayoutMs) return null;
 		const secs = `${Math.round(ms / 1000)} s`;
 		// Most direct lever first. Bendy detail on a big graph is the biggest win.
-		if (effectiveBendy && adapted.keptSegments > limits.roughLayoutNodes) {
+		if (effectiveBendy && !modeCfg.lanes && adapted.keptSegments > limits.roughLayoutNodes) {
 			return {
 				text: `Layout took ${secs}. Bendy nodes is on — turning it off redraws almost instantly.`,
 				cta: 'Turn off Bendy nodes',
@@ -1414,8 +1415,11 @@
 	// 62.5s→6.0s note); bendy applies the mode's full-quality settings.
 	function layoutOptionsFor(keptSegments: number, knobs: LayoutKnobs): LayoutRequest['options'] {
 		const { mode, bendyOverride, straightenPath } = knobs;
-		const bendy = bendyOverride ?? keptSegments <= limits.roughLayoutNodes;
 		const base = { referenceSample, mode, straightenPath: straightenPath ?? undefined };
+		// A lanes layout places nodes directly, with no simulation to speed up, so
+		// it always gets full detail (its skip arcs need the bend nodes).
+		if (getModeConfig(mode).lanes) return base;
+		const bendy = bendyOverride ?? keptSegments <= limits.roughLayoutNodes;
 		return bendy
 			? base
 			: { ...base, maxEdgesPerSegment: 1, targetTotalSubNodes: 400, iterations: 60, bendNodes: false };
@@ -1872,7 +1876,9 @@
 						     but ~5 ms/node, seconds on a large graph. Off is the rough layout
 						     (one straight node per segment), an order of magnitude faster. It
 						     turns off automatically past limits.roughLayoutNodes; this switch
-						     forces it either way for the current graph. -->
+						     forces it either way for the current graph. A lanes layout has no
+						     relaxation to trade off, so it hides the switch. -->
+						{#if !modeCfg.lanes}
 						<label
 							class="switch"
 							title="Draw each segment as a relaxed curve (full detail). Prettier but much slower on large graphs, so it turns off automatically on big ones — toggle to override for this graph."
@@ -1888,6 +1894,7 @@
 								<span class="switch-sub">Pretty but slower</span>
 							</span>
 						</label>
+						{/if}
 					{:else if ctlTab === 'view'}
 						{#if !referenceFree}
 							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">

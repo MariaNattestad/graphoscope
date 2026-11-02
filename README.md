@@ -47,7 +47,8 @@ Both are read directly from the public `human-pangenomics` S3 bucket (see
 The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 
 - **Reference-anchored graph layout** (`src/lib/graph/`) — a deterministic,
-  reference-pinned force layout, with optional reference-guided simplification
+  reference-pinned layout that draws each bubble as horizontal lanes above the
+  backbone (force-relaxed variants are a mode away), with optional reference-guided simplification
   (small-variant popping + unchop) and reference genomic coordinates drawn along
   the backbone. A **gene track** (`src/lib/graph/geneTrack.ts`, exon/UTR structure
   read from UCSC bigBed over HTTP range requests) sits under the backbone on the

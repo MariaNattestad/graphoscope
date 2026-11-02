@@ -4,6 +4,7 @@ import { buildAdjacency, computeBackbones, type Backbone } from './backbone';
 import { stableUnit } from './prng';
 import { getModeConfig, type LayoutMode, type RefFreeParams } from './layoutModes';
 import { runFm3, type Fm3Edge } from './fm3';
+import { placeBubbleLanes } from './laneLayout';
 
 /**
  * Builds a force-directed layout for a GFA graph and returns node positions
@@ -28,7 +29,9 @@ import { runFm3, type Fm3Edge } from './fm3';
  *  - Anchored modes pin one "backbone" path per connected component (see
  *    backbone.ts) to a straight horizontal axis via d3-force's fixed nodes
  *    (fx/fy) — a genome-browser-style coordinate line — and seed everything else
- *    near its backbone attachment, relaxing only locally.
+ *    near its backbone attachment, relaxing only locally. The default anchored
+ *    mode ('classic', with `lanes` on) skips the simulation and places every
+ *    bubble directly in horizontal lanes above the axis (see laneLayout.ts).
  *
  *  - Free modes ignore the backbone and let the simulation find the graph's own
  *    shape from a mode-specific seed (multilevel FM³, layered/DAG, radial,
@@ -127,6 +130,9 @@ export interface LayoutOptions {
 	 * their neighbouring reference nodes instead of stacking into a tight column
 	 * above their attachment point. */
 	spread?: boolean;
+	/** (Anchored modes) place bubbles deterministically in bp-proportional lanes
+	 * above the reference instead of force-relaxing them (see laneLayout.ts). */
+	lanes?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
 	/** Which named layout mode to use. Anchored modes ('classic', 'spread', 'naive')
@@ -159,7 +165,8 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'strai
 	bubblesAbove: false,
 	anchorToReference: true,
 	avoidBaseline: true,
-	spread: false
+	spread: false,
+	lanes: false
 };
 
 /** Vertical spacing between stacked components' backbone baselines. */
@@ -195,6 +202,8 @@ const SPREAD_Y_STRENGTH = 0.15;
  * reference node's own on-screen span, each bubble's alt segments are scattered
  * across — 1.0 reaches ~halfway across the neighbouring reference nodes. */
 const SPREAD_BAND_FACTOR = 1.0;
+/** Lanes mode: vertical spacing between bubble lanes, in bubble-Y-steps. */
+const LANE_GAP_STEPS = 0.5;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
 /** Gain on the baseline-avoidance push (higher converges to the clearance target faster). */
@@ -691,6 +700,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		anchorToReference: modeCfg.anchorToReference,
 		avoidBaseline: modeCfg.avoidBaseline,
 		spread: modeCfg.spread,
+		lanes: modeCfg.lanes,
 		bendNodes: modeCfg.bendNodes,
 		...options
 	};
@@ -1083,6 +1093,21 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			cursorX = startX + spanLength + opts.unitEdgeLength;
 			haveCursor = true;
 		}
+	}
+
+	// Lanes mode places every bubble directly — no simulation — hanging off the
+	// reference and the straightened walk, which are already in place.
+	if (opts.lanes) {
+		placeBubbleLanes({
+			graph,
+			nodesById,
+			chainById,
+			structuralLinkPaths,
+			chainPxLength,
+			fixedSegIds: new Set([...assignedSegIds, ...straightenSet]),
+			laneGap: bubbleYStep * LANE_GAP_STEPS
+		});
+		return assembleResult(graph, backbones, assignedSegIds, nodesById, chains, structuralLinkPaths);
 	}
 
 	// Seed bend nodes at the midpoint of their two endpoints (now that both have

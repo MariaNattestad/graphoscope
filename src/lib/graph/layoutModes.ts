@@ -16,7 +16,8 @@
  *
  * The renderer (GraphCanvas) is agnostic to which family produced the layout —
  * it only reads node positions plus the shared chain/link/coverage data — so a
- * mode is fully defined by how it seeds and relaxes the simulation.
+ * mode is fully defined by how it seeds and relaxes the simulation (or, for a
+ * `lanes` mode, how it places the bubbles directly with no simulation at all).
  */
 
 export type LayoutFamily = 'anchored' | 'free';
@@ -71,6 +72,10 @@ export interface LayoutModeConfig {
 	 * reference nodes (up to ~halfway across each) instead of stacking into a tight
 	 * column above their attachment point. */
 	spread: boolean;
+	/** Place bubbles deterministically in bp-proportional lanes above the
+	 * reference, with no force relaxation (see laneLayout.ts). Overrides the force
+	 * knobs above. */
+	lanes: boolean;
 	/** Whether to draw curved strands through bend nodes (both families honor this). */
 	bendNodes: boolean;
 	/** Tuning for free modes (undefined for anchored modes). */
@@ -83,23 +88,27 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		id: 'classic',
 		label: 'Recommended',
 		family: 'anchored',
-		blurb: 'Straight reference axis, variant bubbles stacked above it. The genome-browser view.',
+		blurb:
+			'Straight reference axis, with each bubble laid out above it as horizontal lanes in sequence order, so alternative alleles sit side by side. The genome-browser view.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
 		spread: false,
-		bendNodes: false
+		lanes: true,
+		// Lanes never simulate, so bend nodes cost nothing; they carry the skip arcs.
+		bendNodes: true
 	},
 	{
 		id: 'spread',
 		label: 'Spread',
 		family: 'anchored',
 		blurb:
-			'Like Recommended, but bubbles fan out horizontally into the space over their neighbouring reference nodes instead of stacking into a tight column.',
+			'Force-relaxed: bubbles fan out horizontally into the space over their neighbouring reference nodes, finding their own shape.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
 		spread: true,
+		lanes: false,
 		bendNodes: false
 	},
 	{
@@ -111,6 +120,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: false
 	},
 	// --- reference-free ---
@@ -126,6 +136,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		// The strand/"noodle" curve comes from each segment's length-proportional
 		// bead chain bending, not from bend nodes on the connectors — so we skip bend
 		// nodes (they'd ~double the simulation's node count for a straight-connector
@@ -153,6 +164,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: false,
 		refFree: {
 			charge: -34,
@@ -172,6 +184,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: true,
 		refFree: {
 			charge: -40,
@@ -192,6 +205,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: true,
 		refFree: {
 			charge: -14,
@@ -212,6 +226,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: true,
 		refFree: {
 			charge: -50,
