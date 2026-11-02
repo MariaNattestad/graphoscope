@@ -24,7 +24,8 @@ rusqlite = { version = "0.38", features = ["bundled", "fallible_uint"] }
 
 # simple-sds 0.4.1 does not build for 32-bit wasm as published: it defaults to a
 # `libc`/mmap feature wasm lacks, and two size constants overflow a 32-bit usize.
-# scripts/build-wasm.sh vendors a patched copy here before building.
+# scripts/vendor-simple-sds.sh vendors a patched copy here (build-wasm.sh runs it;
+# run it yourself before a native `cargo build` / `cargo test`).
 # (Native builds resolve this the same way, so both targets stay identical.)
 [patch.crates-io]
 simple-sds = { path = "vendor/simple-sds" }
