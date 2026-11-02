@@ -18,15 +18,21 @@ export interface RangeReader {
 	/** Number of underlying fetches performed (for diagnostics). */
 	readonly requestCount: number;
 	readonly bytesFetched: number;
+	/** Fetch [offset, offset + length) into the cache ahead of time, as one
+	 * asynchronous request. Lets independent reads run in parallel before the
+	 * (strictly serial) synchronous query starts. */
+	prefetch(offset: number, length: number): Promise<void>;
 }
 
 const BLOCK_SIZE = 1 << 16; // 64 KiB blocks: coarser than SQLite's 4 KiB pages, fewer requests.
 // Adaptive readahead: on a run of sequential block misses we widen the fetch
-// window exponentially (1 → 2 → 4 … blocks) up to this many blocks in a single
+// window exponentially (1 → 4 → 16 … blocks) up to this many blocks in a single
 // request. Latency (round-trip time), not bandwidth, dominates when the DB is on
-// a remote host, so coalescing a clustered scan into one big range request is a
-// large win; random single-page reads still fetch exactly one block.
+// a remote host (~300 ms to first byte from S3, vs ~70 ms per extra MiB), so
+// coalescing a clustered scan into one big range request is a large win; random
+// single-page reads still fetch exactly one block.
 const MAX_READAHEAD_SHIFT = 5; // up to 2^5 = 32 blocks = 2 MiB per request
+const READAHEAD_STEP = 2; // shift added per sequential miss: the window quadruples
 
 /** Wraps a block-fetching source with an aligned block cache + readahead. */
 abstract class BlockCachedReader implements RangeReader {
@@ -47,10 +53,13 @@ abstract class BlockCachedReader implements RangeReader {
 		if (cached) return cached;
 
 		// Grow the readahead window while misses keep arriving in sequence;
-		// reset to a single block on a non-sequential (random) miss.
+		// reset to a single block on a non-sequential (random) miss. A miss right
+		// after a cached block also counts as sequential: a scan that ran into a
+		// block fetched earlier (e.g. a B-tree's root page sitting among its own
+		// leaves) resumes past it rather than starting over from one block.
 		let windowBlocks = 1;
-		if (index === this.expectedNextBlock) {
-			this.seqRun = Math.min(this.seqRun + 1, MAX_READAHEAD_SHIFT);
+		if (index === this.expectedNextBlock || this.cache.has(index - 1)) {
+			this.seqRun = Math.min(this.seqRun + READAHEAD_STEP, MAX_READAHEAD_SHIFT);
 			windowBlocks = 1 << this.seqRun;
 		} else {
 			this.seqRun = 0;
@@ -78,6 +87,31 @@ abstract class BlockCachedReader implements RangeReader {
 		return this.cache.get(index)!;
 	}
 
+	/** Fetch bytes [start, end) asynchronously (for prefetching). */
+	protected abstract fetchAsync(start: number, end: number): Promise<Uint8Array>;
+
+	/** Store an aligned run of blocks starting at block `first`. */
+	protected store(first: number, data: Uint8Array) {
+		for (let b = first, off = 0; off < data.length; b++, off += BLOCK_SIZE) {
+			this.cache.set(b, data.subarray(off, Math.min(off + BLOCK_SIZE, data.length)));
+		}
+	}
+
+	async prefetch(offset: number, length: number): Promise<void> {
+		const end = Math.min(offset + length, this.size);
+		let first = Math.floor(offset / BLOCK_SIZE);
+		let last = Math.ceil(end / BLOCK_SIZE) - 1;
+		// Trim cached blocks off both ends; a cached block in the middle is simply
+		// fetched again, which beats splitting into two round trips.
+		while (first <= last && this.cache.has(first)) first++;
+		while (last >= first && this.cache.has(last)) last--;
+		if (first > last) return;
+		const data = await this.fetchAsync(first * BLOCK_SIZE, Math.min((last + 1) * BLOCK_SIZE, this.size));
+		this.requestCount++;
+		this.bytesFetched += data.length;
+		this.store(first, data);
+	}
+
 	readRange(offset: number, length: number): Uint8Array {
 		if (offset >= this.size) return new Uint8Array(0);
 		const end = Math.min(offset + length, this.size);
@@ -99,27 +133,40 @@ abstract class BlockCachedReader implements RangeReader {
 
 /** Reads the DB from a remote URL via synchronous HTTP range requests. */
 export class HttpRangeReader extends BlockCachedReader {
-	readonly size: number;
-	constructor(private url: string) {
+	private constructor(
+		private url: string,
+		readonly size: number
+	) {
 		super();
-		this.size = this.probeSize();
 	}
 
-	private probeSize(): number {
-		const xhr = new XMLHttpRequest();
-		xhr.open('GET', this.url, false);
-		xhr.setRequestHeader('Range', 'bytes=0-0');
-		xhr.send();
-		if (xhr.status !== 206) {
+	/** Opens a remote DB. The first block (SQLite header + schema page) doubles
+	 * as the size probe, so opening costs one round trip and leaves the header
+	 * cached for the query. */
+	static async open(url: string): Promise<HttpRangeReader> {
+		const res = await fetch(url, { headers: { Range: `bytes=0-${BLOCK_SIZE - 1}` } });
+		if (res.status !== 206) {
 			throw new Error(
-				`Server does not support range requests (status ${xhr.status}). ` +
+				`Server does not support range requests (status ${res.status}). ` +
 					`A 206 Partial Content response is required.`
 			);
 		}
-		const contentRange = xhr.getResponseHeader('Content-Range'); // "bytes 0-0/12345"
+		const contentRange = res.headers.get('Content-Range'); // "bytes 0-65535/12345"
 		const total = contentRange && contentRange.split('/')[1];
 		if (!total) throw new Error('Missing Content-Range header; cannot determine file size.');
-		return Number(total);
+		const data = new Uint8Array(await res.arrayBuffer());
+		const reader = new HttpRangeReader(url, Number(total));
+		reader.requestCount++;
+		reader.bytesFetched += data.length;
+		reader.store(0, data);
+		return reader;
+	}
+
+	protected async fetchAsync(start: number, end: number): Promise<Uint8Array> {
+		const res = await fetch(this.url, { headers: { Range: `bytes=${start}-${end - 1}` } });
+		// 206 only: a 200 would be the whole multi-GB file, not the slice we asked for.
+		if (res.status !== 206) throw new Error(`Range request failed with status ${res.status}`);
+		return new Uint8Array(await res.arrayBuffer());
 	}
 
 	protected fetch(start: number, end: number): Uint8Array {
@@ -146,6 +193,9 @@ export class BlobRangeReader extends BlockCachedReader {
 	protected fetch(start: number, end: number): Uint8Array {
 		const buf = this.reader.readAsArrayBuffer(this.file.slice(start, end));
 		return new Uint8Array(buf);
+	}
+	protected async fetchAsync(start: number, end: number): Promise<Uint8Array> {
+		return new Uint8Array(await this.file.slice(start, end).arrayBuffer());
 	}
 }
 

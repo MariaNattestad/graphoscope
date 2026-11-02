@@ -14,6 +14,7 @@ import {
 	wasi
 } from '@bjorn3/browser_wasi_shim';
 import { HttpRangeReader, BlobRangeReader, LazyFile, type RangeReader } from './vfs';
+import { warmGbzDb } from './sqliteWarm';
 
 export type QuerySource = { kind: 'url'; url: string } | { kind: 'file'; file: File };
 
@@ -81,20 +82,35 @@ function getModule(wasmUrl: string): Promise<WebAssembly.Module> {
 }
 
 // Reuse a reader (and its warm block cache) when querying the same source again.
-let cachedReader: { key: string; reader: RangeReader } | null = null;
-function getReader(source: QuerySource): RangeReader {
+// Cached as a promise so a second query arriving mid-open shares the first's.
+let cachedReader: { key: string; reader: Promise<RangeReader> } | null = null;
+function getReader(source: QuerySource): Promise<RangeReader> {
 	const key = source.kind === 'url' ? `url:${source.url}` : `file:${source.file.name}:${source.file.size}`;
 	if (cachedReader && cachedReader.key === key) return cachedReader.reader;
-	const reader: RangeReader =
-		source.kind === 'url' ? new HttpRangeReader(source.url) : new BlobRangeReader(source.file);
+	const reader = (async (): Promise<RangeReader> => {
+		const r = source.kind === 'url' ? await HttpRangeReader.open(source.url) : new BlobRangeReader(source.file);
+		// Remote only: a local file has no round trips to save.
+		if (source.kind === 'url') await warmGbzDb(r).catch(() => {});
+		return r;
+	})();
 	cachedReader = { key, reader };
+	reader.catch(() => {
+		if (cachedReader?.reader === reader) cachedReader = null; // let a retry reopen
+	});
 	return reader;
 }
 
+// Per-reader request/byte totals as of the end of its last query, so each
+// query's stats count only its own fetches (plus, for the first, the open).
+const cachedStatsBaseline = new WeakMap<RangeReader, { requests: number; bytes: number }>();
+
 async function runQuery(req: QueryRequest): Promise<QueryResult> {
 	const t0 = performance.now();
-	const reader = getReader(req.source);
-	const before = { requests: reader.requestCount, bytes: reader.bytesFetched };
+	// Opening (and warming) the DB and compiling the wasm are independent: overlap them.
+	const [reader, module] = await Promise.all([getReader(req.source), getModule(req.wasmUrl)]);
+	// A first query's stats include the open + warm-up requests, so its counts and
+	// time reflect everything the user actually waited for.
+	const before = cachedStatsBaseline.get(reader) ?? { requests: 0, bytes: 0 };
 
 	const stdout = new CollectorFd();
 	const stderr = new CollectorFd();
@@ -109,7 +125,6 @@ async function runQuery(req: QueryRequest): Promise<QueryResult> {
 	const args = ['query', ...req.args, '/data/graph.db'];
 	const wasiInstance = new WASI(args, [], fds, { debug: false });
 
-	const module = await getModule(req.wasmUrl);
 	const instance = await WebAssembly.instantiate(module, {
 		wasi_snapshot_preview1: wasiInstance.wasiImport
 	});
@@ -123,6 +138,7 @@ async function runQuery(req: QueryRequest): Promise<QueryResult> {
 		else throw e;
 	}
 
+	cachedStatsBaseline.set(reader, { requests: reader.requestCount, bytes: reader.bytesFetched });
 	const stats = {
 		requestCount: reader.requestCount - before.requests,
 		bytesFetched: reader.bytesFetched - before.bytes,
