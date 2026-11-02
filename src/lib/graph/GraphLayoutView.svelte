@@ -21,6 +21,7 @@
 		type LayoutFamily
 	} from './layoutModes';
 	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
+	import LayoutModePicker from './LayoutModePicker.svelte';
 	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
@@ -1845,12 +1846,10 @@
 									Reference-free
 								</button>
 							</div>
-							<select class="mode-select" bind:value={layoutMode} aria-label="Layout mode">
-								{#each LAYOUT_MODES.filter((m) => m.family === modeCfg.family) as m (m.id)}
-									<option value={m.id}>{m.label}</option>
-								{/each}
-							</select>
-							<p class="mode-blurb">{modeCfg.blurb}</p>
+							<LayoutModePicker
+								modes={LAYOUT_MODES.filter((m) => m.family === modeCfg.family)}
+								bind:mode={layoutMode}
+							/>
 							<!-- Backbone picker / note: only meaningful for a reference-anchored
 							     layout, so it lives here (and only when the parent supplies choices —
 							     the /gfa page). More than one option → a picker bound to the chosen
@@ -2762,25 +2761,6 @@
 	.family-toggle button:focus-visible {
 		outline: 2px solid #2563eb;
 		outline-offset: 1px;
-	}
-	.mode-select {
-		font: inherit;
-		padding: 0.4rem 0.5rem;
-		border: 1px solid #cbd0d8;
-		border-radius: 7px;
-		background: #fff;
-		color: #222;
-		cursor: pointer;
-	}
-	.mode-select:focus-visible {
-		outline: 2px solid #2563eb;
-		outline-offset: 1px;
-	}
-	.mode-blurb {
-		margin: 0;
-		font-size: 0.74rem;
-		line-height: 1.35;
-		color: #6b7280;
 	}
 	/* Backbone picker inside the reference-based layout options (the /gfa page). */
 	.backbone-pick {

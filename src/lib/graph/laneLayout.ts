@@ -30,14 +30,12 @@ import type { SegmentChain, SimNode, LayoutResult } from './forceLayout';
  *  4. Each bubble is centred over the reference span it replaces, so a point
  *     insertion forms a symmetric tent above its cut site. Bubbles are never
  *     magnified: a short insertion in a wide window is drawn short, and zooming
- *     in is how to read it.
+ *     in is how to read it. With `spread` on, a crowded stretch of bubbles is
+ *     moved apart sideways into the empty reference beside it, and its
+ *     connectors lean back to the true anchors.
  *  5. Bubbles are stacked: narrow ones first, closest to the axis, each in the
- *     lowest band of rows where it fits. To fit lower, a bubble may slide
- *     sideways off its anchor (its connectors lean to reach it) into free room,
- *     as long as it keeps a clear margin from the bubbles beside it and stays
- *     in the same left-to-right order as their anchors, so connectors on a row
- *     don't cross. A crowded stretch spreads out into the empty space beside
- *     it instead of towering over its anchors.
+ *     lowest band of rows that's clear of every bubble already placed over its
+ *     footprint.
  *  6. A link that skips over nodes on its own lane (one allele bypassing a short
  *     run of others) bows above that lane through its bend node, higher the more
  *     nodes it jumps, so skips from the same node nest instead of crossing.
@@ -55,6 +53,8 @@ export interface LaneLayoutInput {
 	fixedSegIds: Set<string>;
 	/** Vertical step between lanes, in world units. */
 	laneGap: number;
+	/** Spread crowded stretches sideways (step 4). */
+	spread: boolean;
 }
 
 // Horizontal sizes are fractions of the reference's on-screen extent, so a
@@ -356,7 +356,7 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 		const need = run.reduce((w, b) => w + Math.max(aHi(b) - aLo(b), b.altWidth + 2 * bubblePad), 0);
 		const ask = Math.min(Math.max(0, need - (hi - lo)) / 2, refWidth * MAX_SPREAD_FRACTION);
 		const factor = (room: number) =>
-			!stacks[k] || half <= 0 ? 1 : 1 + Math.max(0, Math.min(ask, room)) / half;
+			!input.spread || !stacks[k] || half <= 0 ? 1 : 1 + Math.max(0, Math.min(ask, room)) / half;
 		const fLeft = factor(roomLeft);
 		const fRight = factor(roomRight);
 		for (const b of run) {

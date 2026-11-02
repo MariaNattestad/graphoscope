@@ -25,6 +25,8 @@ export type LayoutFamily = 'anchored' | 'free';
 export type LayoutMode =
 	// reference-anchored
 	| 'classic'
+	| 'spread-lanes'
+	| 'stacked'
 	| 'spread'
 	| 'naive'
 	// reference-free
@@ -70,7 +72,9 @@ export interface LayoutModeConfig {
 	avoidBaseline: boolean;
 	/** Let alt bubbles fan out horizontally into the space over their neighbouring
 	 * reference nodes (up to ~halfway across each) instead of stacking into a tight
-	 * column above their attachment point. */
+	 * column above their attachment point. In a `lanes` mode: spread crowded
+	 * stretches of bubbles sideways into the free reference beside them (see
+	 * laneLayout.ts, step 4). */
 	spread: boolean;
 	/** Place bubbles deterministically in bp-proportional lanes above the
 	 * reference, with no force relaxation (see laneLayout.ts). Overrides the force
@@ -86,10 +90,10 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 	// --- reference-anchored ---
 	{
 		id: 'classic',
-		label: 'Recommended',
+		label: 'Lanes (recommended)',
 		family: 'anchored',
 		blurb:
-			'Straight reference axis, with each bubble laid out above it as horizontal lanes in sequence order, so alternative alleles sit side by side. The genome-browser view.',
+			'Each bubble drawn above the reference as horizontal lanes at true bp scale, alleles side by side. The genome-browser view.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
@@ -99,8 +103,34 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bendNodes: true
 	},
 	{
+		id: 'spread-lanes',
+		label: 'Spread lanes',
+		family: 'anchored',
+		blurb:
+			'Lanes, but crowded stretches spread sideways into empty reference, with connectors leaning back to their anchors. Shorter stacks.',
+		bubblesAbove: true,
+		anchorToReference: true,
+		avoidBaseline: true,
+		spread: true,
+		lanes: true,
+		bendNodes: true
+	},
+	{
+		id: 'stacked',
+		label: 'Stacked (force)',
+		family: 'anchored',
+		blurb:
+			'The earlier force layout: each bubble pulled into a column over its anchor, its strands settling into their own shape.',
+		bubblesAbove: true,
+		anchorToReference: true,
+		avoidBaseline: true,
+		spread: false,
+		lanes: false,
+		bendNodes: false
+	},
+	{
 		id: 'spread',
-		label: 'Spread',
+		label: 'Force spread',
 		family: 'anchored',
 		blurb:
 			'Force-relaxed: bubbles fan out horizontally into the space over their neighbouring reference nodes, finding their own shape.',

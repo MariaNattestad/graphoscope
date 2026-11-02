@@ -48,7 +48,9 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 
 - **Reference-anchored graph layout** (`src/lib/graph/`) — a deterministic,
   reference-pinned layout that draws the backbone linear in bp and each bubble as
-  horizontal lanes above it at the same scale (force-relaxed variants are a mode away), with optional reference-guided simplification
+  horizontal lanes above it at the same scale (a "spread lanes" variant that moves
+  crowded stretches sideways, and the earlier force-relaxed layouts, are picked from
+  a list with a sketch of each), with optional reference-guided simplification
   (small-variant popping + unchop) and reference genomic coordinates drawn along
   the backbone. A **gene track** (`src/lib/graph/geneTrack.ts`, exon/UTR structure
   read from UCSC bigBed over HTTP range requests) sits under the backbone on the

@@ -1115,7 +1115,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			structuralLinkPaths,
 			chainPxLength,
 			fixedSegIds: new Set([...assignedSegIds, ...straightenSet]),
-			laneGap: bubbleYStep * LANE_GAP_STEPS
+			laneGap: bubbleYStep * LANE_GAP_STEPS,
+			spread: opts.spread
 		});
 		return assembleResult(graph, backbones, assignedSegIds, nodesById, chains, structuralLinkPaths);
 	}
