@@ -25,7 +25,6 @@ export type LayoutFamily = 'anchored' | 'free';
 export type LayoutMode =
 	// reference-anchored
 	| 'classic'
-	| 'spread-lanes'
 	| 'stacked'
 	| 'spread'
 	| 'naive'
@@ -72,9 +71,7 @@ export interface LayoutModeConfig {
 	avoidBaseline: boolean;
 	/** Let alt bubbles fan out horizontally into the space over their neighbouring
 	 * reference nodes (up to ~halfway across each) instead of stacking into a tight
-	 * column above their attachment point. In a `lanes` mode: spread crowded
-	 * stretches of bubbles sideways into the free reference beside them (see
-	 * laneLayout.ts, step 4). */
+	 * column above their attachment point. */
 	spread: boolean;
 	/** Place bubbles deterministically in bp-proportional lanes above the
 	 * reference, with no force relaxation (see laneLayout.ts). Overrides the force
@@ -100,19 +97,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		spread: false,
 		lanes: true,
 		// Lanes never simulate, so bend nodes cost nothing; they carry the skip arcs.
-		bendNodes: true
-	},
-	{
-		id: 'spread-lanes',
-		label: 'Spread lanes',
-		family: 'anchored',
-		blurb:
-			'Lanes, but crowded stretches spread sideways into empty reference, with connectors leaning back to their anchors. Shorter stacks.',
-		bubblesAbove: true,
-		anchorToReference: true,
-		avoidBaseline: true,
-		spread: true,
-		lanes: true,
 		bendNodes: true
 	},
 	{

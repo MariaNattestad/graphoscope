@@ -53,14 +53,6 @@
 					<path class="alt" d="M28 25 H36 M29 16 H35" />
 					<path class="link" d="M46 35 L46 25 M55 35 L55 25" />
 					<path class="alt" d="M46 25 H55" />
-				{:else if m.id === 'spread-lanes'}
-					<!-- A crowd of bubbles on neighbouring anchors, spread sideways with
-					     connectors leaning back just above the axis. -->
-					<path class="link" d="M29 35 L13 31 L10 24 M29 35 L13 31 L18 24" />
-					<path class="link" d="M32 35 L32 31 L28 24 M32 35 L32 31 L36 24" />
-					<path class="link" d="M35 35 L51 31 L46 24 M35 35 L51 31 L54 24" />
-					<path class="link" d="M31 35 L31 31 L29 15 M33 35 L33 31 L35 15" />
-					<path class="alt" d="M10 24 H18 M28 24 H36 M46 24 H54 M29 15 H35" />
 				{:else if m.id === 'stacked'}
 					<!-- Bubbles pulled into wobbly columns over their anchors. -->
 					<path class="alt" d="M30 35 C 25 28, 36 25, 31 18 S 27 9, 33 5" />

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { parseGfa } from '../gfa';
 import { gfaToGraph } from './gfaToGraph';
 import { buildAndRunLayout, type LayoutResult } from './forceLayout';
-import type { LayoutMode } from './layoutModes';
 
 // The STAT2 3' polymorphic TE insertion (chr12:56,340,719-56,361,116, GRCh38,
 // simplified): a 322 bp insertion (…770) reached through a run of 1 bp nodes
@@ -44,9 +43,9 @@ const ALT = ['41276766', '41276767', '41276768', '41276769', '41276770'];
 
 type P = { x: number; y: number };
 
-function layoutOf(text: string, mode: LayoutMode = 'classic'): LayoutResult {
+function layoutOf(text: string): LayoutResult {
 	const graph = gfaToGraph(parseGfa(text), { referenceSample: 'GRCh38' }).graph;
-	return buildAndRunLayout(graph, { referenceSample: 'GRCh38', mode });
+	return buildAndRunLayout(graph, { referenceSample: 'GRCh38', mode: 'classic' });
 }
 
 /** Every drawn line as a polyline: each segment's strand, and each link through
@@ -179,55 +178,5 @@ describe('bubble lanes layout, bp scale', () => {
 		expect(Math.min(...xsOf('right'))).toBeCloseTo(Math.max(...refXs), 6);
 		// …and the nodes still run left to right rather than piling up.
 		for (let i = 1; i < RUN; i++) expect(Math.min(...xsOf(`a${i}`))).toBeCloseTo(Math.max(...xsOf(`a${i - 1}`)), 6);
-	});
-});
-
-// Ten SNPs on consecutive reference bases in the middle of a 20 kb window: at
-// bp scale their anchors are a hair apart, so they used to stack ten rows high
-// over one point. With empty reference on either side they spread out instead.
-const SNPS = 10;
-const SNP_GFA = [
-	'H\tVN:Z:1.1\tRS:Z:GRCh38',
-	'S\tleft\t*\tLN:i:10000',
-	'S\tright\t*\tLN:i:10000',
-	...Array.from({ length: SNPS }, (_, i) => `S\tr${i}\t*\tLN:i:1\nS\ts${i}\t*\tLN:i:1`),
-	`W\tGRCh38\t0\tchr1\t0\t${20000 + SNPS}\t>left${Array.from({ length: SNPS }, (_, i) => `>r${i}`).join('')}>right`,
-	...Array.from({ length: SNPS }, (_, i) => {
-		const prev = i === 0 ? 'left' : `r${i - 1}`;
-		const next = i === SNPS - 1 ? 'right' : `r${i + 1}`;
-		return [`L\t${prev}\t+\tr${i}\t+\t0M`, `L\t${prev}\t+\ts${i}\t+\t0M`, `L\ts${i}\t+\t${next}\t+\t0M`].join('\n');
-	}),
-	`L\tr${SNPS - 1}\t+\tright\t+\t0M`
-].join('\n');
-
-describe('spread lanes layout, crowded stretches', () => {
-	const layout = layoutOf(SNP_GFA, 'spread-lanes');
-	const node = (seg: string) => layout.nodesById.get(layout.chains.find((c) => c.segId === seg)!.nodeIds[0])!;
-
-	it('spreads a crowd sideways instead of stacking it over its anchors', () => {
-		const rows = new Set(Array.from({ length: SNPS }, (_, i) => node(`s${i}`).y));
-		expect(rows.size).toBeLessThan(SNPS / 2);
-		// …in the same left-to-right order as the SNPs on the reference.
-		for (let i = 1; i < SNPS; i++) expect(node(`s${i}`).x).toBeGreaterThan(node(`s${i - 1}`).x);
-	});
-
-	it('stacks the same crowd over its anchors in plain lanes', () => {
-		const plain = layoutOf(SNP_GFA);
-		const xs = Array.from({ length: SNPS }, (_, i) =>
-			plain.nodesById.get(plain.chains.find((c) => c.segId === `s${i}`)!.nodeIds[0])!.x
-		);
-		expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(node('s9').x - node('s0').x);
-	});
-
-	it('leaves a lone bubble over its anchor', () => {
-		const stat2 = layoutOf(STAT2, 'spread-lanes');
-		const xs = stat2.chains.find((c) => c.segId === '41276770')!.nodeIds.map((id) => stat2.nodesById.get(id)!.x);
-		const cut = stat2.nodesById.get(stat2.chains.find((c) => c.segId === 'u41276132')!.nodeIds.at(-1)!)!.x;
-		expect(Math.min(...xs)).toBeLessThan(cut);
-		expect(Math.max(...xs)).toBeGreaterThan(cut);
-	});
-
-	it('draws the spread connectors without crossings', () => {
-		expect(crossings(layout)).toBe(0);
 	});
 });

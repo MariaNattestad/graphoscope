@@ -89,16 +89,8 @@ export interface LayoutResult {
 	 * midpoint so the link can be drawn as a curve through it (see GraphCanvas) —
 	 * without it, a link between two backbone-pinned points (e.g. a deletion
 	 * skip edge) is a dead-straight line that lies exactly on top of the
-	 * backbone and is invisible. `elbow` links are drawn as two straight lines
-	 * meeting at the bend node instead of a curve through it. */
-	structuralLinkPaths: {
-		from: string;
-		to: string;
-		fromNode: string;
-		toNode: string;
-		bendNode: string;
-		elbow?: boolean;
-	}[];
+	 * backbone and is invisible. */
+	structuralLinkPaths: { from: string; to: string; fromNode: string; toNode: string; bendNode: string }[];
 	backbones: BackboneInfo[];
 	backboneSegIds: Set<string>;
 	segmentLengths: Map<string, number>;
@@ -1118,8 +1110,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			structuralLinkPaths,
 			chainPxLength,
 			fixedSegIds: new Set([...assignedSegIds, ...straightenSet]),
-			laneGap: bubbleYStep * LANE_GAP_STEPS,
-			spread: opts.spread
+			laneGap: bubbleYStep * LANE_GAP_STEPS
 		});
 		return assembleResult(graph, backbones, assignedSegIds, nodesById, chains, structuralLinkPaths);
 	}
