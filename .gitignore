@@ -27,3 +27,8 @@ vite.config.ts.timestamp-*
 /crates/reduce/target
 /crates/reduce/vendor
 /crates/reduce/wasi-sdk-*
+
+# Playwright
+/test-results
+/playwright-report
+/blob-report
