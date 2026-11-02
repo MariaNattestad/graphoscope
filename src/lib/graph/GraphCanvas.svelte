@@ -566,30 +566,7 @@
 			ctx.beginPath();
 			ctx.moveTo(ax, ay);
 			if (isDeletionSkip) {
-				// Bow amplitude ∝ horizontal span (screen px), clamped so a tiny gap
-				// still bows visibly and a whole-locus deletion doesn't balloon.
-				const span = Math.abs(bx - ax);
-				const amp = Math.min(64, Math.max(16, span * 0.22));
-				// The bow is drawn as two steep shoulders joined by a flat top, not as
-				// one arc across the whole span. A single arc meets the backbone almost
-				// horizontally once the span is wide, so zoomed in on a big deletion the
-				// line crawls away from its node at a hair's angle and you can no longer
-				// tell which node it leaves — it just merges into the backbone. Fixed
-				// shoulders in *screen* px mean the take-off angle stays steep however
-				// far you zoom in. Each shoulder's control point sits where the take-off
-				// tangent meets the flat top, so the curve leaves the node at a set angle
-				// and arrives at the plateau horizontally (no kink at the join). When the
-				// span is short the shoulders meet in the middle and the whole thing
-				// degenerates back into the familiar rounded bow.
-				const dir = Math.sign(bx - ax) || 1;
-				const peakY = Math.min(ay, by) - amp;
-				const shoulder = Math.min(span * 0.42, 90);
-				const run = Math.min(amp * 0.577, shoulder * 0.6); // 0.577 = 1/tan(60°)
-				const x1 = ax + dir * shoulder;
-				const x2 = bx - dir * shoulder;
-				ctx.quadraticCurveTo(ax + dir * run, peakY, x1, peakY);
-				ctx.lineTo(x2, peakY);
-				ctx.quadraticCurveTo(bx - dir * run, peakY, bx, by);
+				const { dir, peakY, run, x1, x2 } = traceSkipBow(ctx, ax, ay, bx, by);
 				ctx.lineWidth = skipActive ? 3 : 1.5;
 				if (skipActive) ctx.strokeStyle = theme.bubbleHighlight;
 				else if (anyHighlight) ctx.globalAlpha = 0.15;
@@ -1109,6 +1086,41 @@
 	// widths, just with a colored glow added: each segment's node-strand at full
 	// strand thickness (with a bright white core), and the link connectors between
 	// consecutive segments as thin as a normal link.
+	// The bow a deletion skip edge is drawn as, from (ax, ay) to (bx, by), appended to
+	// a path whose current point is already (ax, ay). Shared by the structural-link
+	// draw and walk tracing, so a traced walk that takes a deletion follows its arc.
+	// Bow amplitude ∝ horizontal span (screen px), clamped so a tiny gap still bows
+	// visibly and a whole-locus deletion doesn't balloon. The bow is two steep
+	// shoulders joined by a flat top, not one arc across the whole span: a single arc
+	// meets the backbone almost horizontally once the span is wide, so zoomed in on a
+	// big deletion the line crawls away from its node at a hair's angle and you can no
+	// longer tell which node it leaves. Fixed shoulders in *screen* px keep the
+	// take-off angle steep however far you zoom in. Each shoulder's control point sits
+	// where the take-off tangent meets the flat top, so the curve leaves the node at a
+	// set angle and arrives at the plateau horizontally (no kink at the join). When the
+	// span is short the shoulders meet in the middle and it degenerates back into the
+	// familiar rounded bow. Symmetric, so drawing it b→a gives the same curve.
+	function traceSkipBow(
+		p: CanvasRenderingContext2D | Path2D,
+		ax: number,
+		ay: number,
+		bx: number,
+		by: number
+	) {
+		const span = Math.abs(bx - ax);
+		const amp = Math.min(64, Math.max(16, span * 0.22));
+		const dir = Math.sign(bx - ax) || 1;
+		const peakY = Math.min(ay, by) - amp;
+		const shoulder = Math.min(span * 0.42, 90);
+		const run = Math.min(amp * 0.577, shoulder * 0.6); // 0.577 = 1/tan(60°)
+		const x1 = ax + dir * shoulder;
+		const x2 = bx - dir * shoulder;
+		p.quadraticCurveTo(ax + dir * run, peakY, x1, peakY);
+		p.lineTo(x2, peakY);
+		p.quadraticCurveTo(bx - dir * run, peakY, bx, by);
+		return { dir, peakY, run, x1, x2 };
+	}
+
 	function drawDiscoWalk(ctx: CanvasRenderingContext2D) {
 		if (!discoActive) return;
 		// One walk (cycling / single trace) or several (haplotype comparison). A
@@ -1129,8 +1141,9 @@
 		// join them, so the two can be stroked at different widths (a single merged
 		// polyline can't tell "inside a node" from "hopping between nodes").
 		const strands: { x: number; y: number }[][] = [];
-		const links: [{ x: number; y: number }, { x: number; y: number }][] = [];
+		const links: [{ x: number; y: number }, { x: number; y: number }, boolean][] = [];
 		let prevEnd: { x: number; y: number } | null = null;
+		let prevSeg: string | null = null;
 		for (const step of discoPath) {
 			const chain = chainBySeg.get(step.id);
 			if (!chain) continue;
@@ -1141,9 +1154,19 @@
 				if (n) pts.push({ x: toScreenX(n.x), y: toScreenY(n.y) });
 			}
 			if (pts.length === 0) continue;
-			if (prevEnd) links.push([prevEnd, pts[0]]);
+			// A hop straight between two backbone segments over a deletion skip edge is
+			// drawn along that edge's bow, not as a straight line along the backbone.
+			if (prevEnd) {
+				const viaSkip =
+					prevSeg != null &&
+					layout.backboneSegIds.has(prevSeg) &&
+					layout.backboneSegIds.has(step.id) &&
+					skipByLink.has(`${prevSeg}>${step.id}`);
+				links.push([prevEnd, pts[0], viaSkip]);
+			}
 			strands.push(pts);
 			prevEnd = pts[pts.length - 1];
+			prevSeg = step.id;
 		}
 		if (strands.length === 0) return;
 
@@ -1155,9 +1178,10 @@
 		// reference path spans the whole backbone) stroked segment-by-segment was
 		// hundreds of shadowed strokes every frame, 10× a second.
 		const linkPath = new Path2D();
-		for (const [a, b] of links) {
+		for (const [a, b, viaSkip] of links) {
 			linkPath.moveTo(a.x, a.y);
-			linkPath.lineTo(b.x, b.y);
+			if (viaSkip) traceSkipBow(linkPath, a.x, a.y, b.x, b.y);
+			else linkPath.lineTo(b.x, b.y);
 		}
 		const strandPath = new Path2D();
 		for (const pts of strands) traceSmooth(strandPath, pts);
