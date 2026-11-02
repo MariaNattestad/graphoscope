@@ -282,6 +282,32 @@
 	let prevK = 1;
 	let prevY = 0;
 
+	// The vertical fit follows the horizontal view: shortly after a zoom or pan
+	// along x settles, y is re-fitted to the content inside the visible x-range, so
+	// zooming into a stretch of short bubbles next to a tall stack elsewhere lets
+	// them grow to fill the frame (a genome browser's "autoscale to view"). A
+	// vertical-only pan leaves the fit alone. Alt + pinch (or Alt + ctrl/⌘ +
+	// scroll) zooms y by hand instead, which switches the auto-fit off until the
+	// view is reset.
+	let yManual = false;
+	/** World x-range the vertical fit was last computed for. */
+	let fittedWindow: [number, number] = [0, 0];
+	let yFitTimer: ReturnType<typeof setTimeout> | null = null;
+	let yAnim = 0;
+	/** Tallest a single lane row may be drawn by the auto-fit, in CSS px, so a lone
+	 * low bubble doesn't swell into a giant bar. */
+	const MAX_ROW_PX = 120;
+	/** Smallest non-zero height of a node above its baseline in this layout (the
+	 * first lane row, in a lanes layout); the auto-fit's scale cap is set from it. */
+	const minRowHeight = $derived.by(() => {
+		let min = Infinity;
+		for (const n of layout.nodesById.values()) {
+			const h = Math.abs(n.y - n.componentBaselineY);
+			if (h > 1e-6 && h < min) min = h;
+		}
+		return min;
+	});
+
 	// The anisotropic (x-only) zoom above is a genome-browser convenience: it only
 	// makes sense when x *is* a genomic axis. Reference-free layouts have no such
 	// axis (no refCoords) and read as ordinary 2-D graphs, where the expected
@@ -464,6 +490,8 @@
 		}
 
 		const scaleX = Math.min((width / graphWidth) * padding, 8);
+		yManual = false;
+		cancelAnimationFrame(yAnim);
 		baseScaleY = Math.min((fitH / graphHeight) * padding, 8);
 		panY = fitH / 2 - cy * baseScaleY;
 
@@ -474,7 +502,101 @@
 		prevK = scaleX;
 		prevY = 0;
 		select(canvasEl).call(zoomBehavior.transform, next);
+		// The whole locus is in view, so the vertical fit just made is the one for
+		// this window — and it caps a lone low bubble's row height like any other.
+		fitVerticalToWindow(false);
 		viewMoved = false;
+	}
+
+	/** The world x-range currently on screen. */
+	function visibleWindow(): [number, number] {
+		const w = canvasEl?.clientWidth || 1;
+		return [-transform.x / transform.k, (w - transform.x) / transform.k];
+	}
+
+	/** Scale and offset that fit the content inside the visible x-range into the
+	 * graph's share of the canvas height, or null when nothing is in view. */
+	function verticalFitForWindow(): { scale: number; pan: number } | null {
+		if (!canvasEl) return null;
+		const [x0, x1] = visibleWindow();
+		let minY = Infinity,
+			maxY = -Infinity;
+		for (const node of layout.nodesById.values()) {
+			if (node.x < x0 || node.x > x1) continue;
+			// The axis a node hangs from counts too: a long reference segment can
+			// have no point inside the window, and the axis must stay in frame.
+			const base = node.componentBaselineY ?? node.y;
+			minY = Math.min(minY, node.y, base);
+			maxY = Math.max(maxY, node.y, base);
+		}
+		if (!Number.isFinite(minY)) return null;
+		const height = canvasEl.clientHeight || 1;
+		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
+		const fitH = Math.max(1, height - axisBand - geneBand);
+		const cap = Math.min(8, Number.isFinite(minRowHeight) ? MAX_ROW_PX / minRowHeight : 8);
+		const fill = (fitH * 0.9) / Math.max(1e-6, maxY - minY);
+		const scale = Math.min(fill, cap);
+		// Same framing as the full fit: centred when the content fills the frame.
+		// When the row cap leaves it short, it keeps the full fit's bottom margin
+		// instead of floating up to the middle, so the axis stays where it was.
+		const pan = scale < fill ? fitH * 0.95 - maxY * scale : fitH / 2 - ((minY + maxY) / 2) * scale;
+		return { scale, pan };
+	}
+
+	/** Re-fit y to the visible x-range, easing into it (animate) or at once. */
+	function fitVerticalToWindow(animate: boolean) {
+		const target = verticalFitForWindow();
+		fittedWindow = visibleWindow();
+		if (!target) return;
+		cancelAnimationFrame(yAnim);
+		if (!animate) {
+			baseScaleY = target.scale;
+			panY = target.pan;
+			draw();
+			return;
+		}
+		const from = { scale: baseScaleY, pan: panY };
+		const start = performance.now();
+		const step = (now: number) => {
+			const t = Math.min(1, (now - start) / 220);
+			const e = 1 - (1 - t) ** 3;
+			baseScaleY = from.scale + (target.scale - from.scale) * e;
+			panY = from.pan + (target.pan - from.pan) * e;
+			draw();
+			if (t < 1) yAnim = requestAnimationFrame(step);
+		};
+		yAnim = requestAnimationFrame(step);
+	}
+
+	/** After a gesture settles, re-fit y if the visible x-range has really moved. */
+	function scheduleVerticalFit() {
+		if (uniformZoom || yManual) return;
+		if (yFitTimer) clearTimeout(yFitTimer);
+		yFitTimer = setTimeout(() => {
+			yFitTimer = null;
+			const [a0, a1] = fittedWindow;
+			const [b0, b1] = visibleWindow();
+			const span = Math.max(1e-9, b1 - b0);
+			if (Math.abs(b0 - a0) / span < 0.01 && Math.abs(b1 - a1) / span < 0.01) return;
+			fitVerticalToWindow(true);
+		}, 150);
+	}
+
+	/** Alt + pinch / Alt + ctrl-scroll: zoom y only, about the pointer. */
+	function zoomVertical(e: WheelEvent) {
+		if (!canvasEl) return;
+		cancelAnimationFrame(yAnim);
+		if (yFitTimer) clearTimeout(yFitTimer);
+		// d3-zoom's own wheel rate, so the gesture feels the same as the x zoom.
+		const rate = e.deltaMode === 1 ? 0.05 : e.deltaMode ? 1 : 0.002;
+		const factor = 2 ** (-e.deltaY * rate * (e.ctrlKey ? 10 : 1));
+		const py = e.clientY - canvasEl.getBoundingClientRect().top;
+		const next = Math.min(400, Math.max(1e-4, baseScaleY * factor));
+		panY = py - ((py - panY) * next) / baseScaleY;
+		baseScaleY = next;
+		yManual = true;
+		viewMoved = true;
+		draw();
 	}
 
 	// Re-fit only the vertical axis to a new height, preserving the horizontal
@@ -483,21 +605,9 @@
 	// full fitToView would. No-op in uniform mode, where one scale drives both axes.
 	function refitVertical() {
 		if (!canvasEl || uniformZoom) return;
-		let minY = Infinity,
-			maxY = -Infinity;
-		for (const node of layout.nodesById.values()) {
-			if (node.y < minY) minY = node.y;
-			if (node.y > maxY) maxY = node.y;
-		}
-		if (!Number.isFinite(minY)) return;
-		const height = canvasEl.clientHeight || 1;
-		const axisBand = refCoords && refCoords.size > 0 ? AXIS_BAND : 0;
-		const fitH = Math.max(1, height - axisBand - geneBand);
-		const graphHeight = Math.max(1, maxY - minY);
-		const cy = (minY + maxY) / 2;
-		baseScaleY = Math.min((fitH / graphHeight) * 0.9, 8);
-		panY = fitH / 2 - cy * baseScaleY;
-		draw();
+		// A y zoom set by hand stays as it is; otherwise fit what's in view.
+		if (yManual) draw();
+		else fitVerticalToWindow(false);
 	}
 
 	function draw() {
@@ -1474,6 +1584,7 @@
 			transform = t;
 			viewMoved = true;
 			draw();
+			scheduleVerticalFit();
 		});
 		// Plain two-finger trackpad scrolling and mouse-wheel scrolling both show
 		// up as identical "wheel" events, indistinguishable from each other, and
@@ -1483,7 +1594,8 @@
 		// own. So: plain wheel pans instead, and only a pinch gesture (which
 		// browsers report as wheel+ctrlKey) or ctrl/cmd+wheel zooms.
 		zoomBehavior.filter((event) => {
-			if (event.type === 'wheel') return event.ctrlKey || event.metaKey;
+			// Alt + pinch is the vertical zoom (onWheelPan), not d3's.
+			if (event.type === 'wheel') return (event.ctrlKey || event.metaKey) && !(event.altKey && !uniformZoom);
 			return !event.button;
 		});
 		sel.call(zoomBehavior);
@@ -1496,6 +1608,11 @@
 		untrack(() => fitToView());
 
 		function onWheelPan(e: WheelEvent) {
+			if (e.altKey && (e.ctrlKey || e.metaKey) && !uniformZoom) {
+				e.preventDefault();
+				zoomVertical(e);
+				return;
+			}
 			if (e.ctrlKey || e.metaKey) return; // let zoomBehavior handle pinch/ctrl+wheel
 			e.preventDefault();
 			const current = zoomTransform(canvasEl!);
@@ -1661,6 +1778,8 @@
 			canvasEl?.removeEventListener('pointermove', onPointerMove);
 			canvasEl?.removeEventListener('pointerleave', onPointerLeave);
 			if (refitTimer) clearTimeout(refitTimer);
+			if (yFitTimer) clearTimeout(yFitTimer);
+			cancelAnimationFrame(yAnim);
 			ro.disconnect();
 		};
 	});

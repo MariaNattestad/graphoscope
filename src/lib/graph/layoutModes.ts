@@ -16,7 +16,8 @@
  *
  * The renderer (GraphCanvas) is agnostic to which family produced the layout —
  * it only reads node positions plus the shared chain/link/coverage data — so a
- * mode is fully defined by how it seeds and relaxes the simulation.
+ * mode is fully defined by how it seeds and relaxes the simulation (or, for a
+ * `lanes` mode, how it places the bubbles directly with no simulation at all).
  */
 
 export type LayoutFamily = 'anchored' | 'free';
@@ -24,6 +25,7 @@ export type LayoutFamily = 'anchored' | 'free';
 export type LayoutMode =
 	// reference-anchored
 	| 'classic'
+	| 'stacked'
 	| 'spread'
 	| 'naive'
 	// reference-free
@@ -71,6 +73,10 @@ export interface LayoutModeConfig {
 	 * reference nodes (up to ~halfway across each) instead of stacking into a tight
 	 * column above their attachment point. */
 	spread: boolean;
+	/** Place bubbles deterministically in bp-proportional lanes above the
+	 * reference, with no force relaxation (see laneLayout.ts). Overrides the force
+	 * knobs above. */
+	lanes: boolean;
 	/** Whether to draw curved strands through bend nodes (both families honor this). */
 	bendNodes: boolean;
 	/** Tuning for free modes (undefined for anchored modes). */
@@ -81,25 +87,42 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 	// --- reference-anchored ---
 	{
 		id: 'classic',
-		label: 'Recommended',
+		label: 'Lanes (recommended)',
 		family: 'anchored',
-		blurb: 'Straight reference axis, variant bubbles stacked above it. The genome-browser view.',
+		blurb:
+			'Each bubble drawn above the reference as horizontal lanes at true bp scale, alleles side by side. The genome-browser view.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
 		spread: false,
+		lanes: true,
+		// Lanes never simulate, so bend nodes cost nothing; they carry the skip arcs.
+		bendNodes: true
+	},
+	{
+		id: 'stacked',
+		label: 'Stacked (force)',
+		family: 'anchored',
+		blurb:
+			'The earlier force layout: each bubble pulled into a column over its anchor, its strands settling into their own shape.',
+		bubblesAbove: true,
+		anchorToReference: true,
+		avoidBaseline: true,
+		spread: false,
+		lanes: false,
 		bendNodes: false
 	},
 	{
 		id: 'spread',
-		label: 'Spread',
+		label: 'Force spread',
 		family: 'anchored',
 		blurb:
-			'Like Recommended, but bubbles fan out horizontally into the space over their neighbouring reference nodes instead of stacking into a tight column.',
+			'Force-relaxed: bubbles fan out horizontally into the space over their neighbouring reference nodes, finding their own shape.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
 		spread: true,
+		lanes: false,
 		bendNodes: false
 	},
 	{
@@ -111,6 +134,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: false
 	},
 	// --- reference-free ---
@@ -126,6 +150,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		// The strand/"noodle" curve comes from each segment's length-proportional
 		// bead chain bending, not from bend nodes on the connectors — so we skip bend
 		// nodes (they'd ~double the simulation's node count for a straight-connector
@@ -153,6 +178,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: false,
 		refFree: {
 			charge: -34,
@@ -172,6 +198,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: true,
 		refFree: {
 			charge: -40,
@@ -192,6 +219,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: true,
 		refFree: {
 			charge: -14,
@@ -212,6 +240,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: false,
 		avoidBaseline: false,
 		spread: false,
+		lanes: false,
 		bendNodes: true,
 		refFree: {
 			charge: -50,
