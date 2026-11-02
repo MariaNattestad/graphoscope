@@ -2426,7 +2426,9 @@
 					</div>
 				{/if}
 		<div class="foot">
-			<span class="muted">plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms</span>
+			<span class="muted"
+				>plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms{referenceFree ? '' : ' · add ⌥/alt to zoom height'}</span
+			>
 			<span class="spacer"></span>
 			<span class="legend"><span class="sw backbone"></span> reference backbone</span>
 			<label class="legend legend-color" title="What each node's fill encodes">
