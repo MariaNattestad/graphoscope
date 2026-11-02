@@ -18,17 +18,20 @@ import type { SegmentChain, SimNode, LayoutResult } from './forceLayout';
  *     a segment starts just after the furthest-right of its predecessors (a
  *     longest-path pass over the bubble's directed links), and runs for its
  *     bp-proportional length — so a 300 bp TE reads as a 300 bp track, not a
- *     vertical stack. Tiny segments get a minimum width so they stay distinct.
+ *     vertical stack. Tiny segments get a minimum width so they stay distinct,
+ *     but those floors never stretch a bubble past its length in bp at the
+ *     scale the reference is drawn at: a bubble whose floors would add up to
+ *     more (a long run of 1 bp nodes) is laid out again with smaller floors, so
+ *     an allele never looks longer than the sequence it carries.
  *  3. The bubble is split into lanes by path decomposition: its longest path
  *     takes lane 0, then the longest path through what's left takes the lowest
  *     lane it fits in without overlapping, and so on. Alternative alleles
  *     between the same anchors fan out into parallel lanes rather than piling
  *     onto one x.
  *  4. Each bubble is centred over the reference span it replaces, so a point
- *     insertion forms a symmetric tent above its cut site. An isolated bubble
- *     that would be a sliver at bp scale is widened into the free space beside
- *     it (and laid out again with node widths that stay visible at that scale);
- *     bubbles in dense stretches have no room and keep true scale.
+ *     insertion forms a symmetric tent above its cut site. Bubbles are never
+ *     magnified: a short insertion in a wide window is drawn short, and zooming
+ *     in is how to read it.
  *  5. Bubbles are stacked: narrow ones first, closest to the axis, each in the
  *     lowest band of rows that's clear of every bubble already placed over its
  *     footprint.
@@ -54,21 +57,13 @@ export interface LaneLayoutInput {
 // Horizontal sizes are fractions of the reference's on-screen extent, so a
 // bubble reads the same at any locus size (the layout is always fitted to the
 // canvas width).
-/** Minimum width of a segment at true scale. Kept small: a bigger floor makes
- * neighbouring bubbles in a dense stretch overlap and stack into towers. */
+/** Minimum width of a segment. Kept small: a bigger floor makes neighbouring
+ * bubbles in a dense stretch overlap and stack into towers. */
 const MIN_SEG_FRACTION = 1 / 2000;
-/** Gap between consecutive segments on a lane at true scale. */
+/** Gap between consecutive segments on a lane. */
 const SEG_GAP_FRACTION = 1 / 4000;
-/** Minimum segment width and gap once a bubble is magnified (step 4): wide
- * enough that a 1 bp node is a visible dash at fit-to-view. */
-const MAGNIFIED_SEG_FRACTION = 1 / 300;
-const MAGNIFIED_GAP_FRACTION = 1 / 1000;
 /** Horizontal clearance kept between two bubbles sharing a row. */
 const BUBBLE_PAD_FRACTION = 1 / 2000;
-/** An isolated bubble narrower than this is magnified towards it, by at most
- * MAX_MAGNIFY. */
-const MAGNIFY_TARGET_FRACTION = 1 / 10;
-const MAX_MAGNIFY = 8;
 /** How high a skip link bows above its lane per lane node it jumps, and at
  * most, as fractions of the lane gap (kept under half so a bow never reaches the
  * lane above). */
@@ -89,18 +84,17 @@ interface Bubble {
 	/** Leftmost and rightmost reference x the bubble attaches at. */
 	entryX: number;
 	exitX: number;
-	/** Midpoint of that span: the bubble is centred, and magnified, about it. */
+	/** Midpoint of that span: the bubble is centred about it. */
 	centre: number;
-	/** Segment start x and width at true scale, already centred. */
+	/** Segment start x and width, already centred. */
 	xs: Map<string, number>;
 	widths: Map<string, number>;
 	lane: Map<string, number>;
 	/** Each lane's segments, left to right. */
 	lanes: string[][];
-	/** Extent of the bubble's own segments at true scale. */
+	/** Extent of the bubble's own segments. */
 	altWidth: number;
-	mag: number;
-	/** Footprint (segments and the reference span they hang off), magnified. */
+	/** Footprint: its segments and the reference span they hang off. */
 	lo: number;
 	hi: number;
 	row: number;
@@ -119,6 +113,32 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 	}
 	const refWidth = Number.isFinite(refLo) ? Math.max(1, refHi - refLo) : 1;
 	const bubblePad = refWidth * BUBBLE_PAD_FRACTION;
+
+	// The scale the reference is drawn at, gaps between its nodes included, so a
+	// bubble capped to it lines up with a reference stretch of the same bp. Each
+	// fixed row (the reference, a straightened walk) is measured on its own.
+	const rowsByY = new Map<number, { lo: number; hi: number; bp: number }>();
+	for (const s of fixedSegIds) {
+		const ids = chainById.get(s)?.nodeIds ?? [];
+		if (!ids.length) continue;
+		const y = nodesById.get(ids[0])!.y;
+		const r = rowsByY.get(y) ?? rowsByY.set(y, { lo: Infinity, hi: -Infinity, bp: 0 }).get(y)!;
+		for (const id of ids) {
+			r.lo = Math.min(r.lo, nodesById.get(id)!.x);
+			r.hi = Math.max(r.hi, nodesById.get(id)!.x);
+		}
+		r.bp += Math.max(1, graph.segments.get(s)?.length ?? 1);
+	}
+	let drawnPx = 0;
+	let drawnBp = 0;
+	for (const r of rowsByY.values()) {
+		drawnPx += r.hi - r.lo;
+		drawnBp += r.bp;
+	}
+	// chainPxLength is bp × the raw scale for every segment, so any one gives it.
+	const anySeg = [...chainPxLength.keys()].find((s) => graph.segments.has(s));
+	const rawPxPerBp = anySeg ? chainPxLength.get(anySeg)! / Math.max(1, graph.segments.get(anySeg)!.length) : 1;
+	const drawnStretch = drawnBp > 0 ? Math.max(1, drawnPx / drawnBp / rawPxPerBp) : 1;
 
 	// Directed edges in reference order. A '-'/'-' link is the same adjacency read
 	// backwards, so it's flipped; mixed-orientation links (inversion boundaries)
@@ -197,25 +217,25 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 			lane: new Map(),
 			lanes: [],
 			altWidth: 0,
-			mag: 1,
 			lo: 0,
 			hi: 0,
 			row: 0
 		};
-		arrange(b, refWidth * MIN_SEG_FRACTION, refWidth * SEG_GAP_FRACTION);
+		arrangeWithinBp(b, refWidth * MIN_SEG_FRACTION, refWidth * SEG_GAP_FRACTION);
 		bubbles.push(b);
 	}
 
-	/** Steps 2–3 for one bubble at a given minimum segment width and gap. */
-	function arrange(b: Bubble, minSpan: number, segGap: number) {
-		const id = compOf.get(b.members[0]);
-		const width = (s: string) => Math.max(chainPxLength.get(s) ?? minSpan, minSpan);
-		for (const s of b.members) b.widths.set(s, width(s));
+	function widthAt(s: string, minSpan: number) {
+		return Math.max(chainPxLength.get(s) ?? minSpan, minSpan);
+	}
 
-		// x by longest path from the bubble's entry: a segment starts after every
-		// predecessor ends — a free predecessor's end is its own x + width, a
-		// reference predecessor's is the x where the link leaves it. Back edges
-		// (into a segment still being resolved) are ignored, which breaks any cycle.
+	/** Step 2: x by longest path from the bubble's entry. A segment starts after
+	 * every predecessor ends — a free predecessor's end is its own x + width, a
+	 * reference predecessor's is the x where the link leaves it. Back edges (into
+	 * a segment still being resolved) are ignored, which breaks any cycle. */
+	function placeX(b: Bubble, minSpan: number, segGap: number) {
+		const id = compOf.get(b.members[0]);
+		const width = (s: string) => widthAt(s, minSpan);
 		const xs = new Map<string, number>();
 		const state = new Map<string, 1 | 2>();
 		const resolve = (s: string): number => {
@@ -237,17 +257,37 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 			return x;
 		};
 		for (const s of b.members) resolve(s);
+		let minX = Infinity;
+		let maxX = -Infinity;
+		for (const s of b.members) {
+			minX = Math.min(minX, xs.get(s)!);
+			maxX = Math.max(maxX, xs.get(s)! + width(s));
+		}
+		return { xs, minX, maxX };
+	}
 
-		// Lanes by path decomposition. best(s) = width(s) + best of its remaining
+	/** Steps 2–3 for one bubble at a given minimum segment width and gap. */
+	function arrange(b: Bubble, minSpan: number, segGap: number) {
+		const width = (s: string) => widthAt(s, minSpan);
+		for (const s of b.members) b.widths.set(s, width(s));
+		const { xs, minX, maxX } = placeX(b, minSpan, segGap);
+
+		// Lanes by path decomposition. best(s) = weight(s) + best of its remaining
 		// successors that lie to its right — x order makes that a DAG, so the
-		// recursion can't loop.
+		// recursion can't loop. Paths are weighed at the normal floor even when the
+		// bubble's floors were shrunk to fit its bp length, so a run of 1 bp nodes
+		// still counts and is taken as one long lane rather than many short ones.
+		const weight = (s: string) => widthAt(s, Math.max(minSpan, refWidth * MIN_SEG_FRACTION));
 		const remaining = new Set(b.members);
+		// Right to left, so every successor is scored before the segments that
+		// lead to it.
+		const rightToLeft = [...b.members].sort((p, q) => xs.get(q)! - xs.get(p)! || (p < q ? -1 : 1));
 		const laneSpans: [number, number][][] = [];
 		b.lane.clear();
 		b.lanes = [];
 		while (remaining.size) {
 			const best = new Map<string, { w: number; next: string | null }>();
-			const order = [...remaining].sort((p, q) => xs.get(q)! - xs.get(p)! || (p < q ? -1 : 1));
+			const order = rightToLeft.filter((s) => remaining.has(s));
 			for (const s of order) {
 				let w = 0;
 				let next: string | null = null;
@@ -259,7 +299,7 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 						next = e.v;
 					}
 				}
-				best.set(s, { w: w + width(s), next });
+				best.set(s, { w: w + weight(s), next });
 			}
 			let start = order[order.length - 1];
 			for (const s of order) if (best.get(s)!.w > best.get(start)!.w) start = s;
@@ -281,54 +321,39 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 		for (const l of b.lanes) l.sort((p, q) => xs.get(p)! - xs.get(q)!);
 
 		// Centre over the reference span.
-		let minX = Infinity;
-		let maxX = -Infinity;
-		for (const s of b.members) {
-			minX = Math.min(minX, xs.get(s)!);
-			maxX = Math.max(maxX, xs.get(s)! + width(s));
-		}
 		const shift = b.centre - (minX + maxX) / 2;
 		for (const s of b.members) b.xs.set(s, xs.get(s)! + shift);
 		b.altWidth = maxX - minX;
 		setFootprint(b);
 	}
 
-	function setFootprint(b: Bubble) {
-		const half = (b.altWidth * b.mag) / 2;
-		b.lo = Math.min(b.centre - half, b.entryX) - bubblePad;
-		b.hi = Math.max(b.centre + half, b.exitX) + bubblePad;
+	/** arrange(), with the floors shrunk as far as needed to keep the bubble no
+	 * wider than its bp length at the reference's drawn scale. */
+	function arrangeWithinBp(b: Bubble, minSpan: number, segGap: number) {
+		const extent = (f: number) => {
+			const { minX, maxX } = placeX(b, minSpan * f, segGap * f);
+			return maxX - minX;
+		};
+		const cap = extent(0) * drawnStretch;
+		let keep = 1;
+		if (extent(1) > cap) {
+			// Width only grows with the floors, so bisect on how much of them to keep.
+			let lo = 0;
+			let hi = 1;
+			for (let i = 0; i < 12; i++) {
+				const f = (lo + hi) / 2;
+				if (extent(f) <= cap) lo = f;
+				else hi = f;
+			}
+			keep = lo;
+		}
+		arrange(b, minSpan * keep, segGap * keep);
 	}
 
-	// --- 4. Widen isolated bubbles into the free space beside them ---
-	// Room is measured against every other bubble's true-scale footprint, so the
-	// order bubbles are visited in doesn't matter.
-	const targetWidth = refWidth * MAGNIFY_TARGET_FRACTION;
-	const mags = bubbles.map((b) => {
-		if (b.altWidth <= 0 || b.altWidth >= targetWidth) return 1;
-		let left = refLo;
-		let right = refHi;
-		for (const o of bubbles) {
-			if (o === b) continue;
-			if (o.hi <= b.lo) left = Math.max(left, o.hi);
-			else if (o.lo >= b.hi) right = Math.min(right, o.lo);
-			else return 1; // overlapping another bubble: no room to grow
-		}
-		const room = 2 * Math.min(b.centre - left, right - b.centre) - 2 * bubblePad;
-		return Math.max(1, Math.min(MAX_MAGNIFY, Math.min(targetWidth, room) / b.altWidth));
-	});
-	bubbles.forEach((b, i) => {
-		if (mags[i] === 1) return;
-		// Lay it out again with a node floor that stays visible once magnified,
-		// then scale to the width the room allowed.
-		const allowed = b.altWidth * mags[i];
-		arrange(
-			b,
-			Math.max(refWidth * MIN_SEG_FRACTION, (refWidth * MAGNIFIED_SEG_FRACTION) / mags[i]),
-			Math.max(refWidth * SEG_GAP_FRACTION, (refWidth * MAGNIFIED_GAP_FRACTION) / mags[i])
-		);
-		b.mag = Math.max(1, allowed / b.altWidth);
-		setFootprint(b);
-	});
+	function setFootprint(b: Bubble) {
+		b.lo = Math.min(b.centre - b.altWidth / 2, b.entryX) - bubblePad;
+		b.hi = Math.max(b.centre + b.altWidth / 2, b.exitX) + bubblePad;
+	}
 
 	// --- 5. Stack bubbles: narrow first, each in the lowest clear band of rows ---
 	const rows: [number, number][][] = [];
@@ -347,8 +372,8 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 		b.lanes.forEach((segs, l) => segs.forEach((s, idx) => segLane.set(s, { b, l, idx })));
 		for (const s of b.members) {
 			const chain = chainById.get(s)!;
-			const x0 = b.centre + (b.xs.get(s)! - b.centre) * b.mag;
-			const w = b.widths.get(s)! * b.mag;
+			const x0 = b.xs.get(s)!;
+			const w = b.widths.get(s)!;
 			const y = b.baselineY - (b.row + b.lane.get(s)! + 1) * laneGap;
 			const reversed = (orientVote.get(s) ?? 0) < 0;
 			const numEdges = chain.nodeIds.length - 1;

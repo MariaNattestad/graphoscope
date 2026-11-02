@@ -145,3 +145,36 @@ describe('bubble lanes layout', () => {
 		expect(bows[2]).toBeLessThan(bows[1]);
 	});
 });
+
+// A 200 bp alternative allele that the graph splits into 200 1 bp nodes, beside
+// the 200 bp reference segment it replaces. Each tiny node's minimum width used
+// to add up until the allele was drawn several times wider than its sequence.
+const RUN = 200;
+const RUN_GFA = [
+	'H\tVN:Z:1.1\tRS:Z:GRCh38',
+	'S\tleft\t*\tLN:i:1000',
+	'S\tref\t*\tLN:i:200',
+	'S\tright\t*\tLN:i:1000',
+	...Array.from({ length: RUN }, (_, i) => `S\ta${i}\t*\tLN:i:1`),
+	'W\tGRCh38\t0\tchr1\t0\t2200\t>left>ref>right',
+	'L\tleft\t+\tref\t+\t0M',
+	'L\tref\t+\tright\t+\t0M',
+	'L\tleft\t+\ta0\t+\t0M',
+	...Array.from({ length: RUN - 1 }, (_, i) => `L\ta${i}\t+\ta${i + 1}\t+\t0M`),
+	`L\ta${RUN - 1}\t+\tright\t+\t0M`
+].join('\n');
+
+describe('bubble lanes layout, bp scale', () => {
+	it('never draws an allele wider than the reference it replaces', () => {
+		const layout = layoutOf(RUN_GFA);
+		const xsOf = (seg: string) => layout.chains.find((c) => c.segId === seg)!.nodeIds.map((id) => layout.nodesById.get(id)!.x);
+		const alt = Array.from({ length: RUN }, (_, i) => xsOf(`a${i}`)).flat();
+		const altWidth = Math.max(...alt) - Math.min(...alt);
+		// The reference stretch between the allele's two anchors, gaps included.
+		const refSpan = Math.min(...xsOf('right')) - Math.max(...xsOf('left'));
+		expect(altWidth).toBeGreaterThan(0);
+		expect(altWidth).toBeLessThanOrEqual(refSpan * 1.001);
+		// …and the nodes still run left to right rather than piling up.
+		for (let i = 1; i < RUN; i++) expect(Math.min(...xsOf(`a${i}`))).toBeGreaterThanOrEqual(Math.max(...xsOf(`a${i - 1}`)));
+	});
+});
