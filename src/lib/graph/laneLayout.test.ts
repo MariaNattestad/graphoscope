@@ -114,13 +114,13 @@ describe('bubble lanes layout', () => {
 	});
 
 	it('lays the insertion out left to right instead of stacking it on one x', () => {
-		// Each alt node starts after the previous one ends, along one lane.
+		// Each alt node starts where the previous one ends, along one lane.
 		const spans = ALT.map((seg) => {
 			const xs = chain(seg).map((n) => n.x);
 			return { lo: Math.min(...xs), hi: Math.max(...xs), y: chain(seg)[0].y };
 		});
 		for (let i = 1; i < spans.length; i++) {
-			expect(spans[i].lo).toBeGreaterThan(spans[i - 1].hi);
+			expect(spans[i].lo).toBeCloseTo(spans[i - 1].hi, 6);
 			expect(spans[i].y).toBe(spans[0].y);
 		}
 		// Each node gets real width, and the 322 bp node is the widest.
@@ -147,8 +147,9 @@ describe('bubble lanes layout', () => {
 });
 
 // A 200 bp alternative allele that the graph splits into 200 1 bp nodes, beside
-// the 200 bp reference segment it replaces. Each tiny node's minimum width used
-// to add up until the allele was drawn several times wider than its sequence.
+// the 200 bp reference segment it replaces. Each tiny node used to get a
+// minimum width, and those added up until the allele was drawn several times
+// wider than its sequence.
 const RUN = 200;
 const RUN_GFA = [
 	'H\tVN:Z:1.1\tRS:Z:GRCh38',
@@ -165,16 +166,17 @@ const RUN_GFA = [
 ].join('\n');
 
 describe('bubble lanes layout, bp scale', () => {
-	it('never draws an allele wider than the reference it replaces', () => {
+	it('draws an allele exactly as wide as the same bp of reference', () => {
 		const layout = layoutOf(RUN_GFA);
 		const xsOf = (seg: string) => layout.chains.find((c) => c.segId === seg)!.nodeIds.map((id) => layout.nodesById.get(id)!.x);
 		const alt = Array.from({ length: RUN }, (_, i) => xsOf(`a${i}`)).flat();
 		const altWidth = Math.max(...alt) - Math.min(...alt);
-		// The reference stretch between the allele's two anchors, gaps included.
-		const refSpan = Math.min(...xsOf('right')) - Math.max(...xsOf('left'));
-		expect(altWidth).toBeGreaterThan(0);
-		expect(altWidth).toBeLessThanOrEqual(refSpan * 1.001);
+		const refXs = xsOf('ref');
+		expect(altWidth).toBeCloseTo(Math.max(...refXs) - Math.min(...refXs), 6);
+		// The reference itself is linear in bp: no gaps between its nodes.
+		expect(Math.min(...refXs)).toBeCloseTo(Math.max(...xsOf('left')), 6);
+		expect(Math.min(...xsOf('right'))).toBeCloseTo(Math.max(...refXs), 6);
 		// …and the nodes still run left to right rather than piling up.
-		for (let i = 1; i < RUN; i++) expect(Math.min(...xsOf(`a${i}`))).toBeGreaterThanOrEqual(Math.max(...xsOf(`a${i - 1}`)));
+		for (let i = 1; i < RUN; i++) expect(Math.min(...xsOf(`a${i}`))).toBeCloseTo(Math.max(...xsOf(`a${i - 1}`)), 6);
 	});
 });

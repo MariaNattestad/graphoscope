@@ -844,6 +844,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	const assignedSegIds = new Set<string>();
 	const anchors = new Map<string, { x: number; y: number }>(); // segId -> midpoint, for BFS seeding
 
+	// Each backbone is laid end to end with no gaps between its segments, so the
+	// reference axis is linear in bp.
 	backbones.forEach((backbone, index) => {
 		const baselineY = index * COMPONENT_V_GAP;
 		let cursorX = 0;
@@ -869,7 +871,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			});
 
 			anchors.set(step.id, { x: cursorX + spanLength / 2, y: baselineY });
-			cursorX += spanLength + opts.unitEdgeLength;
+			cursorX += spanLength;
 		}
 	});
 
@@ -1090,7 +1092,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				node.fy = node.y;
 				node.componentBaselineY = 0;
 			});
-			cursorX = startX + spanLength + opts.unitEdgeLength;
+			cursorX = startX + spanLength;
 			haveCursor = true;
 		}
 	}
