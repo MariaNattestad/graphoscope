@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  # The live job depends on the HPRC graphs on S3, which can change or go away
+  # without any commit here — so also run weekly to notice that.
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Type check, unit tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      # Includes the smoke test that runs the committed static/query.wasm.
+      - run: npm test
+      # The same build the Pages deploy makes, so a PR can't break it.
+      - run: npm run build
+        env:
+          BASE_PATH: /graphoscope
+
+  e2e:
+    name: Browser smoke tests (offline)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-offline
+          path: playwright-report
+          retention-days: 14
+
+  e2e-live:
+    name: Browser smoke tests (live HPRC queries)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:live
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report-live
+          path: playwright-report
+          retention-days: 14
