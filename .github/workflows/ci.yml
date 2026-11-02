@@ -36,6 +36,19 @@ jobs:
         env:
           BASE_PATH: /graphoscope
 
+  rust:
+    name: Reducer tests (crates/reduce)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/reduce
+      # Cargo.toml patches simple-sds to a vendored, patched copy (gitignored).
+      - run: scripts/vendor-simple-sds.sh
+      - run: cargo test --locked --manifest-path crates/reduce/Cargo.toml
+
   e2e:
     name: Browser smoke tests (offline)
     runs-on: ubuntu-latest

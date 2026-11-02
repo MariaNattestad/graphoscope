@@ -7,8 +7,8 @@
 # checkout, fork, or patch of it is needed. The one thing that does need
 # patching is `simple-sds`, which doesn't build for 32-bit wasm as published
 # (it defaults to a `libc`/mmap feature wasm lacks, and two size constants
-# overflow a 32-bit usize). This script vendors a pinned copy, applies
-# scripts/simple-sds-wasm32.patch, and points the crate at it via
+# overflow a 32-bit usize). scripts/vendor-simple-sds.sh vendors a pinned copy
+# with scripts/simple-sds-wasm32.patch applied, and the crate points at it via
 # [patch.crates-io].
 #
 # Usage: scripts/build-wasm.sh
@@ -32,14 +32,7 @@ if [[ ! -e "$WASI_SDK_DIR/bin/clang" ]]; then
 fi
 
 # Vendor + patch simple-sds for wasm32, pinned to the version gbz-base needs.
-SIMPLE_SDS_DIR="$CRATE/vendor/simple-sds"
-SIMPLE_SDS_REF=v0.4.1
-if [[ ! -d "$SIMPLE_SDS_DIR" ]]; then
-	mkdir -p "$CRATE/vendor"
-	git clone --quiet --branch "$SIMPLE_SDS_REF" --depth 1 \
-		https://github.com/jltsiren/simple-sds.git "$SIMPLE_SDS_DIR"
-	git -C "$SIMPLE_SDS_DIR" apply "$HERE/simple-sds-wasm32.patch"
-fi
+"$HERE/vendor-simple-sds.sh"
 
 export CC_wasm32_wasip1="${WASI_SDK_DIR}/bin/clang"
 export AR_wasm32_wasip1="${WASI_SDK_DIR}/bin/llvm-ar"
