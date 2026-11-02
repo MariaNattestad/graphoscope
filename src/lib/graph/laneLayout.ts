@@ -32,8 +32,12 @@ import type { SegmentChain, SimNode, LayoutResult } from './forceLayout';
  *     magnified: a short insertion in a wide window is drawn short, and zooming
  *     in is how to read it.
  *  5. Bubbles are stacked: narrow ones first, closest to the axis, each in the
- *     lowest band of rows that's clear of every bubble already placed over its
- *     footprint.
+ *     lowest band of rows where it fits. To fit lower, a bubble may slide
+ *     sideways off its anchor (its connectors lean to reach it) into free room,
+ *     as long as it keeps a clear margin from the bubbles beside it and stays
+ *     in the same left-to-right order as their anchors, so connectors on a row
+ *     don't cross. A crowded stretch spreads out into the empty space beside
+ *     it instead of towering over its anchors.
  *  6. A link that skips over nodes on its own lane (one allele bypassing a short
  *     run of others) bows above that lane through its bend node, higher the more
  *     nodes it jumps, so skips from the same node nest instead of crossing.
@@ -61,6 +65,13 @@ export interface LaneLayoutInput {
 const LANE_WEIGHT_FRACTION = 1 / 2000;
 /** Horizontal clearance kept between two bubbles sharing a row. */
 const BUBBLE_PAD_FRACTION = 1 / 2000;
+/** Furthest a crowded stretch may spread out on each side (step 4), and the
+ * margin kept between spread stretches. */
+const MAX_SPREAD_FRACTION = 1 / 10;
+const SPREAD_CLEARANCE_FRACTION = 1 / 300;
+/** Height, in lane gaps, at which a spread run's connectors finish leaning
+ * (step 6). */
+const SPREAD_BEND_HEIGHT = 0.5;
 /** How high a skip link bows above its lane per lane node it jumps, and at
  * most, as fractions of the lane gap (kept under half so a bow never reaches the
  * lane above). */
@@ -95,6 +106,8 @@ interface Bubble {
 	lo: number;
 	hi: number;
 	row: number;
+	/** Sideways offset of the drawn lanes from their anchor (step 4). */
+	shift: number;
 }
 
 export function placeBubbleLanes(input: LaneLayoutInput): void {
@@ -190,7 +203,8 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 			altWidth: 0,
 			lo: 0,
 			hi: 0,
-			row: 0
+			row: 0,
+			shift: 0
 		};
 		arrange(b);
 		bubbles.push(b);
@@ -293,14 +307,77 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 		b.hi = Math.max(b.centre + b.altWidth / 2, b.exitX) + bubblePad;
 	}
 
+	// --- 4. Spread crowded stretches into the free room beside them ---
+	// A run of bubbles whose anchor spans overlap (or come within the spread
+	// margin) would otherwise stack into a tower over its anchors. Its bubbles
+	// are moved apart about the run's centre, as if that stretch of
+	// reference were drawn wider: lanes keep their bp widths and order, only
+	// their positions spread, and connectors lean back to the true anchors. A run
+	// spreads only as far as it needs to set its bubbles side by side, and each
+	// side no further than the room before the neighbouring run (less the
+	// margin) or MAX_SPREAD_FRACTION of the view. A lone bubble, or a run that wouldn't
+	// stack anyway, stays centred over its anchors.
+	// Runs are found from anchor spans alone: a wide bubble's lanes sit above
+	// the small ones under it anyway, so they don't make those a crowd.
+	const clearance = refWidth * SPREAD_CLEARANCE_FRACTION;
+	const aLo = (b: Bubble) => b.entryX - bubblePad;
+	const aHi = (b: Bubble) => b.exitX + bubblePad;
+	const runs: Bubble[][] = [];
+	let runHi = -Infinity;
+	for (const b of [...bubbles].sort((p, q) => aLo(p) - aLo(q))) {
+		if (runs.length && aLo(b) < runHi + clearance) {
+			runs[runs.length - 1].push(b);
+			runHi = Math.max(runHi, aHi(b));
+		} else {
+			runs.push([b]);
+			runHi = aHi(b);
+		}
+	}
+	const extent = runs.map((run) => ({
+		lo: Math.min(...run.map(aLo)),
+		hi: Math.max(...run.map(aHi))
+	}));
+	const spreadOf = new Map<Bubble, number>();
+	// Only a run that would actually stack is spread; one whose bubbles merely
+	// sit close together already reads fine where it is. A gap between two
+	// spreading runs is shared; a run next to one that stays put may use all of it.
+	const stacks = runs.map((run) =>
+		run.some((b, i) => run.slice(0, i).some((o) => aLo(o) < aHi(b) && aLo(b) < aHi(o)))
+	);
+	runs.forEach((run, k) => {
+		const { lo, hi } = extent[k];
+		const c = (lo + hi) / 2;
+		const share = (j: number) => (stacks[j] ? 2 : 1);
+		const roomLeft = k === 0 ? lo - refLo : (lo - extent[k - 1].hi - clearance) / share(k - 1);
+		const roomRight = k === runs.length - 1 ? refHi - hi : (extent[k + 1].lo - hi - clearance) / share(k + 1);
+		// The run asks for enough width to set its bubbles side by side, and each
+		// side of its centre gets as much of that as its own room allows.
+		const half = (hi - lo) / 2;
+		const need = run.reduce((w, b) => w + Math.max(aHi(b) - aLo(b), b.altWidth + 2 * bubblePad), 0);
+		const ask = Math.min(Math.max(0, need - (hi - lo)) / 2, refWidth * MAX_SPREAD_FRACTION);
+		const factor = (room: number) =>
+			!stacks[k] || half <= 0 ? 1 : 1 + Math.max(0, Math.min(ask, room)) / half;
+		const fLeft = factor(roomLeft);
+		const fRight = factor(roomRight);
+		for (const b of run) {
+			const f = b.centre < c ? fLeft : fRight;
+			spreadOf.set(b, Math.max(fLeft, fRight));
+			b.shift = (f - 1) * (b.centre - c);
+		}
+	});
+
 	// --- 5. Stack bubbles: narrow first, each in the lowest clear band of rows ---
+	// Footprints are measured where the bubbles now sit: lanes and anchor span
+	// both moved by the bubble's shift.
 	const rows: [number, number][][] = [];
 	const stackOrder = [...bubbles].sort((p, q) => p.hi - p.lo - (q.hi - q.lo) || p.lo - q.lo);
 	for (const b of stackOrder) {
-		const clear = (r: number) => !rows[r]?.some(([a, c]) => a < b.hi && b.lo < c);
+		const lo = Math.min(b.entryX, b.centre - b.altWidth / 2) + b.shift - bubblePad;
+		const hi = Math.max(b.exitX, b.centre + b.altWidth / 2) + b.shift + bubblePad;
+		const clear = (r: number) => !rows[r]?.some(([a, c]) => a < hi && lo < c);
 		let base = 0;
 		while (!b.lanes.every((_, l) => clear(base + l))) base++;
-		b.lanes.forEach((_, l) => (rows[base + l] ??= []).push([b.lo, b.hi]));
+		b.lanes.forEach((_, l) => (rows[base + l] ??= []).push([lo, hi]));
 		b.row = base;
 	}
 
@@ -310,7 +387,7 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 		b.lanes.forEach((segs, l) => segs.forEach((s, idx) => segLane.set(s, { b, l, idx })));
 		for (const s of b.members) {
 			const chain = chainById.get(s)!;
-			const x0 = b.xs.get(s)!;
+			const x0 = b.xs.get(s)! + b.shift;
 			const w = b.widths.get(s)!;
 			const y = b.baselineY - (b.row + b.lane.get(s)! + 1) * laneGap;
 			const reversed = (orientVote.get(s) ?? 0) < 0;
@@ -327,7 +404,7 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 		}
 	}
 
-	// --- 6. Bend nodes: straight connectors, bowed skips ---
+	// --- 6. Bend nodes: connectors, bowed skips ---
 	for (const path of input.structuralLinkPaths) {
 		if (!path.bendNode) continue;
 		const bend = nodesById.get(path.bendNode)!;
@@ -343,6 +420,16 @@ export function placeBubbleLanes(input: LaneLayoutInput): void {
 			// its offset.
 			const skipped = Math.abs(la.idx - lc.idx) - 1;
 			bend.y -= 2 * laneGap * Math.min(MAX_SKIP_BOW, SKIP_BOW_STEP * (1 + skipped));
+		} else if (!la !== !lc && spreadOf.get((la ?? lc)!.b)! > 1) {
+			// A connector from a spread run back to its true anchor is drawn as an
+			// elbow: just above the axis it leans over by its bubble's shift, then
+			// rises to its lane. All of a run's leans happen at the same height and
+			// keep the anchors' order, so they fan out side by side without
+			// crossing, and above them each bubble keeps its usual tent shape.
+			const anchor = la ? c : a;
+			bend.x = anchor.x + (la ?? lc)!.b.shift;
+			bend.y = anchor.y - laneGap * SPREAD_BEND_HEIGHT;
+			path.elbow = true;
 		}
 		bend.fx = bend.x;
 		bend.fy = bend.y;

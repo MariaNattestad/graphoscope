@@ -620,7 +620,10 @@
 				}
 			} else {
 				const m = layout.nodesById.get(link.bendNode);
-				if (m) ctx.quadraticCurveTo(toScreenX(m.x), toScreenY(m.y), bx, by);
+				if (m && link.elbow) {
+					ctx.lineTo(toScreenX(m.x), toScreenY(m.y));
+					ctx.lineTo(bx, by);
+				} else if (m) ctx.quadraticCurveTo(toScreenX(m.x), toScreenY(m.y), bx, by);
 				else ctx.lineTo(bx, by);
 				ctx.lineWidth = 1;
 				// Dim only the links that aren't part of the spotlit bubble; the bubble's

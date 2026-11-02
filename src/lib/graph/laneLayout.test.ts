@@ -180,3 +180,45 @@ describe('bubble lanes layout, bp scale', () => {
 		for (let i = 1; i < RUN; i++) expect(Math.min(...xsOf(`a${i}`))).toBeCloseTo(Math.max(...xsOf(`a${i - 1}`)), 6);
 	});
 });
+
+// Ten SNPs on consecutive reference bases in the middle of a 20 kb window: at
+// bp scale their anchors are a hair apart, so they used to stack ten rows high
+// over one point. With empty reference on either side they spread out instead.
+const SNPS = 10;
+const SNP_GFA = [
+	'H\tVN:Z:1.1\tRS:Z:GRCh38',
+	'S\tleft\t*\tLN:i:10000',
+	'S\tright\t*\tLN:i:10000',
+	...Array.from({ length: SNPS }, (_, i) => `S\tr${i}\t*\tLN:i:1\nS\ts${i}\t*\tLN:i:1`),
+	`W\tGRCh38\t0\tchr1\t0\t${20000 + SNPS}\t>left${Array.from({ length: SNPS }, (_, i) => `>r${i}`).join('')}>right`,
+	...Array.from({ length: SNPS }, (_, i) => {
+		const prev = i === 0 ? 'left' : `r${i - 1}`;
+		const next = i === SNPS - 1 ? 'right' : `r${i + 1}`;
+		return [`L\t${prev}\t+\tr${i}\t+\t0M`, `L\t${prev}\t+\ts${i}\t+\t0M`, `L\ts${i}\t+\t${next}\t+\t0M`].join('\n');
+	}),
+	`L\tr${SNPS - 1}\t+\tright\t+\t0M`
+].join('\n');
+
+describe('bubble lanes layout, crowded stretches', () => {
+	const layout = layoutOf(SNP_GFA);
+	const node = (seg: string) => layout.nodesById.get(layout.chains.find((c) => c.segId === seg)!.nodeIds[0])!;
+
+	it('spreads a crowd sideways instead of stacking it over its anchors', () => {
+		const rows = new Set(Array.from({ length: SNPS }, (_, i) => node(`s${i}`).y));
+		expect(rows.size).toBeLessThan(SNPS / 2);
+		// …in the same left-to-right order as the SNPs on the reference.
+		for (let i = 1; i < SNPS; i++) expect(node(`s${i}`).x).toBeGreaterThan(node(`s${i - 1}`).x);
+	});
+
+	it('leaves a lone bubble over its anchor', () => {
+		const stat2 = layoutOf(STAT2);
+		const xs = stat2.chains.find((c) => c.segId === '41276770')!.nodeIds.map((id) => stat2.nodesById.get(id)!.x);
+		const cut = stat2.nodesById.get(stat2.chains.find((c) => c.segId === 'u41276132')!.nodeIds.at(-1)!)!.x;
+		expect(Math.min(...xs)).toBeLessThan(cut);
+		expect(Math.max(...xs)).toBeGreaterThan(cut);
+	});
+
+	it('draws the spread connectors without crossings', () => {
+		expect(crossings(layout)).toBe(0);
+	});
+});
