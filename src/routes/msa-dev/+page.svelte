@@ -1,6 +1,6 @@
 <script lang="ts">
 	// DEV-ONLY, intentionally unlinked from the app. A harness for iterating on the
-	// MSA base-alignment view: pick an example graph and a node, and the alignment
+	// MSA view: pick an example graph and a node, and the MSA panel
 	// stays open so changes are visible immediately. Not part of the product nav.
 	import { parseGfa, type Gfa } from '$lib/gfa';
 	import { ALL_FIXTURES, type Fixture } from '$lib/graph/fixtures';
@@ -59,8 +59,8 @@
 
 <main class:light={lightMode}>
 	<header>
-		<h1>MSA base-alignment — dev harness</h1>
-		<p class="sub">Unlinked development page. Iterate on the base-alignment view against real & synthetic loci.</p>
+		<h1>MSA view — dev harness</h1>
+		<p class="sub">Unlinked development page. Iterate on the MSA view against real & synthetic loci.</p>
 	</header>
 
 	<section class="ctl">

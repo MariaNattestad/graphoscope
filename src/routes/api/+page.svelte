@@ -52,7 +52,7 @@
 			return;
 		}
 
-		// Optional subgraph context margin; defaults to the wasm's own default.
+		// Optional subgraph context margin; defaults to the app's DEFAULT_CONTEXT.
 		const contextParam = p.get('context');
 		let context = DEFAULT_CONTEXT;
 		if (contextParam != null) {

@@ -1,13 +1,16 @@
-// Build a base-level multiple-sequence-alignment (MSA) matrix for a window of a
-// pangenome graph, centred on a clicked node. This is the data model behind the
-// MSA "zoom-in" view (MsaCanvas.svelte): the reference plus the haplotypes that
-// pass through the selected node, laid out base-by-base along the reference axis.
+// Build the MSA view's grid for a window of a pangenome graph: the reference
+// plus the haplotypes crossing that window, laid out base by base along the
+// reference axis. This is the data model behind the MSA view (MsaCanvas.svelte).
+// The window is either a fixed stretch of reference (what the graph has in view)
+// or centred on a clicked node.
 //
-// The alignment is *node-block* based, the same idea the 1D pangenome tools use:
-// a graph node is a run of shared sequence, so every path that visits it is, by
-// construction, aligned there. Each node becomes a block of `bpLen` columns; a
-// row (path) either fills a block with that node's bases or shows a gap. There is
-// no per-base realignment — divergent alleles between the same two anchors sit in
+// NO ALIGNMENT IS COMPUTED HERE. The name "MSA" is borrowed from multiple sequence
+// alignment because the picture looks like one, but nothing is aligned: the graph
+// already says which bases correspond. The grid is *node-block* based, the same
+// idea the 1D pangenome tools use: a graph node is a run of shared sequence, so
+// every path that visits it shares those bases by construction. Each node becomes
+// a block of `bpLen` columns; a row (path) either fills a block with that node's
+// bases or shows a gap. Divergent alleles between the same two anchors sit in
 // adjacent blocks and the rows "trade off" between them, which reads cleanly and
 // is exact for the sequence the graph actually stores.
 //
@@ -16,7 +19,7 @@ import type { Gfa } from '../gfa';
 
 export type Orient = '+' | '-';
 
-export interface AlignBlock {
+export interface MsaBlock {
 	/** Displayed segment id this block draws. */
 	segId: string;
 	/** Short local name within this window: R1,R2,… along the reference (left to
@@ -36,7 +39,7 @@ export interface AlignBlock {
 	contig?: string;
 }
 
-export interface AlignRow {
+export interface MsaRow {
 	/** Stable id (walk name); reference row is `#ref`. */
 	key: string;
 	label: string;
@@ -51,21 +54,22 @@ export interface AlignRow {
 	/** The path visits a shared backbone node in the opposite orientation — an
 	 * inversion relative to the reference axis. Flagged, not re-laid-out. */
 	hasInversion: boolean;
-	/** One entry per block (aligned to `blocks`):
+	/** One entry per block (same order and length as `blocks`):
 	 *   - `null`   — a gap: the path does not visit this node.
 	 *   - `''`     — the path visits the node but its sequence is unknown (rGFA `*`).
 	 *   - a string of length `bpLen` — the oriented bases (revcomp'd on `-`). */
 	cells: (string | null)[];
 }
 
-export interface Alignment {
-	blocks: AlignBlock[];
-	rows: AlignRow[];
+export interface MsaGrid {
+	blocks: MsaBlock[];
+	rows: MsaRow[];
 	/** Displayed segment id → its short local name (R1/A1/…) within this window. */
 	nameBySeg: Map<string, string>;
 	/** Total bp across all blocks (the horizontal extent, in base columns). */
 	totalBp: number;
-	selectedSegId: string;
+	/** The highlighted node, or null for a plain window with nothing selected. */
+	selectedSegId: string | null;
 	/** Whether the selected node sits on the reference backbone. */
 	selectedOnBackbone: boolean;
 	contig: string | null;
@@ -77,15 +81,20 @@ export interface Alignment {
 	truncatedWindow: boolean;
 	/** At least one block carries real sequence (vs. length-only rGFA nodes). */
 	hasSequence: boolean;
-	/** Non-fatal explanation when the alignment is empty or degraded. */
+	/** Non-fatal explanation when the grid is empty or degraded. */
 	note?: string;
 }
 
 export interface BuildOptions {
 	referenceSample?: string;
-	selectedSegId: string;
-	/** Half-window on the reference axis, in bp (columns each side of centre). */
+	/** Node to centre on and highlight. Optional when `window` is given. */
+	selectedSegId?: string | null;
+	/** Half-window on the reference axis, in bp (columns each side of centre).
+	 * Ignored when `window` is given. */
 	windowBp: number;
+	/** Show exactly this reference-coordinate window (e.g. the part of the
+	 * reference in view), instead of a window centred on the selected node. */
+	window?: { start: number; end: number };
 	/** Hard caps (clamped, with truncation flags set). */
 	maxColumns?: number;
 	maxRows?: number;
@@ -190,28 +199,33 @@ function buildBackbone(ref: Walkish, gfa: Gfa, o2d: Map<string, string>): {
 	return { nodes, index };
 }
 
-export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
+export function buildMsaGrid(gfa: Gfa, opts: BuildOptions): MsaGrid {
 	const {
 		referenceSample,
-		selectedSegId,
+		selectedSegId = null,
 		windowBp,
+		window: fixedWindow,
 		maxColumns = 6000,
 		maxRows = 300,
 		maxAltsPerGap = 24
 	} = opts;
 
-	const empty = (note: string): Alignment => ({
+	const empty = (note: string): MsaGrid => ({
 		blocks: [], rows: [], nameBySeg: new Map(), totalBp: 0, selectedSegId,
 		selectedOnBackbone: false, contig: null, window: null,
 		truncatedRows: 0, truncatedWindow: false, hasSequence: false, note
 	});
 
 	const o2d = buildOrigToDisplayed(gfa);
-	const selected = o2d.get(selectedSegId) ?? selectedSegId;
-	if (!gfa.segments.has(selected)) return empty('The selected node is not in this graph.');
+	let selected: string | null = selectedSegId ? (o2d.get(selectedSegId) ?? selectedSegId) : null;
+	if (selected && !gfa.segments.has(selected)) {
+		if (!fixedWindow) return empty('The selected node is not in this graph.');
+		selected = null; // a window doesn't need a selection to show
+	}
+	if (!selected && !fixedWindow) return empty('Select a node, or a stretch of reference to show.');
 
 	const ref = pickReferenceWalk(gfa, referenceSample);
-	if (!ref) return empty('This graph has no reference walk to anchor an alignment on.');
+	if (!ref) return empty('This graph has no reference walk to lay the sequences out along.');
 	const { nodes: backbone, index: backboneIdx } = buildBackbone(ref, gfa, o2d);
 	if (backbone.length === 0) return empty('The reference walk has no nodes to anchor on.');
 	const contig = ref.seqId ?? null;
@@ -224,7 +238,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	for (const w of walks) {
 		if (w === ref) continue; // the reference is its own row, not a "through" haplotype
 		if (w.kind === 'synthetic') continue;
-		if (w.steps.length < 1) continue;
+		if (w.steps.length < 1 || !selected) continue;
 		let hits = false;
 		for (const s of w.steps) if (o2d.get(s.id) === selected) { hits = true; break; }
 		if (!hits) continue;
@@ -240,7 +254,10 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	// --- centre the window on the reference axis --------------------------------
 	let center: number;
 	let selectedOnBackbone = false;
-	if (backboneIdx.has(selected)) {
+	if (selected && backboneIdx.has(selected)) selectedOnBackbone = true;
+	if (fixedWindow) {
+		center = (fixedWindow.start + fixedWindow.end) / 2;
+	} else if (selected && backboneIdx.has(selected)) {
 		const b = backbone[backboneIdx.get(selected)!];
 		center = (b.refStart + b.refEnd) / 2;
 		selectedOnBackbone = true;
@@ -272,8 +289,8 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	}
 
 	// --- backbone nodes inside the window --------------------------------------
-	let lo = center - windowBp;
-	let hi = center + windowBp;
+	let lo = fixedWindow ? fixedWindow.start : center - windowBp;
+	let hi = fixedWindow ? fixedWindow.end : center + windowBp;
 	const inWindow = (b: BackboneNode) => b.refEnd > lo && b.refStart < hi;
 	let firstIdx = backbone.findIndex(inWindow);
 	if (firstIdx < 0) {
@@ -364,8 +381,9 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 			}
 		}
 	}
-	// Ensure the selected alt node is always present, even if capped out.
-	if (!selectedOnBackbone && !altSeen.has(selected)) {
+	// Ensure the selected alt node is always present, even if capped out (a fixed
+	// window shows only what's inside it).
+	if (selected && !fixedWindow && !selectedOnBackbone && !altSeen.has(selected)) {
 		// Place it in the gap nearest the window centre.
 		const mid = Math.round((lastIdx - firstIdx) / 2);
 		gapAlts[mid].unshift(selected);
@@ -373,7 +391,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	}
 
 	// --- assemble blocks in global left-to-right order -------------------------
-	const blocks: AlignBlock[] = [];
+	const blocks: MsaBlock[] = [];
 	const nameBySeg = new Map<string, string>();
 	let col = 0;
 	let hasSequence = false;
@@ -423,7 +441,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 		return { cells, inversion };
 	};
 
-	const rows: AlignRow[] = [];
+	const rows: MsaRow[] = [];
 	const refRes = cellsFor(projRef);
 	rows.push({
 		key: '#ref',
@@ -440,7 +458,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 	// row carrying a multiplicity, so a 400-haplotype locus stays legible. The
 	// walks through the selected node come first (right under the reference), then
 	// the rest of the window's walks — preserving first-seen order within each group.
-	const bySig = new Map<string, AlignRow>();
+	const bySig = new Map<string, MsaRow>();
 	const orderThrough: string[] = [];
 	const orderOther: string[] = [];
 	let truncatedRows = 0;
@@ -454,7 +472,7 @@ export function buildAlignment(gfa: Gfa, opts: BuildOptions): Alignment {
 			continue;
 		}
 		if (bySig.size >= maxRows - 1) { truncatedRows++; continue; }
-		const row: AlignRow = {
+		const row: MsaRow = {
 			key: `${w.sample}#${w.hapIndex}#${w.seqId}`,
 			label: walkLabel(w),
 			sample: w.sample,

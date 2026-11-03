@@ -101,8 +101,8 @@ class Limits {
 		return this.narrow ? 8000 : 15000;
 	}
 
-	// ---- MSA / base-alignment view ------------------------------------------
-	// The base-alignment view holds one string per (row, node block); a window of
+	// ---- MSA view -------------------------------------------------------------
+	// The MSA view holds one string per (row, node block); a window of
 	// `maxMsaColumns` bp over `maxMsaRows` rows bounds both that memory and the
 	// per-frame cell draw. Phones get a tighter window so the letters stay legible
 	// on a small screen and the canvas fill stays cheap.

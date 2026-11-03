@@ -101,30 +101,17 @@
 					</div>
 				{/if}
 
-				<!-- The simplified/raw split only exists on a reduced graph; with Simplify
-				     off the graph is the full one, so show a single count. When reduced, the
-				     "raw" (pre-simplification) count is its own row. -->
+				<!-- Counts of the graph on screen. How much simplification removed is
+				     shown under the Simplify control instead, for whichever mode is on. -->
 				<div class="rep-row">
 					<span class="rk">nodes</span>
 					<span class="rv">{pending || !stats ? '' : num(stats.segments)}</span>
 				</div>
-				{#if reduced}
-					<div class="rep-row">
-						<span class="rk sub">raw nodes</span>
-						<span class="rv sub">{pending ? '' : num(reduced.segmentsBefore)}</span>
-					</div>
-				{/if}
 
 				<div class="rep-row">
 					<span class="rk">links</span>
 					<span class="rv">{pending || !stats ? '' : num(stats.links)}</span>
 				</div>
-				{#if reduced}
-					<div class="rep-row">
-						<span class="rk sub">raw links</span>
-						<span class="rv sub">{pending ? '' : num(reduced.linksBefore)}</span>
-					</div>
-				{/if}
 
 				{#if walkNoun}
 					<div class="rep-row">
@@ -310,11 +297,6 @@
 		color: #1f2430;
 		white-space: nowrap;
 		flex: 0 0 auto;
-	}
-	/* The pre-simplification "raw nodes/links" rows read as secondary to the shown counts. */
-	.rk.sub,
-	.rv.sub {
-		color: #a7adb8;
 	}
 	.rep-sep {
 		border-top: 1px solid #f2f2f5;

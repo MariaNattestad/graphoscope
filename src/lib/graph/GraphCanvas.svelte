@@ -40,6 +40,19 @@
 		gEnd: number;
 	}
 
+	// Part 6 of the assembly-graph view, each piece switchable (see GraphLayoutView).
+	export interface AssemblyStyle {
+		/** Flat-ended strands smoothed with a centripetal Catmull-Rom spline, and
+		 * links drawn as curves leaving/arriving along their nodes' direction. */
+		shape: boolean;
+		/** Reference coloured by position (a rainbow along it), the rest grey. */
+		rainbow: boolean;
+		/** Strand width follows carriage (haplotypes through the node). */
+		carriage: boolean;
+		/** Length labels on merged runs, large alleles and deletion arcs. */
+		labels: boolean;
+	}
+
 	// A clicked gene-track feature (an exon), surfaced to the inspector.
 	export interface SelectedFeature {
 		symbol: string;
@@ -80,6 +93,7 @@
 		exitHighlightSegments = null,
 		onExitSegments,
 		lightMode = false,
+		assemblyStyle = null,
 		showExits = true,
 		colorMode = 'coverage',
 		bubbleIdBySeg = null,
@@ -91,6 +105,7 @@
 		glowSegments = null,
 		glowGreenSegments = null,
 		onReady,
+		onViewRange,
 		nodeTooltip
 	}: {
 		layout: LayoutResult;
@@ -141,6 +156,8 @@
 		onExitSegments?: (segIds: string[]) => void;
 		/** Render on a light (figure-friendly) theme instead of the dark screen one. */
 		lightMode?: boolean;
+		/** Assembly-mode drawing options, or null for the standard look. */
+		assemblyStyle?: AssemblyStyle | null;
 		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
 		showExits?: boolean;
 		/** What each node's fill encodes: walk coverage (default), the size of the
@@ -169,6 +186,9 @@
 		glowGreenSegments?: Set<string> | null;
 		/** Hands the parent a small API (PNG export + the live node-fill colour, so the
 		 * MSA colour track can mirror exactly what the graph draws) once mounted. */
+		/** The stretch of reference in view (reference-based layouts only), reported
+		 * as the user pans and zooms; null when there's no reference axis. */
+		onViewRange?: (range: { contig: string; start: number; end: number } | null) => void;
 		onReady?: (api: {
 			exportImage: (filename: string) => void;
 			colorForSegment: (segId: string) => string;
@@ -179,6 +199,56 @@
 
 	// segId -> its chain, for tracing a walk's polyline through the layout.
 	const chainBySeg = $derived(new Map(layout.chains.map((c) => [c.segId, c])));
+
+	// --- Assembly-mode drawing (Part 6) ------------------------------------------
+	const asm = $derived(layout.assembly && assemblyStyle ? assemblyStyle : null);
+	// Mean carriage over the drawn nodes, for width-by-carriage.
+	const meanCarriage = $derived.by(() => {
+		let sum = 0;
+		let n = 0;
+		for (const c of layout.chains) {
+			sum += carriageOf(c.segId);
+			n++;
+		}
+		return n ? Math.max(1, sum / n) : 1;
+	});
+	function carriageOf(segId: string): number {
+		return (layout.pathCoverage.get(segId) ?? 0) + (layout.backboneSegIds.has(segId) ? 1 : 0);
+	}
+	function asmWidth(segId: string): number {
+		if (!asm?.carriage) return strokeWidth;
+		const w = strokeWidth * ((Math.sqrt(carriageOf(segId) / meanCarriage) - 1) * 0.5 + 1);
+		return Math.min(strokeWidth * 3, Math.max(strokeWidth * 0.35, w));
+	}
+	const rainbowAt = (f: number) => `hsl(${Math.round(Math.min(1, Math.max(0, f)) * 280)}, 85%, ${lightMode ? 45 : 58}%)`;
+	function asmStroke(segId: string, pts: { x: number; y: number }[]): string | CanvasGradient {
+		const frac = layout.assembly?.refFrac.get(segId);
+		if (!frac) return lightMode ? '#3f3f46' : '#8b8f98';
+		const a = pts[0];
+		const b = pts[pts.length - 1];
+		if (pts.length < 2 || (a.x === b.x && a.y === b.y)) return rainbowAt((frac[0] + frac[1]) / 2);
+		const ctx = canvasEl?.getContext('2d');
+		if (!ctx) return rainbowAt(frac[0]);
+		const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+		for (let i = 0; i <= 4; i++) grad.addColorStop(i / 4, rainbowAt(frac[0] + ((frac[1] - frac[0]) * i) / 4));
+		return grad;
+	}
+	/** Outward direction at a chain end node (away from the rest of its chain). */
+	function endDir(nodeId: string): { x: number; y: number } {
+		const n = layout.nodesById.get(nodeId);
+		const chain = n ? chainBySeg.get(n.segId) : undefined;
+		if (!n || !chain || chain.nodeIds.length < 2) return { x: 0, y: 0 };
+		const nb = layout.nodesById.get(n.posIndex === 0 ? chain.nodeIds[1] : chain.nodeIds[chain.nodeIds.length - 2])!;
+		const dx = toScreenX(n.x) - toScreenX(nb.x);
+		const dy = toScreenY(n.y) - toScreenY(nb.y);
+		const m = Math.hypot(dx, dy) || 1;
+		return { x: dx / m, y: dy / m };
+	}
+	function fmtBp(bp: number): string {
+		if (bp < 1000) return `${bp} bp`;
+		if (bp < 1e6) return `${(bp / 1000).toFixed(bp < 10000 ? 1 : 0).replace(/\.0$/, '')} kb`;
+		return `${(bp / 1e6).toFixed(1).replace(/\.0$/, '')} Mb`;
+	}
 
 	// `${from}>${to}` (both orientations) -> the skip bubble that link carries, so the
 	// structural-link draw can recognise a deletion-only bubble and make it inspectable.
@@ -398,7 +468,7 @@
 	const maxSegmentLength = $derived.by(() => {
 		let max = 0;
 		for (const [segId, len] of layout.segmentLengths) {
-			if (layout.backboneSegIds.has(segId)) continue;
+			if (layout.backboneSegIds.has(segId) || layout.referenceSegIds?.has(segId)) continue;
 			if (len > max) max = len;
 		}
 		return max;
@@ -412,7 +482,7 @@
 	}
 
 	function colorForChain(segId: string): string {
-		if (layout.backboneSegIds.has(segId)) return theme.backbone;
+		if (layout.backboneSegIds.has(segId) || layout.referenceSegIds?.has(segId)) return theme.backbone;
 		const heat = (mode: ColorMode, ratio: number) => heatmapModeColor(mode, ratio, lightMode, theme);
 		switch (colorMode) {
 			case 'bubble': {
@@ -660,7 +730,7 @@
 			const b = layout.nodesById.get(link.toNode);
 			if (!a || !b) continue;
 			const isDeletionSkip =
-				layout.backboneSegIds.has(link.from) && layout.backboneSegIds.has(link.to);
+				!layout.assembly && layout.backboneSegIds.has(link.from) && layout.backboneSegIds.has(link.to);
 			const skip = isDeletionSkip ? skipByLink.get(`${link.from}>${link.to}`) : undefined;
 			const skipActive = skip != null && skip.key === activeSkipKey;
 			// An edge belonging to the spotlit bubble — either internal to it, or the
@@ -705,6 +775,15 @@
 					arc(x2, peakY, bx - dir * run, peakY, bx, by);
 					skipHits.push({ pts, skip });
 				}
+			} else if (asm?.shape) {
+				// Leave along the source node's last segment, arrive along the target's
+				// first, control points about one edge-length out (at most half the gap).
+				const da = endDir(link.fromNode);
+				const db = endDir(link.toNode);
+				const c = Math.min(Math.max(5 * transform.k, 4), Math.hypot(bx - ax, by - ay) / 2);
+				ctx.bezierCurveTo(ax + da.x * c, ay + da.y * c, bx + db.x * c, by + db.y * c, bx, by);
+				ctx.lineWidth = 1;
+				if (anyHighlight && !inBubble) ctx.globalAlpha = 0.15;
 			} else {
 				const m = layout.nodesById.get(link.bendNode);
 				if (m) ctx.quadraticCurveTo(toScreenX(m.x), toScreenY(m.y), bx, by);
@@ -715,6 +794,32 @@
 				if (anyHighlight && !inBubble) ctx.globalAlpha = 0.15;
 			}
 			ctx.stroke();
+			ctx.restore();
+		}
+
+		// Deletions laid out through a hidden route node: a dashed arc along it.
+		const asmLabels: { x: number; y: number; text: string; bp: number }[] = [];
+		if (layout.assembly) {
+			ctx.save();
+			ctx.setLineDash([5, 4]);
+			ctx.lineWidth = 1.5;
+			ctx.strokeStyle = theme.structuralLink;
+			if (anyHighlight) ctx.globalAlpha = 0.15;
+			for (const r of layout.assembly.routes) {
+				const pts = [r.fromNode, ...r.nodeIds, r.toNode]
+					.map((id) => layout.nodesById.get(id))
+					.filter((n) => n != null)
+					.map((n) => ({ x: toScreenX(n!.x), y: toScreenY(n!.y) }));
+				if (pts.length < 2) continue;
+				ctx.beginPath();
+				if (asm?.shape) traceCatmull(ctx, pts);
+				else traceSmooth(ctx, pts);
+				ctx.stroke();
+				if (asm?.labels) {
+					const mid = pts[pts.length >> 1];
+					asmLabels.push({ x: mid.x, y: mid.y, text: `−${fmtBp(r.skipBp)}`, bp: r.skipBp });
+				}
+			}
 			ctx.restore();
 		}
 
@@ -757,7 +862,7 @@
 
 		// strands
 		ctx.lineJoin = 'round';
-		ctx.lineCap = 'round';
+		ctx.lineCap = asm?.shape ? 'butt' : 'round';
 		// Bubble-mode spotlight: when a highlight set is active, its members draw at
 		// full brightness and every other strand is dimmed, so the hovered bubble
 		// stands out as one connected unit. A skip bubble has no member strands, so all
@@ -771,14 +876,22 @@
 			const inHl = hl ? hl.has(chain.segId) : true;
 			const dim = (hl && !inHl) || (activeSkipKey != null && hl == null);
 			ctx.beginPath();
-			traceSmooth(ctx, pts);
+			if (asm?.shape) traceCatmull(ctx, pts);
+			else traceSmooth(ctx, pts);
 			ctx.globalAlpha = dim ? 0.15 : 1;
-			ctx.strokeStyle = hl && inHl ? theme.bubbleHighlight : colorForChain(chain.segId);
-			ctx.lineWidth =
-				chain.segId === hoveredSegment || (hl && inHl) ? strokeWidth * 1.6 : strokeWidth;
+			ctx.strokeStyle =
+				hl && inHl
+					? theme.bubbleHighlight
+					: asm?.rainbow
+						? asmStroke(chain.segId, pts)
+						: colorForChain(chain.segId);
+			const w = asm ? asmWidth(chain.segId) : strokeWidth;
+			ctx.lineWidth = chain.segId === hoveredSegment || (hl && inHl) ? w * 1.6 : w;
 			ctx.stroke();
 		}
 		ctx.globalAlpha = 1;
+		ctx.lineCap = 'round';
+		if (asm?.labels) drawAssemblyLabels(ctx, asmLabels);
 
 		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
 		drawExitCues(ctx, width);
@@ -798,6 +911,7 @@
 		// coordinates — reapply the DPR scale so they still land in the right spot.
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawRefCoordLabels(ctx, width, height);
+		reportViewRange(width);
 		drawGeneTrack(ctx, width, height);
 		drawFlash(ctx);
 		drawMsaLabels(ctx);
@@ -816,7 +930,7 @@
 	}
 
 	// Short R1/A1 labels on the nodes that the open MSA window covers, so the same
-	// node reads the same in the graph and the alignment. Drawn on a small pill at
+	// node reads the same in the graph and the MSA view. Drawn on a small pill at
 	// each node's midpoint, in screen space so they stay a constant size.
 	function drawMsaLabels(ctx: CanvasRenderingContext2D) {
 		msaLabelHits = [];
@@ -901,6 +1015,39 @@
 		}
 		anchors.sort((a, b) => a.minX - b.minX);
 		return anchors;
+	}
+
+	// Screen x -> genomic position, the inverse of genomicToScreenX inside the
+	// reference; a point in the gap between two reference nodes snaps to the next
+	// one's start, and points past either end clamp to the reference's ends.
+	function screenToGenomic(x: number, anchors: RefAnchor[]): number {
+		for (const a of anchors) {
+			const x0 = toScreenX(a.minX);
+			const x1 = toScreenX(a.maxX);
+			if (x < x0) return a.coord.start;
+			if (x <= x1) return a.coord.start + ((x - x0) / Math.max(1e-9, x1 - x0)) * (a.coord.end - a.coord.start);
+		}
+		return anchors[anchors.length - 1].coord.end;
+	}
+
+	// Tell the parent which stretch of reference is on screen, when it changes.
+	let lastViewRange = '';
+	function reportViewRange(width: number) {
+		if (!onViewRange) return;
+		const anchors = !uniformZoom && refCoords && refCoords.size > 0 ? buildRefAnchors() : [];
+		if (anchors.length === 0) {
+			if (lastViewRange !== '') {
+				lastViewRange = '';
+				onViewRange(null);
+			}
+			return;
+		}
+		const start = Math.round(screenToGenomic(0, anchors));
+		const end = Math.round(screenToGenomic(width, anchors));
+		const key = `${anchors[0].coord.contig}:${start}-${end}`;
+		if (key === lastViewRange) return;
+		lastViewRange = key;
+		onViewRange({ contig: anchors[0].coord.contig, start, end });
 	}
 
 	// A genomic position -> screen x, piecewise-linear through the reference
@@ -1425,6 +1572,108 @@
 	// stay exact, so a strand still meets its links precisely; the few bend points in
 	// between round off instead of reading as sharp corners. Under 3 points there's
 	// nothing to smooth, so fall back to straight lines.
+	// Length labels: merged runs and large alleles at their midpoint, plus the
+	// deletion arcs collected above; biggest first, skipping any that would overlap.
+	function drawAssemblyLabels(
+		ctx: CanvasRenderingContext2D,
+		extra: { x: number; y: number; text: string; bp: number }[]
+	) {
+		const LABEL_MIN_BP = 100;
+		const cands = [...extra];
+		const midOf = (segIds: string[]) => {
+			const chain = chainBySeg.get(segIds[segIds.length >> 1]);
+			if (!chain) return null;
+			const n = layout.nodesById.get(chain.nodeIds[chain.nodeIds.length >> 1]);
+			return n ? { x: toScreenX(n.x), y: toScreenY(n.y) } : null;
+		};
+		const inRun = new Set<string>();
+		for (const r of layout.assembly?.runs ?? []) {
+			for (const m of r.members) inRun.add(m);
+			if (r.bp < LABEL_MIN_BP) continue;
+			const p = midOf(r.members);
+			if (p) cands.push({ ...p, text: fmtBp(r.bp), bp: r.bp });
+		}
+		for (const c of layout.chains) {
+			if (inRun.has(c.segId)) continue;
+			const bp = layout.segmentLengths.get(c.segId) ?? 0;
+			if (bp < LABEL_MIN_BP) continue;
+			const p = midOf([c.segId]);
+			if (p) cands.push({ ...p, text: fmtBp(bp), bp });
+		}
+		cands.sort((a, b) => b.bp - a.bp);
+		ctx.save();
+		ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+		ctx.textAlign = 'center';
+		ctx.textBaseline = 'bottom';
+		const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
+		for (const c of cands) {
+			const w = ctx.measureText(c.text).width + 6;
+			const box = { x0: c.x - w / 2, y0: c.y - 20, x1: c.x + w / 2, y1: c.y - 5 };
+			if (placed.some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) continue;
+			placed.push(box);
+			ctx.fillStyle = lightMode ? 'rgba(255,255,255,0.8)' : 'rgba(11,13,18,0.75)';
+			ctx.fillRect(box.x0, box.y0, w, box.y1 - box.y0);
+			ctx.fillStyle = lightMode ? '#1f2937' : '#e5e7eb';
+			ctx.fillText(c.text, c.x, c.y - 7);
+		}
+		ctx.restore();
+	}
+
+	// Centripetal Catmull-Rom through `pts`, with points added only where it bends
+	// (about one per 7.5° of turn); straight stretches stay single line segments.
+	// Centripetal parameterisation avoids cusps and loops when points are unevenly
+	// spaced.
+	function traceCatmull(p: CanvasRenderingContext2D | Path2D, pts: { x: number; y: number }[]) {
+		const n = pts.length;
+		if (n === 0) return;
+		p.moveTo(pts[0].x, pts[0].y);
+		if (n < 3) {
+			for (let i = 1; i < n; i++) p.lineTo(pts[i].x, pts[i].y);
+			return;
+		}
+		const STEP_RAD = (7.5 * Math.PI) / 180;
+		const turn = (a: { x: number; y: number }, b: { x: number; y: number }, c: { x: number; y: number }) => {
+			const a1 = Math.atan2(b.y - a.y, b.x - a.x);
+			const a2 = Math.atan2(c.y - b.y, c.x - b.x);
+			if ((a.x === b.x && a.y === b.y) || (b.x === c.x && b.y === c.y)) return 0;
+			let d = Math.abs(a2 - a1);
+			if (d > Math.PI) d = 2 * Math.PI - d;
+			return d;
+		};
+		for (let i = 0; i < n - 1; i++) {
+			const p0 = pts[Math.max(0, i - 1)];
+			const p1 = pts[i];
+			const p2 = pts[i + 1];
+			const p3 = pts[Math.min(n - 1, i + 2)];
+			const bend = (turn(p0, p1, p2) + turn(p1, p2, p3)) / 2;
+			const k = Math.ceil(bend / STEP_RAD);
+			if (k <= 0) {
+				p.lineTo(p2.x, p2.y);
+				continue;
+			}
+			const td = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+				Math.max(1e-4, Math.sqrt(Math.hypot(b.x - a.x, b.y - a.y)));
+			const t0 = 0;
+			const t1 = t0 + td(p0, p1);
+			const t2 = t1 + td(p1, p2);
+			const t3 = t2 + td(p2, p3);
+			const lerp = (a: { x: number; y: number }, b: { x: number; y: number }, ta: number, tb: number, t: number) => {
+				const u = (t - ta) / (tb - ta);
+				return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
+			};
+			for (let j = 1; j <= k; j++) {
+				const t = t1 + ((t2 - t1) * j) / k;
+				const A1 = lerp(p0, p1, t0, t1, t);
+				const A2 = lerp(p1, p2, t1, t2, t);
+				const A3 = lerp(p2, p3, t2, t3, t);
+				const B1 = lerp(A1, A2, t0, t2, t);
+				const B2 = lerp(A2, A3, t1, t3, t);
+				const C = lerp(B1, B2, t1, t2, t);
+				p.lineTo(C.x, C.y);
+			}
+		}
+	}
+
 	function traceSmooth(p: CanvasRenderingContext2D | Path2D, pts: { x: number; y: number }[]) {
 		const n = pts.length;
 		if (n === 0) return;
@@ -1517,6 +1766,10 @@
 		discoActive;
 		highlightSegments;
 		skipBubbles;
+		assemblyStyle?.shape;
+		assemblyStyle?.rainbow;
+		assemblyStyle?.carriage;
+		assemblyStyle?.labels;
 		activeSkipKey;
 		exitHighlightSegments;
 		theme;

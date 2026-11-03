@@ -12,10 +12,11 @@ export type { QuerySource, QueryResult };
 // for why deriving this inside the worker is unsafe.
 const WASM_URL = `${base}/query.wasm`;
 
-/** Subgraph context margin (bp) the wasm query defaults to when `--context` is
- * omitted (matches DEFAULT_CONTEXT in crates/reduce). Shared so the app and the
- * /api endpoint agree on what "no context param" means. */
-export const DEFAULT_CONTEXT = 100;
+/** Subgraph context margin (bp) used when the URL has no `context` param. The
+ * app and /api always pass it to the wasm explicitly (whose own fallback, in
+ * crates/reduce, is 100), so this constant is the one that counts. Shared so the
+ * app and the /api endpoint agree on what "no context param" means. */
+export const DEFAULT_CONTEXT = 10000;
 
 export interface LocusQuery {
 	sample: string; // e.g. "GRCh38"
@@ -25,7 +26,7 @@ export interface LocusQuery {
 	/** Longest-path bp threshold for collapsing a small variant. */
 	maxVariant?: number;
 	/** Subgraph context radius in bp: how far past the locus GBZ-base follows the
-	 * graph before cutting haplotypes off (the wasm default is 100). Larger shows
+	 * graph before cutting haplotypes off (the app default is DEFAULT_CONTEXT). Larger shows
 	 * more of where the haplotypes go, at the cost of a bigger subgraph. */
 	context?: number;
 	/** Ask for the unsimplified subgraph (every haplotype walk) instead of the
