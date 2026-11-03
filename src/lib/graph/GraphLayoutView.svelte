@@ -1641,6 +1641,7 @@
 						<button
 							type="button"
 							class:active={simplifyMode === 'fold'}
+							aria-pressed={simplifyMode === 'fold'}
 							onclick={() => setSimplify('fold')}
 							title="Fold whole alleles smaller than the threshold into the reference, keeping only the shortest route from each big one back to it"
 							>Fold</button
@@ -1649,6 +1650,7 @@
 							<button
 								type="button"
 								class:active={simplifyMode === 'sites'}
+								aria-pressed={simplifyMode === 'sites'}
 								onclick={() => setSimplify('sites')}
 								title="Collapse small variant sites and merge unbranched runs (the query's own simplification)"
 								>Sites</button
@@ -1657,6 +1659,7 @@
 						<button
 							type="button"
 							class:active={simplifyMode === 'off'}
+							aria-pressed={simplifyMode === 'off'}
 							disabled={hasSitesMode && !discoAvailable && !showingAllNodes}
 							onclick={() => setSimplify('off')}
 							title={hasSitesMode && !discoAvailable && !showingAllNodes
