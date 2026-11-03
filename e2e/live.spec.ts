@@ -20,17 +20,22 @@ for (const ref of ['grch38', 'chm13']) {
 		await waitForLayout(page, 180_000);
 		// The header's "<n> n · <l> l · <w> w" counts: a real graph came back.
 		await expect(page.getByText(/^\d[\d,]* w$/).first()).toBeVisible();
-		// Ends with Load MSA, which on a simplified graph swaps in the full
-		// (unsimplified) graph — every haplotype walk — so the alignment has them.
 		await exerciseGraphView(page);
-		const simplify = page.getByRole('checkbox', { name: /^Simplify/ });
-		await expect(simplify).not.toBeChecked({ timeout: 120_000 });
-		await expect(page.getByText(/all [\d,]+ nodes shown/)).toBeVisible();
+
+		// Simplify: Off loads the full graph (every haplotype walk) and shows every
+		// node; Sites returns to the query's reduced graph; Fold folds small alleles.
+		const simplify = page.getByRole('group', { name: 'Simplification' });
+		await simplify.getByRole('button', { name: 'Off' }).click();
+		await expect(page.getByText(/all [\d,]+ nodes shown/)).toBeVisible({ timeout: 120_000 });
 		await waitForLayout(page, 180_000);
 
-		// And Simplify back on returns to the reduced graph.
-		await page.locator('label.switch', { has: simplify }).click();
-		await expect(simplify).toBeChecked();
+		await simplify.getByRole('button', { name: 'Sites' }).click();
+		await expect(simplify.getByRole('button', { name: 'Sites' })).toHaveAttribute('aria-pressed', 'true');
+		await expect(page.getByText(/small variant sites collapsed/)).toBeVisible();
+		await waitForLayout(page, 180_000);
+
+		await simplify.getByRole('button', { name: 'Fold' }).click();
+		await expect(page.getByText(/alleles? kept/)).toBeVisible();
 		await waitForLayout(page, 180_000);
 	});
 }

@@ -41,7 +41,7 @@
 
 	// ---- Query state -----------------------------------------------------------
 	let locusText = $state(DEFAULT_GENE);
-	// Subgraph context radius in bp (GBZ-base's `--context`, wasm default 100): how
+	// Subgraph context radius in bp (GBZ-base's `--context`, default 10,000): how
 	// far past the locus haplotypes are followed before they're cut off. Applied on
 	// the next query, so changing it takes a Query click like the locus does.
 	const DEFAULT_CONTEXT_BP = DEFAULT_CONTEXT;

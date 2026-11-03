@@ -24,7 +24,7 @@ Both are read directly from the public `human-pangenomics` S3 bucket (see
   extraction, then simplifies the subgraph and aggregates its haplotype walks
   before emitting GFA. It runs in a Web Worker.
 - **Context window.** The extracted subgraph is the requested locus plus a
-  **context** margin (GBZ-base's `--context`, default **100 bp**): how far past
+  **context** margin (GBZ-base's `--context`, default **10,000 bp**): how far past
   the locus the graph is followed before haplotypes are cut off at the boundary.
   A haplotype that continues beyond it has its walk chopped there — the "off-locus
   exit" dangles you see in the graph view. It's adjustable in the UI (the
@@ -47,9 +47,11 @@ Both are read directly from the public `human-pangenomics` S3 bucket (see
 The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 
 - **Reference-anchored graph layout** (`src/lib/graph/`) — a deterministic,
-  reference-pinned layout that draws the backbone linear in bp and each bubble as
-  horizontal lanes above it at the same scale (the earlier force-relaxed layouts
-  are picked from a list with a sketch of each), with optional reference-guided simplification
+  reference-pinned layout. The default, *Strands*, pins the reference to a
+  straight axis and force-relaxes each bubble into a column over the position it
+  attaches to; *Skyline* instead places each bubble directly as horizontal lanes at
+  true bp scale, which suits extremely dense loci. The layouts are picked from a
+  list with a sketch of each. With optional reference-guided simplification
   (small-variant popping + unchop) and reference genomic coordinates drawn along
   the backbone. A **gene track** (`src/lib/graph/geneTrack.ts`, exon/UTR structure
   read from UCSC bigBed over HTTP range requests) sits under the backbone on the
@@ -111,6 +113,36 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   and each builds an index over the graph, so on a large locus the control warns
   before switching — Graphoscope's general rule is to show context by default unless
   it would slow the app, then keep it one switch away with a slow-down warning.
+- **Simplify: Fold / Sites / Off.** *Fold* is the default; *Sites* is the query's
+  own simplification (below); *Off* is the full graph. Each shows how many nodes it
+  went from and to underneath the control. *Fold* (`src/lib/graph/fold.ts`) decides per
+  **allele** — the contiguous stretch of sequence one haplotype contributed — rather
+  than per node: it keeps the reference plus every allele at least the threshold in
+  size (its own bp, or the reference it replaces if larger), plus only the shortest
+  route from each kept allele back to the reference, drops deletion links under the
+  threshold, and merges what's left. So small stubs hanging off a big insertion go
+  too. It reads the full graph (the walks tell it which segments form one allele),
+  fetching it on its own when it's light enough for the haplotype list to auto-load
+  and otherwise folding the simplified graph, with the full one a click away. The
+  *auto* threshold is about 10 px at the fitted zoom.
+- **MSA view** — opened from the node inspector. It lays out the sequence of
+  every haplotype base by base along the graph's own nodes (no alignment is
+  computed: the graph already says which bases correspond), across the stretch of
+  reference in view when the reference-based graph is zoomed in to 6 kb or less
+  (3 kb on a phone), otherwise across a window around the selected node. It reads
+  the full graph in the background, while the graph above keeps its view and
+  simplification; MSA node names and clicks map onto the folded or simplified nodes
+  that hold them.
+- **Assembly graph** layout (`src/lib/graph/assemblyLayout.ts`, under
+  Reference-free) — a force layout that reads like an assembly-graph view: the
+  reference as a backbone running left to right, each variant a visible bubble or
+  loop. Each part has its own switch: collapse unbranched chains for the layout;
+  bp→drawn-length presets (Compress pulls long and short nodes toward the mean so
+  small alleles open into bubbles); route each deletion through a hidden node half
+  the length it skips, drawn as a dashed arc; seed the reference along x and rotate
+  it left to right; and, for drawing, Catmull-Rom smoothed flat-ended strands with
+  tangent edges, a rainbow reference, width by haplotype carriage, and length
+  labels. Best with Simplify set to Fold.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
@@ -145,7 +177,7 @@ A query is a shareable link. These params drive the app:
 - `locus` — a gene symbol (`SMN1`) **or** coordinates in the graph's reference
   system (`contig:start-end`, e.g. `chr5:70925029-70953942`)
 - `context` — optional subgraph context margin in bp (see [How it works](#how-it-works));
-  default `100`, omitted from the URL when it's the default
+  default `10000`, omitted from the URL when it's the default
 
 ```
 # GRCh38-based graph, by gene symbol
@@ -155,7 +187,7 @@ https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1
 https://marianattestad.github.io/graphoscope/?ref=chm13&locus=chr6:161783171-162011762
 
 # wider context to follow haplotypes further past the locus
-https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&context=2000
+https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&context=50000
 ```
 
 Opening the app writes the current `ref`/`locus` (and `context`, when non-default)
@@ -166,13 +198,13 @@ copy.
 
 For agents and scripts, `/api` runs the same query and returns **graph-complexity
 stats as JSON** instead of the visualizations. It takes the same params as the app
-(`ref`, `locus`, and optional `context`; default `100`) and echoes the effective
+(`ref`, `locus`, and optional `context`; default `10000`) and echoes the effective
 `context` back in the response:
 
 ```
 https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1
 https://marianattestad.github.io/graphoscope/api?ref=chm13&locus=LPA
-https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=2000
+https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=50000
 ```
 
 ```jsonc
@@ -181,19 +213,19 @@ https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=2
   "query": { "graph": "grch38", "referenceSample": "GRCh38",
              "input": "SMN1", "gene": "SMN1",
              "contig": "chr5", "start": 70925029, "end": 70953942, "span": 28913,
-             "context": 100 },
+             "context": 10000 },
   "complexity": {
-    "nodes": 22, "nodesBeforeSimplification": 585,
-    "links": 41, "linksBeforeSimplification": 822,
-    "walks": 97, "walkRecords": 97,
-    "totalSequenceBp": 29320, "referencePathBp": 29264,
-    "variantSites": 183, "snps": 180,
-    "nodesRemoved": 185, "basesRemoved": 198, "unchopMerges": 378,
+    "nodes": 151, "nodesBeforeSimplification": 1400,
+    "links": 221, "linksBeforeSimplification": 1975,
+    "walks": 391, "walkRecords": 391,
+    "totalSequenceBp": 61269, "referencePathBp": 52960,
+    "variantSites": 388, "snps": 408,
+    "nodesRemoved": 427, "basesRemoved": 466, "unchopMerges": 822,
     "simplified": true
   },
   // elapsedMs varies with network latency and the browser's cache
-  "fetch": { "requestCount": 20, "bytesFetched": 3604480,
-             "dbSizeBytes": 10050412544, "elapsedMs": 1276 }
+  "fetch": { "requestCount": 12, "bytesFetched": 3735552,
+             "dbSizeBytes": 10050412544, "elapsedMs": 1056 }
 }
 ```
 

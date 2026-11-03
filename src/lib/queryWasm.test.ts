@@ -9,7 +9,7 @@ import { buildOrigToDisplayed } from './graph/walkIndex';
 import { computeBubbles } from './graph/bubbles';
 import { gfaToGraph } from './graph/gfaToGraph';
 import { buildAndRunLayout } from './graph/forceLayout';
-import { buildAlignment } from './graph/msa';
+import { buildMsaGrid } from './graph/msa';
 
 // Smoke test for the *shipped* reducer: static/query.wasm is committed, and every
 // locus query and the playground run it. This runs that binary in its `--gfa`
@@ -95,7 +95,7 @@ describe('query.wasm --gfa', () => {
 			}
 			const refWalk = reduced.walks.find((w) => w.sample === ref)!;
 			const mid = refWalk.steps[Math.floor(refWalk.steps.length / 2)].id;
-			buildAlignment(reduced, { referenceSample: ref, selectedSegId: mid, windowBp: 2000 });
+			buildMsaGrid(reduced, { referenceSample: ref, selectedSegId: mid, windowBp: 2000 });
 		});
 	}
 });

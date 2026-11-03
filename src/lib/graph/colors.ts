@@ -45,7 +45,7 @@ export const COLOR_MODES: ColorModeInfo[] = [
 
 export const BACKBONE_COLOR = '#f2f4f8';
 
-// --- base (nucleotide) colours, for the MSA / base-alignment view ------------
+// --- base (nucleotide) colours, for the MSA view ----------------------------
 // One saturated fill per nucleotide, in the widely-recognised IGV convention
 // (A green, C blue, G amber, T red) so anyone who has looked at a read pileup
 // reads them without a legend. The same hues are used as zoomed-out blocks and

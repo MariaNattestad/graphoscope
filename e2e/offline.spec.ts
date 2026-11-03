@@ -14,7 +14,7 @@ async function openGfa(page: Page, name: string, text: string) {
 	await page
 		.locator('input[type="file"]')
 		.setInputFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(text) });
-	await expect(page.getByRole('button', { name })).toBeVisible();
+	await expect(page.getByRole('button', { name, exact: true })).toBeVisible();
 }
 
 // Tiny graphs for the /gfa page's other backbone paths (no W-lines).

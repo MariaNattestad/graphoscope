@@ -11,10 +11,15 @@
 	import { ALL_FIXTURES, type Fixture } from '$lib/graph/fixtures';
 	import type { ReduceRequest, ReduceResult } from '$lib/gfaReduce.worker';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
+	import { foldGfa } from '$lib/graph/fold';
 	import { base } from '$app/paths';
 
 	let selectedId = $state(ALL_FIXTURES[0].id);
 	let maxVariant = $state(50);
+	// Which simplification the right-hand pane shows: the wasm's site popping +
+	// unchop, or the allele-level fold (src/lib/graph/fold.ts).
+	let method = $state<'wasm' | 'fold'>('wasm');
+	let foldThreshold = $state(100);
 
 	const fixture = $derived<Fixture>(
 		ALL_FIXTURES.find((f) => f.id === selectedId) ?? ALL_FIXTURES[0]
@@ -94,6 +99,11 @@
 
 	const stats = $derived(reduced?.reduced ?? null);
 
+	const folded = $derived(
+		method === 'fold' ? foldGfa(parsed, foldThreshold, { referenceSample: fixture.referenceSample }) : null
+	);
+	const shown = $derived(folded ? folded.gfa : reduced);
+
 </script>
 
 <main>
@@ -126,15 +136,43 @@
 				</select>
 			</label>
 			<label>
-				collapse variants ≤
-				<input type="number" min="1" max="2000" bind:value={maxVariant} /> bp
+				Method
+				<select bind:value={method}>
+					<option value="wasm">pop sites + unchop (query.wasm)</option>
+					<option value="fold">fold alleles (fold.ts)</option>
+				</select>
 			</label>
+			{#if method === 'wasm'}
+				<label>
+					collapse variants ≤
+					<input type="number" min="1" max="2000" bind:value={maxVariant} /> bp
+				</label>
+			{:else}
+				<label>
+					fold alleles &lt;
+					<input type="number" min="0" max="1000000" step="10" bind:value={foldThreshold} /> bp
+				</label>
+			{/if}
 		</div>
 		<p class="desc">{fixture.description}</p>
 	</section>
 
 	<section class="panel">
-		{#if error}
+		{#if folded}
+			{@const f = folded.stats}
+			<div class="statgrid">
+				<div><span>segments</span><b>{f.segmentsBefore} → {f.segmentsAfter}</b></div>
+				<div><span>links</span><b>{f.linksBefore} → {f.linksAfter}</b></div>
+				<div><span>alleles kept</span><b>{f.keptAlleles} / {f.alleles}</b></div>
+				<div><span>route segments</span><b>{f.routeSegments}</b></div>
+				<div><span>small skips dropped</span><b>{f.droppedSkips}</b></div>
+				<div><span>skips restored</span><b>{f.restoredSkips}</b></div>
+				<div><span>merged</span><b>{f.merged}</b></div>
+			</div>
+			<p class="muted small">
+				{folded.applied ? 'Folded in the browser by fold.ts.' : 'No reference to fold toward — shown unchanged.'}
+			</p>
+		{:else if error}
 			<pre class="err">{error}</pre>
 		{:else if stats}
 			<div class="statgrid">
@@ -176,16 +214,16 @@
 			     needs a height-bounded box here — the app shell provides one, the
 			     playground's normal document flow doesn't. -->
 			<div class="graph-embed">
-				<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} />
+				<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} initialFold={false} />
 			</div>
 		</section>
 		<section class="panel">
 			<h2 class="panel-title">
-				Simplified · {reduced ? reduced.segments.size : '…'} nodes
+				{method === 'fold' ? 'Folded' : 'Simplified'} · {shown ? shown.segments.size : '…'} nodes
 			</h2>
-			{#if reduced}
+			{#if shown}
 				<div class="graph-embed">
-					<GraphLayoutView gfa={reduced} referenceSample={fixture.referenceSample} />
+					<GraphLayoutView gfa={shown} referenceSample={fixture.referenceSample} initialFold={false} />
 				</div>
 			{:else}
 				<p class="muted small">{running ? 'reducing…' : 'no result'}</p>
@@ -193,7 +231,7 @@
 		</section>
 	</div>
 
-	{#if reduced}
+	{#if reduced && method === 'wasm'}
 		<section class="panel">
 			<h2 class="panel-title">Reduced GFA</h2>
 			<p class="muted small">

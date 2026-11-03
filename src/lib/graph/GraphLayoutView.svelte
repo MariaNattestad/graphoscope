@@ -25,6 +25,9 @@
 	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
+	import { foldGfa, niceBp, referenceBp, zoomThreshold } from './fold';
+	import { DEFAULT_ASSEMBLY, LENGTH_MAPS, type AssemblyOptions } from './assemblyLayout';
+	import type { AssemblyStyle } from './GraphCanvas.svelte';
 	import {
 		buildOrigToDisplayed,
 		buildWalkIndex,
@@ -39,7 +42,7 @@
 	import type { RefKey } from '../genes';
 
 	let {
-		gfa,
+		gfa: inputGfa,
 		referenceSample = $bindable(),
 		refKey,
 		discoAvailable = false,
@@ -52,6 +55,7 @@
 		onToggleSimplify,
 		onRequestMoreContext,
 		context,
+		initialFold = true,
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
@@ -137,7 +141,72 @@
 		/** Current subgraph context radius (bp). When a re-query of the same locus comes
 		 * back with a larger value, the newly-pulled-in nodes are glowed until dismissed. */
 		context?: number;
+		/** Open with Simplify on Fold (the default). The playground turns it off so its
+		 * panes show the graphs it hands in as they are. */
+		initialFold?: boolean;
 	} = $props();
+
+	// --- Simplification: sites / fold / off -------------------------------------
+	// Three ways to look at the locus. "Sites" is the graph the wasm query already
+	// simplified (small sites popped, chains unchopped); "Off" is the full graph the
+	// parent swaps in; "Fold" runs the allele-level fold (fold.ts) here, so every
+	// page that embeds this view gets it. Fold groups segments into alleles by the
+	// haplotype walk that contributed them, so it reads the full graph when the
+	// parent can supply it and falls back to the graph on screen otherwise.
+	let foldOn = $state(untrack(() => initialFold));
+	let foldSetting = $state<'auto' | number>('auto');
+	let stageWidth = $state(0);
+	const FOLD_STEPS = [10, 50, 100, 500, 1000, 5000, 10000];
+	// Fold switches to the full graph only when it asked for it (on its own for a
+	// light locus, or from the "fold the full graph" link). The full graph also
+	// loads for the MSA and the haplotype tools; picking it up then would re-run the
+	// layout and throw away the user's view.
+	let foldFullFor = $state.raw<Gfa | null>(null);
+	const foldSource = $derived(discoWalksGfa && foldFullFor === inputGfa ? discoWalksGfa : inputGfa);
+	const foldFromFull = $derived(foldSource !== inputGfa || !inputGfa.reduced);
+	function foldFullGraph() {
+		foldFullFor = inputGfa;
+		if (!discoWalksGfa && discoAvailable && !discoLoading) onRequestDiscoGraph?.();
+	}
+	// Auto: hide what would be under ~10 px when the whole locus is fit to the view.
+	const foldAuto = $derived(
+		niceBp(zoomThreshold(referenceBp(foldSource, referenceSample) / Math.max(300, stageWidth || 1000)))
+	);
+	const foldThreshold = $derived(foldSetting === 'auto' ? foldAuto : foldSetting);
+	const foldResult = $derived(
+		foldOn ? foldGfa(foldSource, foldThreshold, { referenceSample }) : null
+	);
+	// --- Assembly graph mode: each part of it on its own switch ----------------
+	// Parts 2–5 change the layout (so they re-run it); Part 6 is drawing only.
+	let assemblyParts = $state<AssemblyOptions>({ ...DEFAULT_ASSEMBLY });
+	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true, labels: true });
+
+	/** The graph this view lays out and inspects: the input, or its fold. */
+	const gfa = $derived(foldResult?.applied ? foldResult.gfa : inputGfa);
+	// The hosted locus browser can swap between the simplified and full graph;
+	// a plain GFA (the /gfa page, the playground) is shown as loaded or folded.
+	const hasSitesMode = $derived(!!inputGfa.reduced || showingAllNodes);
+	const simplifyMode = $derived(foldOn ? 'fold' : hasSitesMode && !showingAllNodes ? 'sites' : 'off');
+
+	function setSimplify(mode: 'sites' | 'fold' | 'off') {
+		if (mode === simplifyMode) return;
+		trackEvent('widget_interact', { widget: 'graph_layout', action: `simplify_${mode}` });
+		foldOn = mode === 'fold';
+		// Fold reads the full graph from `discoWalksGfa`, so the parent can go back
+		// to its lighter simplified graph underneath.
+		if (mode === 'off' ? !showingAllNodes && hasSitesMode : showingAllNodes) onToggleSimplify?.();
+		if (mode === 'fold' && fullGraphAuto) foldFullGraph();
+	}
+
+	// Fold is the default, so it fetches the full graph on its own only when that's
+	// cheap (the same 'auto' tier the haplotype list loads by itself); otherwise it
+	// folds the simplified graph and offers the full one behind a click.
+	const fullGraphAuto = $derived(limits.walkLoadTier(inputGfa.reduced) === 'auto');
+	$effect(() => {
+		if (!foldOn || !fullGraphAuto || !discoAvailable) return;
+		if (untrack(() => foldFullFor) === inputGfa) return; // once per graph
+		untrack(() => foldFullGraph());
+	});
 
 	// --- context-increase glow -------------------------------------------------
 	// When the user re-queries the SAME locus with a larger context (from the query
@@ -299,7 +368,15 @@
 		colorMode;
 		lightMode;
 		const api = canvasApi;
-		return api ? (segId: string) => api.colorForSegment(segId) : undefined;
+		const map = fullToShown;
+		// MSA ids are full-graph ids: colour each by the node on screen that holds it,
+		// and a node that was folded away in the reference tone.
+		return api
+			? (segId: string) => {
+					const shown = map.get(segId);
+					return shown ? api.colorForSegment(shown) : legendTheme.backbone;
+				}
+			: undefined;
 	});
 	// The legend swatch is drawn from the same ramp the canvas uses, so it tracks the
 	// light/dark theme (the picker itself sits on the app's light chrome regardless).
@@ -317,46 +394,86 @@
 
 	let selected = $state<string | null>(null);
 
-	// The base-alignment (MSA) view: a resizable split below the graph showing the
-	// reference plus the haplotypes through the selected node, aligned base-by-base.
-	// Opened from the node inspector; stays open and re-derives as the selection
-	// changes, so a user can click node after node and watch the alignment update.
+	// The MSA view: a resizable split below the graph showing the reference plus
+	// the haplotypes in a window, laid out base by base along the graph's nodes
+	// (msa.ts; no alignment is computed). Opened from the node inspector; the
+	// selected node is highlighted in it.
 	let msaOpen = $state(false);
 	let msaHeight = $state(360);
-	// When "Load MSA" is clicked on a simplified graph, we switch to the full graph
-	// (which carries the walks the alignment needs). That swap fires the graph-reset
-	// effect below, which would normally close the MSA and drop the selection — so we
-	// stash the intent here and the reset effect re-opens the MSA (on `pendingMsaNode`
-	// when a node was selected) once the full graph arrives. `pendingMsaNode` holds an
-	// *original* node id (a member of the clicked reduced node), which is what the full
-	// graph is keyed by; it's null when the MSA is opened without a selection.
-	let pendingMsaOpen = $state(false);
-	let pendingMsaNode = $state<string | null>(null);
-	// Open the base-alignment view. On a simplified graph the MSA needs the full graph's
-	// walks, so switch to it automatically — but only when this device can show it
-	// (`discoAvailable`); on a low-memory/phone tab we don't force the load and the panel
-	// explains why it can't align there. Shared by the sidebar button and any other entry.
-	function openMsa() {
-		if (gfa.reduced && !showingAllNodes && discoAvailable && onToggleSimplify) {
-			const members = selected ? gfa.segments.get(selected)?.members : undefined;
-			pendingMsaNode =
-				members && members.length ? members[Math.floor(members.length / 2)] : selected;
-			pendingMsaOpen = true;
-			onToggleSimplify();
-		} else {
-			msaOpen = true;
-		}
-		trackEvent('widget_interact', { widget: 'graph_layout', action: 'open_msa' });
+	// The MSA view is base-level, so it always reads the full graph (every walk,
+	// every small variant), loaded in the background, while the graph above keeps
+	// showing whatever it shows (folded, sites or full). It shows either a fixed
+	// stretch of reference (what was in view when it was opened, if that was a few kb
+	// or less) or a window that follows the selected node.
+	const msaGfa = $derived(discoWalksGfa ?? (inputGfa.reduced ? null : inputGfa));
+	/** Stretch of reference on screen, from the canvas (reference-based layouts only). */
+	let viewRange = $state<{ contig: string; start: number; end: number } | null>(null);
+	/** The window the open MSA view covers. */
+	let msaRegion = $state<{ start: number; end: number } | null>(null);
+	const viewSpan = $derived(viewRange ? viewRange.end - viewRange.start : Infinity);
+	const viewFitsMsa = $derived(viewSpan > 0 && viewSpan <= limits.maxMsaColumns);
+	// Opened from the node inspector: the stretch of reference in view when the
+	// graph is zoomed in that far (reference-based layouts), otherwise a window
+	// centred on the selected node.
+	function openMsaFromInspector() {
+		msaRegion = viewRange && viewFitsMsa ? { start: viewRange.start, end: viewRange.end } : null;
+		msaOpen = true;
+		if (!msaGfa && discoAvailable && !discoLoading) onRequestDiscoGraph?.();
+		trackEvent('widget_interact', {
+			widget: 'graph_layout',
+			action: 'open_msa',
+			source: msaRegion ? 'view' : 'node'
+		});
 	}
+
+	// Full-graph node id → the node on screen that stands for it (itself, or the
+	// folded / unchopped node that absorbed it). Nodes dropped from view are absent.
+	const fullToShown = $derived.by(() => {
+		const m = new Map<string, string>();
+		for (const seg of gfa.segments.values()) {
+			m.set(seg.id, seg.id);
+			if (seg.members) for (const orig of seg.members) m.set(orig, seg.id);
+		}
+		return m;
+	});
+	// The selection in full-graph terms, for the MSA view's highlight.
+	const msaSelected = $derived.by(() => {
+		if (!selected || !msaGfa) return null;
+		if (msaGfa.segments.has(selected)) return selected;
+		const members = gfa.segments.get(selected)?.members;
+		return members && members.length ? members[Math.floor(members.length / 2)] : null;
+	});
+	// The MSA names its nodes (R1/A1/…) in full-graph ids; label the node on screen
+	// that holds them. A folded node holding several gets the range, e.g. "R3–R7".
+	let msaNamesFull = $state<Map<string, string> | null>(null);
+	const msaNamesShown = $derived.by(() => {
+		if (!msaNamesFull) return null;
+		const first = new Map<string, string>();
+		const last = new Map<string, string>();
+		for (const [id, name] of msaNamesFull) {
+			const shown = fullToShown.get(id);
+			if (!shown) continue;
+			if (!first.has(shown)) first.set(shown, name);
+			last.set(shown, name);
+		}
+		const out = new Map<string, string>();
+		for (const [shown, a] of first) {
+			const b = last.get(shown)!;
+			out.set(shown, a === b ? a : `${a}–${b}`);
+		}
+		return out;
+	});
 	// Short local names (R1/A1/…) the MSA assigns to the nodes in its window, so the
 	// graph can label the same nodes; null when simplified names are off/closed.
-	let msaNames = $state<Map<string, string> | null>(null);
+	const msaNames = $derived(msaNamesShown);
 	// A node clicked in the MSA gets flashed in the graph so the user can spot it.
 	// `flashNonce` bumps on every click so re-clicking the same node re-triggers.
 	let flashSegment = $state<string | null>(null);
 	let flashNonce = $state(0);
-	function flashGraphNode(segId: string) {
-		flashSegment = segId;
+	function flashGraphNode(fullId: string) {
+		const shown = fullToShown.get(fullId);
+		if (!shown) return; // folded away: nothing on screen to flash
+		flashSegment = shown;
 		flashNonce++;
 	}
 	// Walks the user clicked in the MSA rows: each is traced (disco-style) in the graph
@@ -454,28 +571,27 @@
 	}
 	let selectedExit = $state<SelectedExit | null>(null);
 
+	// Switching the fold on or off keeps the selection when its node survives, and
+	// clears it when the node was folded away.
 	$effect(() => {
-		gfa;
-		// Depend on `gfa` ALONE. The body reads/writes `pendingMsaNode` and other state;
-		// left tracked, reading `pendingMsaNode` would make setting it (in the Load-MSA
-		// handler) fire this effect immediately — while the graph is still reduced — and
-		// clear it before the switch lands. Untrack keeps the graph swap the only trigger.
+		const g = gfa;
 		untrack(() => {
-			// A "Load MSA" switch to the full graph: instead of dropping everything, re-open
-			// the alignment (on the corresponding full-graph node when one was selected).
-			// Guarded on !gfa.reduced so it only fires once the full graph has arrived.
-			const resuming = pendingMsaOpen && !gfa.reduced;
-			if (resuming) {
-				selected = pendingMsaNode && gfa.segments.has(pendingMsaNode) ? pendingMsaNode : null;
-				msaOpen = true;
-			} else {
-				selected = null;
-				// A new graph has different nodes; close the base-alignment view rather than
-				// leaving it pinned to a node id that no longer exists.
-				msaOpen = false;
-			}
-			pendingMsaOpen = false;
-			pendingMsaNode = null;
+			if (selected && !g.segments.has(selected)) selected = null;
+		});
+	});
+
+	$effect(() => {
+		inputGfa;
+		// Depend on the graph the parent hands in ALONE — not on `gfa`, which also
+		// changes when only the fold does (that keeps the panel and selection; see the
+		// effect below). The body reads and writes lots of other state; untrack keeps
+		// the graph swap the only trigger.
+		untrack(() => {
+			selected = null;
+			// A new graph is a new locus or a different simplification the parent swapped
+			// in; close the MSA view rather than leave it on a window that moved.
+			msaOpen = false;
+			msaRegion = null;
 			inspectorDismissed = false;
 			selectedFeature = null;
 			selectedExit = null;
@@ -926,14 +1042,14 @@
 	// full graph is ~97% walks (tens of MB at a repetitive locus), and it's the
 	// *parsed* walks that can OOM a phone tab, so the ceilings scale with the device.
 	// Full-graph size estimate from the reduced `X` line (0 when not a reduced graph).
-	const fullGraphNodes = $derived(gfa.reduced?.segmentsBefore ?? 0);
+	const fullGraphNodes = $derived(inputGfa.reduced?.segmentsBefore ?? 0);
 	// Number of haplotype walks in the full graph — what the "load haplotypes"
 	// button actually fetches (the walks are ~97% of the payload). Distinct from
 	// `fullGraphNodes`: loading them doesn't change the node count on screen.
-	const fullGraphWalks = $derived(gfa.reduced?.totalWalks ?? 0);
+	const fullGraphWalks = $derived(inputGfa.reduced?.totalWalks ?? 0);
 	// 'auto' → load without asking; 'manual' → load on a click; 'risky' → big
 	// enough to threaten an OOM (refused on a memory-constrained device).
-	const walkLoadTier = $derived(limits.walkLoadTier(gfa.reduced));
+	const walkLoadTier = $derived(limits.walkLoadTier(inputGfa.reduced));
 	const haploDataLight = $derived(fullGraphNodes > 0 && walkLoadTier === 'auto');
 	// On a phone, a repetitive locus (LPA and the like) can crash the tab when its
 	// walks are parsed. There we don't offer to load them at all — avoiding the
@@ -960,7 +1076,7 @@
 
 	// What the canvas actually spotlights: in walk mode a live hover supersedes the
 	// disco/haplotype traces; otherwise the existing disco paths. MSA-clicked walk
-	// traces are always layered on, so a walk picked in the alignment stays lit.
+	// traces are always layered on, so a walk picked in the MSA view stays lit.
 	const overlayPaths = $derived([
 		...(hoverMode === 'walk' && walkHoverPaths.length > 0 ? walkHoverPaths : discoPaths),
 		...msaWalkPaths
@@ -1363,8 +1479,15 @@
 		// The chosen haplotype straightened above the reference, or null. Included here
 		// so picking/clearing it re-runs the layout (it changes node positions).
 		straightenPath: DiscoStep[] | null;
+		// Assembly mode's layout parts (ignored by every other mode).
+		assembly: AssemblyOptions;
 	}
-	const layoutKnobs = $derived<LayoutKnobs>({ mode: layoutMode, bendyOverride, straightenPath });
+	const layoutKnobs = $derived<LayoutKnobs>({
+		mode: layoutMode,
+		bendyOverride,
+		straightenPath,
+		assembly: { ...assemblyParts }
+	});
 
 	// Worker options for a graph of this size. The mode carries the whole recipe —
 	// the worker resolves every force knob from it (see layoutModes.ts / forceLayout)
@@ -1378,6 +1501,8 @@
 		// A lanes layout places nodes directly, with no simulation to speed up, so
 		// it always gets full detail (its skip arcs need the bend nodes).
 		if (getModeConfig(mode).lanes) return base;
+		// Assembly mode sizes its own simulation; it only needs which parts are on.
+		if (getModeConfig(mode).assembly) return { ...base, assembly: knobs.assembly };
 		const bendy = bendyOverride ?? keptSegments <= limits.roughLayoutNodes;
 		return bendy
 			? base
@@ -1473,7 +1598,7 @@
 			<QueryReport
 				{locusLabel}
 				stats={reportStats}
-				reduced={gfa.reduced ?? null}
+				reduced={simplifyMode === 'sites' ? (inputGfa.reduced ?? null) : null}
 				{fetchInfo}
 				{querying}
 				computing={reportComputing}
@@ -1505,53 +1630,85 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Pinned primary controls: the Simplify switch and the Load MSA button, the
-			     two most-reached-for actions, share one box. Only the hosted locus browser
-			     has Simplify (it needs the full/reduced graph swap); the box still renders
-			     for the MSA button on a plain GFA. -->
-			{#if discoAvailable || showingAllNodes || allNodesTooMany || !msaOpen}
+			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
+			     most-reached-for actions, share one box. Simplify offers Sites / Fold / Off
+			     on the hosted locus browser (Sites and Off swap the parent's reduced and
+			     full graphs), and Fold / Off on a plain GFA. -->
 			<section class="group primary">
-				{#if discoAvailable || showingAllNodes}
-					<label
-						class="switch"
-						title="Collapse small variants and merge unbranched runs (default), or show every node in the full graph"
-					>
-						<input
-							type="checkbox"
-							checked={!showingAllNodes}
-							disabled={discoLoading}
-							onchange={() => onToggleSimplify?.()}
-						/>
-						<span class="track"><span class="thumb"></span></span>
-						<span class="switch-text">
-							<span class="switch-label">Simplify</span>
-							<span class="switch-sub">
-								{#if discoLoading}
-									loading…
-								{:else if showingAllNodes}
-									all {allNodesCount.toLocaleString()} nodes shown
-								{:else}
-									small variants collapsed
-								{/if}
-							</span>
-						</span>
-					</label>
-				{:else if allNodesTooMany}
-					<span class="switch-sub note"
-						>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
-							? 'too much memory to show in full on this device'
-							: 'too slow to render in full'}</span
-					>
-				{/if}
-				<!-- Base alignment (MSA): opens the split panel below the graph — a base-level
-				     view of the selected node's sequences, or prompts for a node if none. -->
-				{#if !msaOpen}
-					<button class="msa-load-btn" onclick={openMsa} title="Open the multiple sequence alignment (MSA) panel below the graph — a base-level view of the selected node's sequences (click a node first if none is selected)">
-						≡ Load MSA
-					</button>
-				{/if}
+				<div class="simplify">
+					<span class="group-title">Simplify</span>
+					<div class="family-toggle" role="group" aria-label="Simplification">
+						<button
+							type="button"
+							class:active={simplifyMode === 'fold'}
+							aria-pressed={simplifyMode === 'fold'}
+							onclick={() => setSimplify('fold')}
+							title="Fold whole alleles smaller than the threshold into the reference, keeping only the shortest route from each big one back to it"
+							>Fold</button
+						>
+						{#if hasSitesMode}
+							<button
+								type="button"
+								class:active={simplifyMode === 'sites'}
+								aria-pressed={simplifyMode === 'sites'}
+								onclick={() => setSimplify('sites')}
+								title="Collapse small variant sites and merge unbranched runs (the query's own simplification)"
+								>Sites</button
+							>
+						{/if}
+						<button
+							type="button"
+							class:active={simplifyMode === 'off'}
+							aria-pressed={simplifyMode === 'off'}
+							disabled={hasSitesMode && !discoAvailable && !showingAllNodes}
+							onclick={() => setSimplify('off')}
+							title={hasSitesMode && !discoAvailable && !showingAllNodes
+								? `${allNodesCount.toLocaleString()} nodes — ${limits.lowMemory ? 'too much memory to show in full on this device' : 'too slow to render in full'}`
+								: 'Show every node in the graph'}>Off</button
+						>
+					</div>
+					<span class="switch-sub">
+						{#if simplifyMode === 'fold' && foldResult}
+							{#if !foldResult.applied}
+								no reference to fold toward — shown as is
+							{:else}
+								{foldResult.stats.segmentsBefore.toLocaleString()} → {foldResult.stats.segmentsAfter.toLocaleString()}
+								nodes · {foldResult.stats.keptAlleles} allele{foldResult.stats.keptAlleles === 1 ? '' : 's'} kept
+								{#if discoLoading && !discoWalksGfa}· loading full graph…{:else if !foldFromFull}· from the simplified graph{#if discoAvailable}
+										· <button type="button" class="link-btn" onclick={foldFullGraph}
+											>fold the full graph</button
+										>{/if}{/if}
+							{/if}
+						{:else if simplifyMode === 'sites'}
+							{#if discoLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
+								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes · small variant sites collapsed{:else}small
+								variant sites collapsed{/if}
+						{:else if showingAllNodes}
+							all {allNodesCount.toLocaleString()} nodes shown
+						{:else}
+							every node, as loaded
+						{/if}
+					</span>
+					{#if simplifyMode === 'fold'}
+						<label class="fold-threshold">
+							alleles under
+							<select bind:value={foldSetting}>
+								<option value="auto">auto ({foldAuto.toLocaleString()} bp)</option>
+								{#each FOLD_STEPS as t (t)}
+									<option value={t}>{t.toLocaleString()} bp</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
+					{#if hasSitesMode && !discoAvailable && !showingAllNodes && allNodesTooMany}
+						<span class="switch-sub note"
+							>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
+								? 'too much memory to show in full on this device'
+								: 'too slow to render in full'}</span
+						>
+					{/if}
+				</div>
 			</section>
-			{/if}
 
 			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
@@ -1808,6 +1965,47 @@
 								modes={LAYOUT_MODES.filter((m) => m.family === modeCfg.family)}
 								bind:mode={layoutMode}
 							/>
+							{#if modeCfg.assembly}
+								<div class="assembly-parts">
+									{#if simplifyMode !== 'fold'}
+										<p class="assembly-hint">
+											Reads best with small variants folded away.
+											<button type="button" class="link-btn" onclick={() => setSimplify('fold')}>Turn on Fold</button>
+										</p>
+									{/if}
+									<span class="parts-title">Layout</span>
+									<label title="Lay out one node per unbranched chain, then split it back into its members">
+										<input type="checkbox" bind:checked={assemblyParts.collapseChains} /> Collapse chains
+									</label>
+									<label class="parts-select" title="How a node's bp length maps to its drawn length">
+										Length
+										<select bind:value={assemblyParts.lengthMap}>
+											{#each LENGTH_MAPS as m (m.id)}
+												<option value={m.id} title={m.blurb}>{m.label}</option>
+											{/each}
+										</select>
+									</label>
+									<label title="Lay each deletion out through a hidden node half as long as the reference it skips; draw it as a dashed arc">
+										<input type="checkbox" bind:checked={assemblyParts.routeDeletions} /> Route deletions
+									</label>
+									<label title="Start the reference along x by its coordinate, and turn the result so it runs left to right">
+										<input type="checkbox" bind:checked={assemblyParts.anchorReference} /> Anchor reference
+									</label>
+									<span class="parts-title">Drawing</span>
+									<label title="Flat-ended strands smoothed with a centripetal Catmull-Rom spline; edges as curves that leave and arrive along the nodes">
+										<input type="checkbox" bind:checked={assemblyStyle.shape} /> Smooth strands, tangent edges
+									</label>
+									<label title="Colour the reference by position (a rainbow along it) and everything else dark grey">
+										<input type="checkbox" bind:checked={assemblyStyle.rainbow} /> Rainbow reference
+									</label>
+									<label title="Width follows how many haplotypes pass through the node">
+										<input type="checkbox" bind:checked={assemblyStyle.carriage} /> Width by carriage
+									</label>
+									<label title="Label merged runs and large alleles with their length, and deletion arcs with what they skip">
+										<input type="checkbox" bind:checked={assemblyStyle.labels} /> Length labels
+									</label>
+								</div>
+							{/if}
 							<!-- Backbone picker / note: only meaningful for a reference-anchored
 							     layout, so it lives here (and only when the parent supplies choices —
 							     the /gfa page). More than one option → a picker bound to the chosen
@@ -1835,7 +2033,7 @@
 						     turns off automatically past limits.roughLayoutNodes; this switch
 						     forces it either way for the current graph. A lanes layout has no
 						     relaxation to trade off, so it hides the switch. -->
-						{#if !modeCfg.lanes}
+						{#if !modeCfg.lanes && !modeCfg.assembly}
 						<label
 							class="switch"
 							title="Draw each segment as a relaxed curve (full detail). Prettier but much slower on large graphs, so it turns off automatically on big ones — toggle to override for this graph."
@@ -1904,10 +2102,11 @@
 					<button class="cgm-dismiss" onclick={dismissContextGlow} aria-label="Dismiss">Dismiss</button>
 				</div>
 			{/if}
-			<div class="stage" class:msa-open={msaOpen}>
+			<div class="stage" class:msa-open={msaOpen} bind:clientWidth={stageWidth}>
 				{#if displayLayout}
 					<GraphCanvas
 						layout={displayLayout}
+						assemblyStyle={modeCfg.assembly ? assemblyStyle : null}
 						refCoords={referenceFree ? undefined : refCoords}
 						genes={referenceFree ? [] : genes}
 						showGenes={showGeneTrack && !referenceFree}
@@ -1933,6 +2132,7 @@
 						{glowGreenSegments}
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
+						onViewRange={(r) => (viewRange = r)}
 						onSelectSegment={(id) => {
 							selected = id;
 							if (id) {
@@ -2048,7 +2248,7 @@
 				{/if}
 			</div>
 
-			<!-- Base-alignment (MSA) split: a resizable panel below the graph, driven by
+			<!-- MSA view split: a resizable panel below the graph, driven by
 			     the selected node. A drag handle on top resizes it; the graph (flex:1)
 			     shrinks to make room. -->
 			{#if msaOpen}
@@ -2057,22 +2257,26 @@
 						class="msa-resize"
 						onpointerdown={startMsaResize}
 						role="separator"
-						aria-label="Resize the alignment panel"
+						aria-label="Resize the MSA panel"
 						title="Drag to resize"
 					></div>
 					<div class="msa-split-inner">
 						<MsaPanel
-							{gfa}
+							gfa={msaGfa}
 							{referenceSample}
-							selectedSegId={selected}
+							selectedSegId={msaSelected}
+							region={msaRegion}
 							{lightMode}
 							colorForSeg={msaColorForSeg}
 							{colorMode}
 							rowHighlights={msaRowHighlights}
-							loadingFullGraph={discoLoading && !showingAllNodes}
-							fullGraphBlocked={!!gfa.reduced && !discoAvailable}
-							onClose={() => (msaOpen = false)}
-							onNames={(m) => (msaNames = m)}
+							loadingFullGraph={discoLoading && !msaGfa}
+							fullGraphBlocked={!msaGfa && !discoAvailable}
+							onClose={() => {
+								msaOpen = false;
+								msaRegion = null;
+							}}
+							onNames={(m) => (msaNamesFull = m)}
 							onNodeFlash={flashGraphNode}
 							onWalkSpotlight={toggleMsaWalk}
 						/>
@@ -2232,6 +2436,19 @@
 									<span class="ni-haplo-hint muted">no named haplotype passes through this node</span>
 								{/if}
 							</div>
+						{/if}
+
+						<!-- MSA view: the stretch of reference in view when the graph is zoomed in
+						     to a few kb, otherwise a window around this node. Hidden once open. -->
+						{#if !msaOpen}
+							<button
+								type="button"
+								class="msa-view-btn"
+								onclick={openMsaFromInspector}
+								title="Open the MSA view below the graph: the sequence of every haplotype, laid out base by base along the graph's nodes"
+							>
+								≡ {viewFitsMsa ? 'Show MSA for sequences in view' : 'Show MSA around this node'}
+							</button>
 						{/if}
 
 						{#if showSequence}
@@ -2697,6 +2914,75 @@
 		gap: 0.5rem;
 	}
 	/* Segmented control that splits the two layout families apart. */
+	.assembly-parts {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		margin-top: 0.5rem;
+		padding: 0.5rem 0.6rem;
+		border: 1px solid #e3e6eb;
+		border-radius: 8px;
+		font-size: 0.76rem;
+		color: #374151;
+	}
+	.assembly-parts label {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		cursor: pointer;
+	}
+	.assembly-parts .parts-title {
+		font-size: 0.66rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: #9ca3af;
+		margin-top: 0.2rem;
+	}
+	.assembly-parts select {
+		font: inherit;
+		padding: 0.1rem 0.25rem;
+		border: 1px solid #cbd0d8;
+		border-radius: 6px;
+		background: #fff;
+	}
+	.assembly-hint {
+		margin: 0;
+		color: #6b7280;
+	}
+	.link-btn {
+		font: inherit;
+		padding: 0;
+		border: none;
+		background: none;
+		color: #2563eb;
+		cursor: pointer;
+		text-decoration: underline;
+	}
+	.simplify {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+	}
+	.fold-threshold {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.74rem;
+		color: #6b7280;
+	}
+	.fold-threshold select {
+		font: inherit;
+		padding: 0.15rem 0.3rem;
+		border: 1px solid #cbd0d8;
+		border-radius: 6px;
+		background: #fff;
+		color: #222;
+	}
+	.family-toggle button:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
 	.family-toggle {
 		display: flex;
 		gap: 2px;
@@ -3270,7 +3556,7 @@
 		min-height: 140px;
 	}
 
-	/* Base-alignment split panel below the graph. Fixed (drag-resizable) height, so
+	/* MSA view split panel below the graph. Fixed (drag-resizable) height, so
 	   the graph above it (flex:1) yields the remaining space. */
 	.msa-split {
 		flex: 0 0 auto;
@@ -3302,24 +3588,6 @@
 		flex: 1 1 auto;
 		min-height: 0;
 	}
-	.msa-load-btn {
-		display: block;
-		width: 100%;
-		padding: 0.45rem 0.6rem;
-		font: inherit;
-		font-size: 0.82rem;
-		font-weight: 600;
-		text-align: center;
-		border: 1px solid rgba(103, 232, 249, 0.5);
-		border-radius: 7px;
-		background: rgba(103, 232, 249, 0.12);
-		color: #0e7490;
-		cursor: pointer;
-	}
-	.msa-load-btn:hover {
-		background: rgba(103, 232, 249, 0.22);
-	}
-
 	/* Stack the sidebar above the canvas on narrow screens. */
 	@media (max-width: 640px) {
 		.body {
@@ -3350,6 +3618,24 @@
 	}
 	/* Non-blocking "still working" pill for in-place recomputes: sits in a corner
 	   over the (still-visible, still-interactive) graph. */
+	.msa-view-btn {
+		display: block;
+		width: 100%;
+		margin-top: 0.5rem;
+		padding: 0.35rem 0.6rem;
+		font: inherit;
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-align: center;
+		border: 1px solid rgba(103, 232, 249, 0.5);
+		border-radius: 7px;
+		background: rgba(103, 232, 249, 0.12);
+		color: #0e7490;
+		cursor: pointer;
+	}
+	.msa-view-btn:hover {
+		background: rgba(103, 232, 249, 0.22);
+	}
 	.busy-badge {
 		position: absolute;
 		top: 10px;

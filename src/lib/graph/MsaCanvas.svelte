@@ -1,5 +1,6 @@
 <script lang="ts">
-	// Base-level renderer for the MSA window. Draws the alignment matrix on a 2D
+	// Base-level renderer for the MSA view. Draws the grid (built by msa.ts; no
+	// alignment is computed, the graph's nodes say which bases correspond) on a 2D
 	// canvas: a left gutter of row labels, a top ruler of node ids + reference
 	// coordinates, and the cells themselves — one coloured block per base, with the
 	// A/C/G/T letters appearing once each base is wide enough (genome-browser style).
@@ -11,10 +12,10 @@
 	import { untrack } from 'svelte';
 	import { baseThemeDark, baseThemeLight, baseFill, BACKBONE_COLOR, type BaseTheme } from './colors';
 	import type { ColorMode } from './colors';
-	import type { Alignment } from './msa';
+	import type { MsaGrid } from './msa';
 
 	let {
-		alignment,
+		grid,
 		lightMode = false,
 		emphasizeVariants = true,
 		simplifiedNames = true,
@@ -24,7 +25,7 @@
 		onNodeClick,
 		onWalkClick
 	}: {
-		alignment: Alignment;
+		grid: MsaGrid;
 		lightMode?: boolean;
 		/** Dim the shared backbone sequence so the alt-allele columns (the actual
 		 * variation) stand out — the node-block equivalent of an MSA's match dots. */
@@ -54,14 +55,14 @@
 	// shorter band.
 	const RULER_H = $derived(simplifiedNames ? 40 : 56);
 	// A per-node colour track sits between the ruler and the matrix when the graph
-	// hands us a colour function. MATRIX_TOP is where the alignment rows begin.
+	// hands us a colour function. MATRIX_TOP is where the grid rows begin.
 	const TRACK_H = $derived(colorForSeg ? 11 : 0);
 	const MATRIX_TOP = $derived(RULER_H + TRACK_H);
 	const ROW_H = 20;
 	// The reference row (rows[0]) is frozen as a header band directly under the ruler,
 	// so it stays in view while the walk rows below it scroll. BODY_TOP is where the
 	// scrolling rows (rows[1..]) begin.
-	const hasRef = $derived(alignment.rows.length > 0 && alignment.rows[0].isReference);
+	const hasRef = $derived(grid.rows.length > 0 && grid.rows[0].isReference);
 	const FROZEN_H = $derived(hasRef ? ROW_H : 0);
 	const BODY_TOP = $derived(MATRIX_TOP + FROZEN_H);
 	const LETTER_MIN_PX = 7.5; // draw glyphs once a base is at least this wide
@@ -85,7 +86,7 @@
 
 	const matrixW = $derived(Math.max(10, width - GUTTER_W));
 	// Scrollable body = every row after the frozen reference row.
-	const bodyRowCount = $derived(Math.max(0, alignment.rows.length - (hasRef ? 1 : 0)));
+	const bodyRowCount = $derived(Math.max(0, grid.rows.length - (hasRef ? 1 : 0)));
 	const contentH = $derived(bodyRowCount * ROW_H);
 	const maxScrollY = $derived(Math.max(0, contentH - (height - BODY_TOP)));
 
@@ -108,13 +109,13 @@
 
 	function clampPan() {
 		// Keep at least a sliver of content on screen; allow a small margin each side.
-		const minPanX = matrixW - alignment.totalBp * pxPerBp - 40;
+		const minPanX = matrixW - grid.totalBp * pxPerBp - 40;
 		const maxPanX = 40;
 		panX = Math.min(maxPanX, Math.max(minPanX, panX));
 		scrollY = Math.min(maxScrollY, Math.max(0, scrollY));
 	}
 
-	// The alignment builds a generous window, but the view opens focused on the
+	// The grid covers a generous window, but the view opens focused on the
 	// clicked node: the node fills the width (min 21 bp so a 1 bp SNP is still
 	// readable), and zooming out from there reveals the surrounding context.
 	const MIN_FOCUS_BP = 21;
@@ -122,11 +123,12 @@
 	/** Open the view focused on the clicked node (its own length, ≥ 21 bp). */
 	export function fit() {
 		userAdjusted = false;
-		const sel = alignment.blocks.find((b) => b.isSelected);
-		const focusBp = Math.max(MIN_FOCUS_BP, sel ? sel.bpLen : Math.min(alignment.totalBp, 200));
+		const sel = grid.blocks.find((b) => b.isSelected);
+		// A node: open on it. A window with nothing selected: open on the whole window.
+		const focusBp = Math.max(MIN_FOCUS_BP, sel ? sel.bpLen : grid.totalBp);
 		const k = Math.min(MAX_PX_PER_BP, Math.max(MIN_PX_PER_BP, matrixW / focusBp));
 		pxPerBp = k;
-		const centerBp = sel ? sel.colStart + sel.bpLen / 2 : alignment.totalBp / 2;
+		const centerBp = sel ? sel.colStart + sel.bpLen / 2 : grid.totalBp / 2;
 		panX = matrixW / 2 - centerBp * k;
 		scrollY = 0;
 		clampPan();
@@ -141,10 +143,10 @@
 		clampPan();
 	}
 
-	// Refit whenever a new alignment arrives (new node clicked / window changed).
+	// Refit whenever a new grid arrives (new node clicked / window changed).
 	let lastKey = '';
 	$effect(() => {
-		const key = `${alignment.selectedSegId}|${alignment.totalBp}|${alignment.blocks.length}`;
+		const key = `${grid.selectedSegId}|${grid.totalBp}|${grid.blocks.length}`;
 		if (key !== lastKey) {
 			lastKey = key;
 			untrack(() => fit());
@@ -184,7 +186,7 @@
 	function cursorFor(px: number, py: number): string {
 		if (px < GUTTER_W) {
 			const r = rowAtY(py);
-			return r >= 0 && !alignment.rows[r].isReference && onWalkClick ? 'pointer' : 'default';
+			return r >= 0 && !grid.rows[r].isReference && onWalkClick ? 'pointer' : 'default';
 		}
 		// A whole node column — its ruler title, colour-track swatch, and cells — is
 		// clickable (flashes that node in the graph).
@@ -232,8 +234,8 @@
 			// A click on a walk's row label (left gutter) spotlights that walk in the
 			// graph, disco-style. The reference row isn't a spotlightable walk.
 			const r = rowAtY(py);
-			if (r >= 0 && !alignment.rows[r].isReference && onWalkClick) {
-				onWalkClick(alignment.rows[r].key);
+			if (r >= 0 && !grid.rows[r].isReference && onWalkClick) {
+				onWalkClick(grid.rows[r].key);
 			}
 			return;
 		}
@@ -263,10 +265,10 @@
 		if (px < GUTTER_W) return null;
 		const bp = (px - GUTTER_W - panX) / pxPerBp;
 		const bi = blockAtBp(bp);
-		return bi >= 0 ? alignment.blocks[bi].segId : null;
+		return bi >= 0 ? grid.blocks[bi].segId : null;
 	}
 
-	/** The alignment row index under a screen y, accounting for the frozen reference
+	/** The grid row index under a screen y, accounting for the frozen reference
 	 * row (pinned at the top) and the scrolling body below it. -1 if none. */
 	function rowAtY(py: number): number {
 		if (py < MATRIX_TOP) return -1;
@@ -275,12 +277,12 @@
 		const bi = Math.floor((py - BODY_TOP + scrollY) / ROW_H);
 		if (bi < 0) return -1;
 		const r = hasRef ? bi + 1 : bi;
-		return r < alignment.rows.length ? r : -1;
+		return r < grid.rows.length ? r : -1;
 	}
 
 	function blockAtBp(bp: number): number {
 		// Binary search blocks by colStart.
-		const b = alignment.blocks;
+		const b = grid.blocks;
 		let lo = 0;
 		let hi = b.length - 1;
 		let ans = -1;
@@ -312,9 +314,9 @@
 			hover = null;
 			return;
 		}
-		const blk = alignment.blocks[bi];
+		const blk = grid.blocks[bi];
 		const withinNode = Math.floor(bp - blk.colStart);
-		const cell = alignment.rows[rowIdx].cells[bi];
+		const cell = grid.rows[rowIdx].cells[bi];
 		const base = cell == null ? '–' : cell === '' ? '·' : (cell[withinNode] ?? '·');
 		hover = {
 			x: px,
@@ -324,11 +326,11 @@
 			segId: blk.segId,
 			nodeName: simplifiedNames ? blk.simpleName : blk.segId,
 			isBackbone: blk.isBackbone,
-			rowLabel: alignment.rows[rowIdx].label,
+			rowLabel: grid.rows[rowIdx].label,
 			base,
 			bpInNode: withinNode,
 			refPos: blk.refStart != null ? blk.refStart + withinNode : null,
-			contig: blk.contig ?? alignment.contig
+			contig: blk.contig ?? grid.contig
 		};
 	}
 
@@ -345,7 +347,7 @@
 	// Redraw on any visual state change.
 	$effect(() => {
 		// touch reactive deps
-		alignment;
+		grid;
 		theme;
 		emphasizeVariants;
 		simplifiedNames;
@@ -378,7 +380,7 @@
 		const k = pxPerBp;
 		const screenX = (bp: number) => GUTTER_W + panX + bp * k;
 		const bpLeft = Math.max(0, (-panX) / k);
-		const bpRight = Math.min(alignment.totalBp, (matrixW - panX) / k);
+		const bpRight = Math.min(grid.totalBp, (matrixW - panX) / k);
 		const drawLetters = k >= LETTER_MIN_PX;
 
 		// Visible span of the scrolling body rows (rows[1..] when the ref is frozen).
@@ -393,8 +395,8 @@
 		ctx.beginPath();
 		ctx.rect(GUTTER_W, MATRIX_TOP, matrixW, height - MATRIX_TOP);
 		ctx.clip();
-		for (let i = 0; i < alignment.blocks.length; i++) {
-			const blk = alignment.blocks[i];
+		for (let i = 0; i < grid.blocks.length; i++) {
+			const blk = grid.blocks[i];
 			if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
 			const x0 = screenX(blk.colStart);
 			const x1 = screenX(blk.colStart + blk.bpLen);
@@ -421,9 +423,9 @@
 			ctx.textAlign = 'center';
 			ctx.textBaseline = 'middle';
 		}
-		const paintRow = (row: (typeof alignment.rows)[number], y0: number) => {
-			for (let i = 0; i < alignment.blocks.length; i++) {
-				const blk = alignment.blocks[i];
+		const paintRow = (row: (typeof grid.rows)[number], y0: number) => {
+			for (let i = 0; i < grid.blocks.length; i++) {
+				const blk = grid.blocks[i];
 				if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
 				const cell = row.cells[i];
 				if (cell === null) {
@@ -480,7 +482,7 @@
 		ctx.clip();
 		for (let bi = firstBody; bi <= lastBody; bi++) {
 			const r = hasRef ? bi + 1 : bi;
-			paintRow(alignment.rows[r], BODY_TOP + bi * ROW_H - scrollY);
+			paintRow(grid.rows[r], BODY_TOP + bi * ROW_H - scrollY);
 		}
 		// hovered-row highlight (a translucent tint over the cells) for a body row.
 		if (hover && !dragging && !(hasRef && hover.rowIdx === 0)) {
@@ -496,7 +498,7 @@
 			ctx.beginPath();
 			ctx.rect(GUTTER_W, MATRIX_TOP, matrixW, FROZEN_H);
 			ctx.clip();
-			paintRow(alignment.rows[0], MATRIX_TOP);
+			paintRow(grid.rows[0], MATRIX_TOP);
 			if (hover && !dragging && hover.rowIdx === 0) {
 				ctx.fillStyle = theme.selectedBand;
 				ctx.fillRect(GUTTER_W, MATRIX_TOP, matrixW, ROW_H);
@@ -540,8 +542,8 @@
 		ctx.strokeStyle = theme.nodeDivider;
 		ctx.lineWidth = 1;
 		ctx.beginPath();
-		for (let i = 0; i < alignment.blocks.length; i++) {
-			const blk = alignment.blocks[i];
+		for (let i = 0; i < grid.blocks.length; i++) {
+			const blk = grid.blocks[i];
 			if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
 			const x0 = Math.round(screenX(blk.colStart)) + 0.5;
 			const x1 = Math.round(screenX(blk.colStart + blk.bpLen)) + 0.5;
@@ -560,8 +562,8 @@
 		// way `lastRight` skips a name only when it would collide with the previous one.
 		ctx.textBaseline = 'alphabetic';
 		let lastRight = -Infinity;
-		for (let i = 0; i < alignment.blocks.length; i++) {
-			const blk = alignment.blocks[i];
+		for (let i = 0; i < grid.blocks.length; i++) {
+			const blk = grid.blocks[i];
 			if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
 			const x0 = screenX(blk.colStart);
 			const x1 = screenX(blk.colStart + blk.bpLen);
@@ -574,7 +576,7 @@
 			const vis0 = Math.max(x0 + 2, GUTTER_W + 2); // sticky to the visible left edge
 			// Space to the NEXT node's left edge — only used to decide whether a long raw
 			// id needs the diagonal fallback (short names ignore it and stay horizontal).
-			const nextX = i + 1 < alignment.blocks.length ? screenX(alignment.blocks[i + 1].colStart) : width;
+			const nextX = i + 1 < grid.blocks.length ? screenX(grid.blocks[i + 1].colStart) : width;
 			const availPx = Math.min(nextX, width) - vis0;
 			if (simplifiedNames || textW + 3 <= availPx) {
 				// horizontal at the top of the band (all short names; raw ids that fit)
@@ -613,15 +615,15 @@
 
 		// 3b) per-node colour track: a thin band under the ruler that paints each node
 		// its graph-view colour (backbone forced to white / the backbone tone), so the
-		// alignment carries the same "color by" reading the graph shows. Fixed under the
+		// grid carries the same "color by" reading the graph shows. Fixed under the
 		// ruler, so it stays put as the rows scroll.
 		if (colorForSeg && TRACK_H > 0) {
 			ctx.save();
 			ctx.beginPath();
 			ctx.rect(GUTTER_W, RULER_H, matrixW, TRACK_H);
 			ctx.clip();
-			for (let i = 0; i < alignment.blocks.length; i++) {
-				const blk = alignment.blocks[i];
+			for (let i = 0; i < grid.blocks.length; i++) {
+				const blk = grid.blocks[i];
 				if (blk.colStart + blk.bpLen < bpLeft || blk.colStart > bpRight) continue;
 				const x0 = screenX(blk.colStart);
 				const x1 = screenX(blk.colStart + blk.bpLen);
@@ -650,7 +652,7 @@
 		ctx.stroke();
 		// One row label. A walk spotlit in the graph gets a colour swatch and its label
 		// drawn in that same highlight colour (matches the graph trace).
-		const paintRowLabel = (row: (typeof alignment.rows)[number], y0: number) => {
+		const paintRowLabel = (row: (typeof grid.rows)[number], y0: number) => {
 			ctx.textBaseline = 'middle';
 			ctx.textAlign = 'left';
 			const hl = !row.isReference ? (rowHighlights?.get(row.key) ?? null) : null;
@@ -667,7 +669,7 @@
 			const maxChars = Math.max(4, Math.floor((GUTTER_W - 46 - (hl ? 12 : 0)) / 6.3));
 			const label = row.label.length > maxChars ? row.label.slice(0, maxChars - 1) + '…' : row.label;
 			ctx.fillText(label, textX, y0 + ROW_H / 2);
-			// multiplicity + inversion badges, right-aligned in the gutter
+			// multiplicity + inversion badges, right-justified in the gutter
 			let bx = GUTTER_W - 6;
 			ctx.textAlign = 'right';
 			if (row.multiplicity > 1) {
@@ -689,7 +691,7 @@
 		ctx.clip();
 		for (let bi = firstBody; bi <= lastBody; bi++) {
 			const r = hasRef ? bi + 1 : bi;
-			paintRowLabel(alignment.rows[r], BODY_TOP + bi * ROW_H - scrollY);
+			paintRowLabel(grid.rows[r], BODY_TOP + bi * ROW_H - scrollY);
 		}
 		ctx.restore();
 		// frozen reference label
@@ -698,7 +700,7 @@
 			ctx.beginPath();
 			ctx.rect(0, MATRIX_TOP, GUTTER_W, FROZEN_H);
 			ctx.clip();
-			paintRowLabel(alignment.rows[0], MATRIX_TOP);
+			paintRowLabel(grid.rows[0], MATRIX_TOP);
 			ctx.restore();
 		}
 
@@ -734,8 +736,8 @@
 	}
 
 	// Resize tracking. This effect must depend on `canvasEl` ONLY — every reactive
-	// read (matrixW/width/alignment via fit()/clampPan()) is wrapped in untrack so
-	// the observer is created once, not re-created on every width/alignment change.
+	// read (matrixW/width/grid via fit()/clampPan()) is wrapped in untrack so
+	// the observer is created once, not re-created on every width/grid change.
 	// Without that, a width that flickers (e.g. a scrollbar appearing when the panel
 	// opens) would re-run this effect on each flicker and trip Svelte's
 	// effect_update_depth guard, freezing the panel.

@@ -26,8 +26,9 @@ export type LayoutMode =
 	// reference-anchored
 	| 'classic'
 	| 'stacked'
-	| 'spread'
 	| 'naive'
+	// reference-seeded, free-standing
+	| 'assembly'
 	// reference-free
 	| 'fm3'
 	| 'simple-force'
@@ -69,14 +70,14 @@ export interface LayoutModeConfig {
 	/** Push bubbles clear of the reference line so nothing overlaps it. Off lets the
 	 * relaxation drift across the line (part of the "naive" older look). */
 	avoidBaseline: boolean;
-	/** Let alt bubbles fan out horizontally into the space over their neighbouring
-	 * reference nodes (up to ~halfway across each) instead of stacking into a tight
-	 * column above their attachment point. */
-	spread: boolean;
 	/** Place bubbles deterministically in bp-proportional lanes above the
 	 * reference, with no force relaxation (see laneLayout.ts). Overrides the force
 	 * knobs above. */
 	lanes: boolean;
+	/** A force layout that reads like an assembly-graph view (assemblyLayout.ts):
+	 * seeded from the reference but not pinned to it, so it's drawn without a
+	 * coordinate axis. Overrides every other knob. */
+	assembly?: boolean;
 	/** Whether to draw curved strands through bend nodes (both families honor this). */
 	bendNodes: boolean;
 	/** Tuning for free modes (undefined for anchored modes). */
@@ -85,43 +86,17 @@ export interface LayoutModeConfig {
 
 export const LAYOUT_MODES: LayoutModeConfig[] = [
 	// --- reference-anchored ---
-	{
-		id: 'classic',
-		label: 'Lanes (recommended)',
-		family: 'anchored',
-		blurb:
-			'Each bubble drawn above the reference as horizontal lanes at true bp scale, alleles side by side. The genome-browser view.',
-		bubblesAbove: true,
-		anchorToReference: true,
-		avoidBaseline: true,
-		spread: false,
-		lanes: true,
-		// Lanes never simulate, so bend nodes cost nothing; they carry the skip arcs.
-		bendNodes: true
-	},
+	// Ids are kept stable for saved settings; the labels shown are 'stacked' →
+	// Strands and 'classic' → Skyline.
 	{
 		id: 'stacked',
-		label: 'Stacked (force)',
+		label: 'Strands',
 		family: 'anchored',
 		blurb:
-			'The earlier force layout: each bubble pulled into a column over its anchor, its strands settling into their own shape.',
+			'A force layout along a straight reference axis: each bubble is pulled into a column over the reference position it attaches to, and its strands relax into their own shape.',
 		bubblesAbove: true,
 		anchorToReference: true,
 		avoidBaseline: true,
-		spread: false,
-		lanes: false,
-		bendNodes: false
-	},
-	{
-		id: 'spread',
-		label: 'Force spread',
-		family: 'anchored',
-		blurb:
-			'Force-relaxed: bubbles fan out horizontally into the space over their neighbouring reference nodes, finding their own shape.',
-		bubblesAbove: true,
-		anchorToReference: true,
-		avoidBaseline: true,
-		spread: true,
 		lanes: false,
 		bendNodes: false
 	},
@@ -133,9 +108,21 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		spread: false,
 		lanes: false,
 		bendNodes: false
+	},
+	{
+		id: 'classic',
+		label: 'Skyline',
+		family: 'anchored',
+		blurb:
+			'Each bubble placed directly above the reference as horizontal lanes at true bp scale, alleles side by side, with no simulation. Good for structuring extremely dense loci.',
+		bubblesAbove: true,
+		anchorToReference: true,
+		avoidBaseline: true,
+		lanes: true,
+		// Skyline never simulates, so bend nodes cost nothing; they carry the skip arcs.
+		bendNodes: true
 	},
 	// --- reference-free ---
 	// Listed first so it's the default whenever the reference-free family is chosen
@@ -149,7 +136,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		spread: false,
 		lanes: false,
 		// The strand/"noodle" curve comes from each segment's length-proportional
 		// bead chain bending, not from bend nodes on the connectors — so we skip bend
@@ -169,6 +155,21 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 			iterations: 120
 		}
 	},
+	// Seeded from the reference but drawn free, with no straight coordinate axis,
+	// so it lives with the reference-free modes (after FM³, which stays the default).
+	{
+		id: 'assembly',
+		label: 'Assembly graph',
+		family: 'free',
+		blurb:
+			'A force layout that reads like an assembly graph: the reference as a backbone running left to right, each variant a visible bubble or loop. Best with Simplify set to Fold.',
+		bubblesAbove: false,
+		anchorToReference: false,
+		avoidBaseline: false,
+		lanes: false,
+		assembly: true,
+		bendNodes: false
+	},
 	{
 		id: 'simple-force',
 		label: 'Simple force-directed',
@@ -177,7 +178,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		spread: false,
 		lanes: false,
 		bendNodes: false,
 		refFree: {
@@ -197,7 +197,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		spread: false,
 		lanes: false,
 		bendNodes: true,
 		refFree: {
@@ -218,7 +217,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		spread: false,
 		lanes: false,
 		bendNodes: true,
 		refFree: {
@@ -239,7 +237,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,
-		spread: false,
 		lanes: false,
 		bendNodes: true,
 		refFree: {
@@ -255,7 +252,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 
 const MODE_BY_ID = new Map(LAYOUT_MODES.map((m) => [m.id, m]));
 
-export const DEFAULT_LAYOUT_MODE: LayoutMode = 'classic';
+export const DEFAULT_LAYOUT_MODE: LayoutMode = 'stacked';
 
 export function getModeConfig(mode: LayoutMode | undefined): LayoutModeConfig {
 	return MODE_BY_ID.get(mode ?? DEFAULT_LAYOUT_MODE) ?? MODE_BY_ID.get(DEFAULT_LAYOUT_MODE)!;

@@ -63,12 +63,13 @@
 					<circle class="dot" cx="50" cy="20" r="1.6" />
 					<path class="alt" d="M14 35 C 11 30, 17 29, 14 25" />
 					<circle class="dot" cx="14" cy="25" r="1.6" />
-				{:else if m.id === 'spread'}
-					<!-- Force-relaxed loops opening out over neighbouring reference. -->
-					<path class="alt" d="M24 35 C 14 20, 30 10, 38 35" />
-					<path class="alt" d="M30 35 C 40 16, 58 20, 50 35" />
-					<circle class="dot" cx="24" cy="20.5" r="1.6" />
-					<circle class="dot" cx="44" cy="22" r="1.6" />
+				{:else if m.id === 'assembly'}
+					<!-- A wavy rainbow backbone with a big loop and a dashed deletion arc. -->
+					<path d="M4 26 C 14 22, 18 30, 28 26" stroke="#ef4444" stroke-width="2.6" fill="none" />
+					<path d="M28 26 C 36 22, 42 30, 50 26" stroke="#22c55e" stroke-width="2.6" fill="none" />
+					<path d="M50 26 C 54 24, 57 27, 61 25" stroke="#8b5cf6" stroke-width="2.6" fill="none" />
+					<path class="alt" d="M24 25 C 20 6, 40 4, 36 24" />
+					<path class="link" d="M44 27 C 47 38, 56 38, 58 27" stroke-dasharray="2 2" />
 				{:else if m.id === 'naive'}
 					<!-- A plain force layout pinned only along the reference line. -->
 					<path class="alt" d="M10 35 C 16 18, 26 46, 34 30 S 50 14, 54 35" />

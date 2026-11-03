@@ -81,11 +81,12 @@ export async function exerciseGraphView(page: Page) {
 		await waitForLayout(page);
 	}
 
-	const msa = page.getByRole('button', { name: /Load MSA/ });
+	// The MSA opens from the node inspector, once the sweep's click selected a node.
+	const msa = page.getByRole('button', { name: /Show MSA/ });
 	if (await msa.isVisible()) {
 		await msa.click();
-		await expect(page.getByLabel('Resize the alignment panel')).toBeVisible();
-		// With the panel open, a node click builds its alignment.
+		await expect(page.getByLabel('Resize the MSA panel')).toBeVisible({ timeout: 120_000 });
+		// With the panel open, a node click rebuilds its MSA grid.
 		await sweepCanvas(page);
 	}
 }

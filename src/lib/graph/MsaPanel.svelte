@@ -1,12 +1,14 @@
 <script lang="ts">
-	// The MSA base-alignment panel: a header of controls + a base-level canvas of
-	// the reference plus every haplotype through the selected node, aligned across a
-	// window centred on it. Owns the window-size control and derives the alignment;
-	// MsaCanvas does the drawing. Drop it under the graph and feed it the selected
-	// node — it re-derives whenever the selection or graph changes.
+	// The MSA view panel: a header of controls + a base-level canvas of the
+	// reference plus every haplotype crossing a window of the reference, laid out
+	// base by base along the graph's nodes (msa.ts builds the grid; nothing is
+	// aligned). The window is either fixed (`region`: the stretch of reference the
+	// graph was zoomed in on) or centred on the selected node. It always reads the
+	// full, walk-bearing graph (`gfa`), whatever the graph view is showing; MsaCanvas
+	// does the drawing.
 	import type { Gfa } from '../gfa';
 	import type { ColorMode } from './colors';
-	import { buildAlignment } from './msa';
+	import { buildMsaGrid } from './msa';
 	import { limits } from '../limits.svelte';
 	import MsaCanvas from './MsaCanvas.svelte';
 
@@ -14,6 +16,7 @@
 		gfa,
 		referenceSample,
 		selectedSegId,
+		region = null,
 		lightMode = false,
 		colorForSeg,
 		colorMode,
@@ -25,9 +28,13 @@
 		onNodeFlash,
 		onWalkSpotlight
 	}: {
-		gfa: Gfa;
+		/** The full graph (every haplotype walk), or null while it loads. */
+		gfa: Gfa | null;
 		referenceSample?: string;
+		/** Node to highlight (an id in `gfa`), or null. */
 		selectedSegId: string | null;
+		/** Reference window to show; null → a window centred on `selectedSegId`. */
+		region?: { start: number; end: number } | null;
 		lightMode?: boolean;
 		/** The graph view's fill colour for a displayed segment id, so the MSA's
 		 * per-node colour track matches the graph exactly. Omitted → no track. */
@@ -36,25 +43,24 @@
 		 * redraws the colour track when the user switches modes. */
 		colorMode?: ColorMode;
 		/** Walk key → highlight colour for walks currently spotlit in the graph, so the
-		 * matching alignment rows echo that colour on their label. */
+		 * matching grid rows echo that colour on their label. */
 		rowHighlights?: Map<string, string> | null;
-		/** The graph is switching to the full (walk-bearing) graph so the alignment can
-		 * build — show a loading state instead of the reduced-graph note. */
+		/** The full (walk-bearing) graph is loading — show a loading state. */
 		loadingFullGraph?: boolean;
-		/** The full graph is too heavy to load on this device, so the alignment can't be
+		/** The full graph is too heavy to load on this device, so the grid can't be
 		 * built here — show the protected-device note instead of offering to switch. */
 		fullGraphBlocked?: boolean;
 		onClose?: () => void;
 		/** Reports the window's segId → short-name map (R1/A1/…) so the graph can
 		 * label the same nodes, or null when simplified names are off. */
 		onNames?: (map: Map<string, string> | null) => void;
-		/** A node was clicked in the alignment; flash it in the graph. */
+		/** A node was clicked in the grid; flash it in the graph. */
 		onNodeFlash?: (segId: string) => void;
 		/** A walk row was clicked; its walk key — spotlight it (disco-style) in the graph. */
 		onWalkSpotlight?: (walkKey: string) => void;
 	} = $props();
 
-	// The alignment always builds a generous window (up to the column cap) so the
+	// The grid always covers a generous window (up to the column cap) so the
 	// user can zoom out to reveal context; the canvas opens focused on the clicked
 	// node (see MsaCanvas.fit), so there is no window-size control to set.
 	// Dim shared backbone sequence so variant columns pop (on by default).
@@ -74,17 +80,18 @@
 		return () => window.removeEventListener('pointerdown', onDoc);
 	});
 
-	// Whether this graph carries individual haplotypes at all. A reduced graph
-	// aggregates non-reference walks into coverage counts, so it has no haplotype rows
-	// to align — the panel loads the full graph (see GraphLayoutView) rather than
-	// building a lone-reference alignment here.
-	const isReduced = $derived(gfa.reduced !== undefined);
+	// Whether we have a graph that carries individual haplotypes. A reduced graph
+	// aggregates non-reference walks into coverage counts, so it has no rows to show;
+	// the parent loads the full graph and hands it in.
+	const isReduced = $derived(!gfa || gfa.reduced !== undefined);
+	const hasTarget = $derived(!!region || !!selectedSegId);
 
-	const alignment = $derived(
-		selectedSegId && !isReduced
-			? buildAlignment(gfa, {
+	const grid = $derived(
+		gfa && hasTarget && !isReduced
+			? buildMsaGrid(gfa, {
 					referenceSample,
 					selectedSegId,
+					window: region ?? undefined,
 					windowBp: limits.maxMsaColumns,
 					maxColumns: limits.maxMsaColumns,
 					maxRows: limits.maxMsaRows
@@ -94,16 +101,16 @@
 
 	// Publish (or clear) the short-name map for the graph to mirror.
 	$effect(() => {
-		onNames?.(simplifiedNames && alignment && !alignment.note ? alignment.nameBySeg : null);
+		onNames?.(simplifiedNames && grid && !grid.note ? grid.nameBySeg : null);
 	});
 	$effect(() => {
 		// Clear the graph labels when the panel unmounts.
 		return () => onNames?.(null);
 	});
 
-	const pathRows = $derived(alignment ? alignment.rows.filter((r) => !r.isReference).length : 0);
+	const pathRows = $derived(grid ? grid.rows.filter((r) => !r.isReference).length : 0);
 	const totalHaplotypes = $derived(
-		alignment ? alignment.rows.reduce((s, r) => s + (r.isReference ? 0 : r.multiplicity), 0) : 0
+		grid ? grid.rows.reduce((s, r) => s + (r.isReference ? 0 : r.multiplicity), 0) : 0
 	);
 </script>
 
@@ -111,43 +118,50 @@
 	<header class="msa-head">
 		<div class="title">
 			<span class="badge">MSA</span>
-			{#if selectedSegId && alignment && !alignment.note}
+			{#if region && grid && !grid.note}
+				<span class="node">
+					{#if grid.contig}{grid.contig}:{/if}{Math.round(region.start).toLocaleString()}–{Math.round(
+						region.end
+					).toLocaleString()}
+					<span class="dim">· {Math.round(region.end - region.start).toLocaleString()} bp in view</span>
+				</span>
+			{:else if grid?.selectedSegId && !grid.note}
 				<span class="node">
 					node <b>{simplifiedNames
-						? (alignment.nameBySeg.get(alignment.selectedSegId) ?? alignment.selectedSegId)
-						: alignment.selectedSegId}</b>
+						? (grid.nameBySeg.get(grid.selectedSegId) ?? grid.selectedSegId)
+						: grid.selectedSegId}</b>
 					<span class="dim">
-						{#if simplifiedNames && alignment.nameBySeg.has(alignment.selectedSegId)}· {alignment.selectedSegId} · {:else}·{' '}{/if}{alignment.selectedOnBackbone ? 'on reference' : 'alt allele'}
-						{#if alignment.window && alignment.contig}
-							· {alignment.contig}:{Math.round(alignment.window.start).toLocaleString()}–{Math.round(
-								alignment.window.end
+						{#if simplifiedNames && grid.nameBySeg.has(grid.selectedSegId)}· {grid.selectedSegId} · {:else}·{' '}{/if}{grid.selectedOnBackbone ? 'on reference' : 'alt allele'}
+						{#if grid.window && grid.contig}
+							· {grid.contig}:{Math.round(grid.window.start).toLocaleString()}–{Math.round(
+								grid.window.end
 							).toLocaleString()}
 						{/if}
 					</span>
 				</span>
-			{:else if selectedSegId && isReduced}
+			{:else if hasTarget && isReduced}
 				<span class="dim">
 					{#if fullGraphBlocked}full graph unavailable on this device{:else if loadingFullGraph}loading the full graph…{:else}needs the full graph{/if}
 				</span>
 			{:else}
-				<span class="dim">Multiple sequence alignment, a base-level view of the same graph shown above.</span>
+				<span class="dim">MSA view: the sequences of the graph above, laid out base by base along its nodes.</span>
 			{/if}
 		</div>
 
 		<div class="controls">
-			{#if selectedSegId && alignment && !alignment.note}
+			{#if grid && !grid.note}
 				<div class="gear-wrap" bind:this={gearWrap}>
 					<button
 						class="gear"
 						class:active={settingsOpen}
-						title="Alignment settings"
-						aria-label="Alignment settings"
+						title="MSA settings"
+						aria-label="MSA settings"
 						aria-expanded={settingsOpen}
 						onclick={() => (settingsOpen = !settingsOpen)}
 					>⚙</button>
 					{#if settingsOpen}
 						<div class="settings-pop">
-							<div class="settings-title">Alignment settings</div>
+							<div class="settings-title">MSA settings</div>
 							<label class="set-row">
 								<input type="checkbox" bind:checked={simplifiedNames} />
 								<span>
@@ -169,26 +183,30 @@
 		</div>
 	</header>
 
-	{#if alignment && !alignment.note && !isReduced}
-		{#if alignment.truncatedWindow || alignment.truncatedRows > 0 || !alignment.hasSequence}
+	{#if grid && !grid.note && !isReduced}
+		{#if grid.truncatedWindow || grid.truncatedRows > 0 || !grid.hasSequence}
 			<div class="notes">
-				{#if !alignment.hasSequence}
+				{#if !grid.hasSequence}
 					<span class="warn">This graph carries node lengths but not sequences — showing blocks without bases.</span>
 				{/if}
-				{#if alignment.truncatedWindow}
-					<span>{limits.maxMsaColumns.toLocaleString()} bp of context loaded around this node (zoom out to see it).</span>
+				{#if grid.truncatedWindow}
+					<span
+						>{region
+							? `Clipped to ${limits.maxMsaColumns.toLocaleString()} bp of reference.`
+							: `${limits.maxMsaColumns.toLocaleString()} bp of context loaded around this node (zoom out to see it).`}</span
+					>
 				{/if}
-				{#if alignment.truncatedRows > 0}
-					<span>{alignment.truncatedRows} more distinct path{alignment.truncatedRows === 1 ? '' : 's'} not shown.</span>
+				{#if grid.truncatedRows > 0}
+					<span>{grid.truncatedRows} more distinct path{grid.truncatedRows === 1 ? '' : 's'} not shown.</span>
 				{/if}
 			</div>
 		{/if}
 	{/if}
 
 	<div class="canvas-host">
-		{#if !selectedSegId}
+		{#if !hasTarget}
 			<div class="placeholder">
-				<p>Select a node in the graph above to see it here at base level.</p>
+				<p>Select a node in the graph above to show the sequences around it.</p>
 			</div>
 		{:else if isReduced}
 			<!-- The base-level view needs the full graph's per-haplotype walks. The panel
@@ -207,16 +225,16 @@
 			{:else}
 				<div class="placeholder">
 					<p>Couldn't load the full graph to show it here.</p>
-					<p class="dim">Toggle Simplify off to try again.</p>
+					<p class="dim">Close this panel and show the MSA again to retry.</p>
 				</div>
 			{/if}
-		{:else if alignment?.note}
+		{:else if grid?.note}
 			<div class="placeholder">
-				<p>{alignment.note}</p>
+				<p>{grid.note}</p>
 			</div>
-		{:else if alignment}
+		{:else if grid}
 			<MsaCanvas
-				{alignment}
+				{grid}
 				{lightMode}
 				{emphasizeVariants}
 				{simplifiedNames}
@@ -229,7 +247,7 @@
 		{/if}
 	</div>
 
-	{#if selectedSegId && alignment && !alignment.note}
+	{#if grid && !grid.note}
 		<footer class="msa-foot">
 			<span class="count">
 				{totalHaplotypes} walk{totalHaplotypes === 1 ? '' : 's'}
@@ -299,7 +317,7 @@
 		font-size: 0.78rem;
 		opacity: 0.9;
 	}
-	/* Pinned footer: stays put at the bottom of the panel while the alignment rows
+	/* Pinned footer: stays put at the bottom of the panel while the grid rows
 	   scroll inside the canvas above it. */
 	.msa-foot {
 		flex: none;

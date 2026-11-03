@@ -5,6 +5,7 @@ import { stableUnit } from './prng';
 import { getModeConfig, type LayoutMode, type RefFreeParams } from './layoutModes';
 import { runFm3, type Fm3Edge } from './fm3';
 import { placeBubbleLanes } from './laneLayout';
+import { buildAssemblyLayout, type AssemblyOptions } from './assemblyLayout';
 
 /**
  * Builds a force-directed layout for a GFA graph and returns node positions
@@ -29,8 +30,8 @@ import { placeBubbleLanes } from './laneLayout';
  *  - Anchored modes pin one "backbone" path per connected component (see
  *    backbone.ts) to a straight horizontal axis via d3-force's fixed nodes
  *    (fx/fy) — a genome-browser-style coordinate line — and seed everything else
- *    near its backbone attachment, relaxing only locally. The default anchored
- *    mode ('classic', with `lanes` on) skips the simulation and places every
+ *    near its backbone attachment, relaxing only locally. The anchored
+ *    Skyline mode ('classic', with `lanes` on) skips the simulation and places every
  *    bubble directly in horizontal lanes above the axis (see laneLayout.ts).
  *
  *  - Free modes ignore the backbone and let the simulation find the graph's own
@@ -93,10 +94,23 @@ export interface LayoutResult {
 	structuralLinkPaths: { from: string; to: string; fromNode: string; toNode: string; bendNode: string }[];
 	backbones: BackboneInfo[];
 	backboneSegIds: Set<string>;
+	/** Reference-free modes only: the reference path's segments, so they can still
+	 * be coloured as the reference even though nothing is laid out along it.
+	 * (Kept apart from `backboneSegIds`, which also means "drawn on the axis".) */
+	referenceSegIds?: Set<string>;
 	segmentLengths: Map<string, number>;
 	/** Count of non-reference (non-backbone) paths traversing each segment. */
 	pathCoverage: Map<string, number>;
 	maxPathCoverage: number;
+	/** Assembly mode only (assemblyLayout.ts): extra geometry the canvas draws. */
+	assembly?: {
+		/** Backbone segment → [start, end] as a fraction of its reference, for colour. */
+		refFrac: Map<string, [number, number]>;
+		/** Deletions laid out through a hidden route node, drawn as dashed arcs. */
+		routes: { from: string; to: string; fromNode: string; toNode: string; nodeIds: string[]; skipBp: number }[];
+		/** Unbranched runs collapsed for the layout and split back afterwards. */
+		runs: { members: string[]; bp: number }[];
+	};
 }
 
 export interface LayoutOptions {
@@ -126,19 +140,15 @@ export interface LayoutOptions {
 	 * overlaps it. On by default; off lets the relaxation drift across the line —
 	 * part of the freer, older "naive" look. */
 	avoidBaseline?: boolean;
-	/** (Anchored modes) let alt bubbles fan out horizontally into the space over
-	 * their neighbouring reference nodes instead of stacking into a tight column
-	 * above their attachment point. */
-	spread?: boolean;
 	/** (Anchored modes) place bubbles deterministically in bp-proportional lanes
 	 * above the reference instead of force-relaxing them (see laneLayout.ts). */
 	lanes?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
-	/** Which named layout mode to use. Anchored modes ('classic', 'spread', 'naive')
+	/** Which named layout mode to use. Anchored modes ('stacked', 'naive', 'classic')
 	 * lay out along the reference backbone; free modes ('fm3', 'simple-force',
 	 * 'flow', 'layered', 'radial') ignore the backbone for positioning and run a
-	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'classic'. */
+	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'stacked'. */
 	mode?: LayoutMode;
 	/** Straighten one chosen haplotype: pin its non-backbone segments to a single
 	 * horizontal line above the reference, laid out left-to-right in walk order so
@@ -148,9 +158,11 @@ export interface LayoutOptions {
 	 * in traversal order with orientation; backbone segments in the list stay on
 	 * the reference line and only advance the horizontal cursor. */
 	straightenPath?: { id: string; orient: '+' | '-' }[];
+	/** 'assembly' mode: which of its parts are on (see assemblyLayout.ts). */
+	assembly?: Partial<AssemblyOptions>;
 }
 
-const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'straightenPath'>> = {
+const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'straightenPath' | 'assembly'>> = {
 	targetTotalSubNodes: 2500,
 	// Even the longest segment is only split into a handful of sub-nodes: the chain
 	// exists so a strand can *bend* around bubbles, not to trace fine detail, and
@@ -165,7 +177,6 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'strai
 	bubblesAbove: false,
 	anchorToReference: true,
 	avoidBaseline: true,
-	spread: false,
 	lanes: false
 };
 
@@ -198,11 +209,7 @@ const ANCHOR_X_STRENGTH = 0.03;
 const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
 const SPREAD_Y_STRENGTH = 0.15;
-/** 'spread' mode only: how wide a horizontal band, as a multiple of the attached
- * reference node's own on-screen span, each bubble's alt segments are scattered
- * across — 1.0 reaches ~halfway across the neighbouring reference nodes. */
-const SPREAD_BAND_FACTOR = 1.0;
-/** Lanes mode: vertical spacing between bubble lanes, in bubble-Y-steps. */
+/** Skyline mode: vertical spacing between bubble lanes, in bubble-Y-steps. */
 const LANE_GAP_STEPS = 0.5;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
@@ -535,7 +542,7 @@ function seedFm3(ctx: FreeCtx) {
 
 	const { pos } = runFm3({ nodes: segIds, edges, iterationsPerLevel: 40 });
 
-	// Orientation: align each segment's strand with the principal axis of the
+	// Orientation: lay each segment's strand along the principal axis of the
 	// directions from its centre to its neighbours' centres (a 2×2 orientation
 	// tensor). For a path-like node that's the line through its two neighbours, so
 	// the strand lies along the flow instead of at a random angle.
@@ -633,7 +640,19 @@ function runFreeLayout(ctx: FreeCtx) {
  * `backboneSegIds` is the set of segments to draw as the reference axis — the
  * anchored path fills it; free modes pass an empty set so nothing is singled out
  * as a backbone. */
-function assembleResult(
+/** Segments of the backbones that are a real reference path (not a computed
+ * longest path, and the chosen reference sample's when one is named). */
+function referenceSegments(backbones: Backbone[], referenceSample?: string): Set<string> {
+	const out = new Set<string>();
+	for (const b of backbones) {
+		if (b.source === 'synthetic') continue;
+		if (referenceSample && b.source.split('#')[0] !== referenceSample) continue;
+		for (const st of b.steps) out.add(st.id);
+	}
+	return out;
+}
+
+export function assembleResult(
 	graph: GfaGraph,
 	backbones: Backbone[],
 	backboneSegIds: Set<string>,
@@ -694,12 +713,18 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// mode's look. Explicit options still win — that's how the UI's advanced
 	// overrides and rough-mode's straight-strand force apply on top.
 	const modeCfg = getModeConfig(options.mode);
+	if (modeCfg.assembly) {
+		return buildAssemblyLayout(graph, {
+			referenceSample: options.referenceSample,
+			assembly: options.assembly,
+			iterations: options.iterations
+		});
+	}
 	const opts = {
 		...DEFAULTS,
 		bubblesAbove: modeCfg.bubblesAbove,
 		anchorToReference: modeCfg.anchorToReference,
 		avoidBaseline: modeCfg.avoidBaseline,
-		spread: modeCfg.spread,
 		lanes: modeCfg.lanes,
 		bendNodes: modeCfg.bendNodes,
 		...options
@@ -837,7 +862,9 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			iterations: options.iterations ?? modeCfg.refFree.iterations ?? opts.iterations,
 			params: modeCfg.refFree
 		});
-		return assembleResult(graph, backbones, new Set(), nodesById, chains, structuralLinkPaths);
+		const result = assembleResult(graph, backbones, new Set(), nodesById, chains, structuralLinkPaths);
+		result.referenceSegIds = referenceSegments(backbones, options.referenceSample);
+		return result;
 	}
 
 	// --- Backbone anchoring ---
@@ -904,41 +931,31 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// midpoint to every bubble. Using the real link endpoint instead removes the
 	// systematic leftward lean. fromNode/toNode were resolved above and now carry
 	// real positions from backbone assignment.
-	// `refSpan` is the on-screen length of the reference node this bubble hangs off,
-	// carried along so 'spread' mode can fan the bubble across a band sized to the
-	// local reference spacing (see the seeding loop).
-	const attach = new Map<string, { x: number; y: number; refSpan: number; n: number }>();
+	const attach = new Map<string, { x: number; y: number; n: number }>();
 	for (const path of structuralLinkPaths) {
 		const fromBB = assignedSegIds.has(path.from);
 		const toBB = assignedSegIds.has(path.to);
 		if (fromBB === toBB) continue; // both or neither on backbone → no direct anchor
 		const bbNode = nodesById.get(fromBB ? path.fromNode : path.toNode)!;
 		const seg = fromBB ? path.to : path.from;
-		const refSegId = fromBB ? path.from : path.to;
-		const refSpan = chainPxLength.get(refSegId) ?? opts.unitEdgeLength;
 		const a = attach.get(seg);
 		if (a) {
 			a.x += bbNode.x;
 			a.y += bbNode.y;
-			a.refSpan += refSpan;
 			a.n++;
 		} else {
-			attach.set(seg, { x: bbNode.x, y: bbNode.y, refSpan, n: 1 });
+			attach.set(seg, { x: bbNode.x, y: bbNode.y, n: 1 });
 		}
 	}
 
 	// --- Seed off-backbone (bubble) nodes near their nearest backbone attachment ---
 	const adjacency = buildAdjacency(graph);
-	const nearestAnchor = new Map<string, { x: number; y: number; refSpan: number; hops: number }>();
+	const nearestAnchor = new Map<string, { x: number; y: number; hops: number }>();
 	const bfsQueue: string[] = [];
 	for (const segId of assignedSegIds) {
 		const anchor = anchors.get(segId);
 		if (!anchor) continue;
-		nearestAnchor.set(segId, {
-			...anchor,
-			refSpan: chainPxLength.get(segId) ?? opts.unitEdgeLength,
-			hops: 0
-		});
+		nearestAnchor.set(segId, { ...anchor, hops: 0 });
 		bfsQueue.push(segId);
 	}
 	// Directly-attached bubbles get their true attachment point (mean, if a
@@ -947,7 +964,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// overwrite them — it only fills in segments deeper than one hop.
 	for (const [segId, a] of attach) {
 		if (nearestAnchor.has(segId)) continue;
-		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, refSpan: a.refSpan / a.n, hops: 1 });
+		nearestAnchor.set(segId, { x: a.x / a.n, y: a.y / a.n, hops: 1 });
 		bfsQueue.push(segId);
 	}
 	let qHead = 0;
@@ -956,12 +973,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const currentInfo = nearestAnchor.get(current)!;
 		for (const neighbor of adjacency.get(current) ?? []) {
 			if (nearestAnchor.has(neighbor)) continue;
-			nearestAnchor.set(neighbor, {
-				x: currentInfo.x,
-				y: currentInfo.y,
-				refSpan: currentInfo.refSpan,
-				hops: currentInfo.hops + 1
-			});
+			nearestAnchor.set(neighbor, { x: currentInfo.x, y: currentInfo.y, hops: currentInfo.hops + 1 });
 			bfsQueue.push(neighbor);
 		}
 	}
@@ -1014,22 +1026,10 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	for (const chain of chains) {
 		if (assignedSegIds.has(chain.segId)) continue;
 		if (straightenSet.has(chain.segId)) continue; // pinned onto the track below (later)
-		const anchor = nearestAnchor.get(chain.segId) ?? {
-			x: 0,
-			y: 0,
-			refSpan: opts.unitEdgeLength,
-			hops: 1
-		};
+		const anchor = nearestAnchor.get(chain.segId) ?? { x: 0, y: 0, hops: 1 };
 		const below = belowLineSegs.has(chain.segId);
 		const sign = below ? 1 : opts.bubblesAbove ? -1 : stableUnit(chain.segId) >= 0 ? 1 : -1;
-		// 'spread' mode gives each alt segment a deterministic horizontal slot within a
-		// band ~as wide as the neighbouring reference nodes, so a bubble's parallel
-		// strands fan out across that space instead of stacking over one x. The slot
-		// biases both the seed and the x-anchor below; charge repulsion fills the rest.
-		const spreadOffset = opts.spread
-			? stableUnit(chain.segId + ':spread') * anchor.refSpan * SPREAD_BAND_FACTOR
-			: 0;
-		const baseX = anchor.x + spreadOffset + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
+		const baseX = anchor.x + stableUnit(chain.segId) * opts.unitEdgeLength * 2;
 		// Depth has to grow the offset sub-linearly and stop growing at some point.
 		// Multiplying by hops directly meant a deep BFS (routine in an
 		// unsimplified graph) flung a handful of nodes thousands of units out —
@@ -1053,7 +1053,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			// single x and left their links stretching across the canvas. Past a
 			// hop or two, the link forces place a node better than its anchor can.
 			if (anchor.hops <= ANCHOR_X_MAX_HOPS) {
-				node.anchorX = anchor.x + spreadOffset + i * opts.unitEdgeLength;
+				node.anchorX = anchor.x + i * opts.unitEdgeLength;
 			}
 			node.targetY = baseY;
 			if (below) belowLineNodeIds.add(nodeId);
@@ -1100,7 +1100,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	}
 
-	// Lanes mode places every bubble directly — no simulation — hanging off the
+	// Skyline mode places every bubble directly — no simulation — hanging off the
 	// reference and the straightened walk, which are already in place.
 	if (opts.lanes) {
 		placeBubbleLanes({
@@ -1199,14 +1199,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				.distance((d) => d.distance)
 				.strength((d) => d.strength)
 		)
-		// 'spread' mode wants bubbles to fan wider, so it repels harder and reaches
-		// further than the tight default.
-		.force(
-			'charge',
-			forceManyBody()
-				.strength(opts.spread ? -70 : -40)
-				.distanceMax(opts.spread ? 600 : 400)
-		)
+		.force('charge', forceManyBody().strength(-40).distanceMax(400))
 		.force('collide', forceCollide(8))
 		.force('anchor', opts.anchorToReference ? anchorForce : null)
 		// 'naive' turns this off, letting bubbles drift across the reference line.
