@@ -47,9 +47,9 @@ Both are read directly from the public `human-pangenomics` S3 bucket (see
 The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 
 - **Reference-anchored graph layout** (`src/lib/graph/`) — a deterministic,
-  reference-pinned layout. The default, *Stacked (force)*, pins the reference to a
+  reference-pinned layout. The default, *Strands*, pins the reference to a
   straight axis and force-relaxes each bubble into a column over the position it
-  attaches to; *Lanes* instead places each bubble directly as horizontal lanes at
+  attaches to; *Skyline* instead places each bubble directly as horizontal lanes at
   true bp scale, which suits extremely dense loci. The layouts are picked from a
   list with a sketch of each. With optional reference-guided simplification
   (small-variant popping + unchop) and reference genomic coordinates drawn along

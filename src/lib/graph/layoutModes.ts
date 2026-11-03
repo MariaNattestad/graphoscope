@@ -86,9 +86,11 @@ export interface LayoutModeConfig {
 
 export const LAYOUT_MODES: LayoutModeConfig[] = [
 	// --- reference-anchored ---
+	// Ids are kept stable for saved settings; the labels shown are 'stacked' →
+	// Strands and 'classic' → Skyline.
 	{
 		id: 'stacked',
-		label: 'Stacked (force)',
+		label: 'Strands',
 		family: 'anchored',
 		blurb:
 			'A force layout along a straight reference axis: each bubble is pulled into a column over the reference position it attaches to, and its strands relax into their own shape.',
@@ -111,7 +113,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 	},
 	{
 		id: 'classic',
-		label: 'Lanes',
+		label: 'Skyline',
 		family: 'anchored',
 		blurb:
 			'Each bubble placed directly above the reference as horizontal lanes at true bp scale, alleles side by side, with no simulation. Good for structuring extremely dense loci.',
@@ -119,7 +121,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		anchorToReference: true,
 		avoidBaseline: true,
 		lanes: true,
-		// Lanes never simulate, so bend nodes cost nothing; they carry the skip arcs.
+		// Skyline never simulates, so bend nodes cost nothing; they carry the skip arcs.
 		bendNodes: true
 	},
 	// --- reference-free ---

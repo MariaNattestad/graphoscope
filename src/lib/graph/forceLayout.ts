@@ -31,7 +31,7 @@ import { buildAssemblyLayout, type AssemblyOptions } from './assemblyLayout';
  *    backbone.ts) to a straight horizontal axis via d3-force's fixed nodes
  *    (fx/fy) — a genome-browser-style coordinate line — and seed everything else
  *    near its backbone attachment, relaxing only locally. The anchored
- *    Lanes mode ('classic', with `lanes` on) skips the simulation and places every
+ *    Skyline mode ('classic', with `lanes` on) skips the simulation and places every
  *    bubble directly in horizontal lanes above the axis (see laneLayout.ts).
  *
  *  - Free modes ignore the backbone and let the simulation find the graph's own
@@ -209,7 +209,7 @@ const ANCHOR_X_STRENGTH = 0.03;
 const ANCHOR_X_MAX_HOPS = 2;
 /** Pull toward the depth-derived y (spreads bubbles vertically). */
 const SPREAD_Y_STRENGTH = 0.15;
-/** Lanes mode: vertical spacing between bubble lanes, in bubble-Y-steps. */
+/** Skyline mode: vertical spacing between bubble lanes, in bubble-Y-steps. */
 const LANE_GAP_STEPS = 0.5;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
 const MIN_BASELINE_CLEARANCE_FACTOR = 4.5;
@@ -1100,7 +1100,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		}
 	}
 
-	// Lanes mode places every bubble directly — no simulation — hanging off the
+	// Skyline mode places every bubble directly — no simulation — hanging off the
 	// reference and the straightened walk, which are already in place.
 	if (opts.lanes) {
 		placeBubbleLanes({
