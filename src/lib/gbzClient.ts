@@ -12,10 +12,13 @@ export type { QuerySource, QueryResult };
 // for why deriving this inside the worker is unsafe.
 const WASM_URL = `${base}/query.wasm`;
 
-/** Subgraph context margin (bp) used when the URL has no `context` param. The
- * app and /api always pass it to the wasm explicitly (whose own fallback, in
- * crates/reduce, is 100), so this constant is the one that counts. Shared so the
- * app and the /api endpoint agree on what "no context param" means. */
+/** Subgraph context margin (bp) for a single-shot query with no `context`
+ * param — the /api endpoint's default. (The wasm's own fallback, in
+ * crates/reduce, is 100.) The interactive page instead paints at
+ * FIRST_PAINT_CONTEXT and escalates in the background (see escalation.ts).
+ *
+ * Since the reducer trims to the locus, context no longer pads the reference
+ * axis: it only bounds how far an allele leaving the locus is followed. */
 export const DEFAULT_CONTEXT = 10000;
 
 export interface LocusQuery {
@@ -33,6 +36,9 @@ export interface LocusQuery {
 	 * reduced GFA. Only for the download button — this is the response the app
 	 * deliberately never parses. */
 	raw?: boolean;
+	/** Keep GBZ-base's whole context-padded subgraph instead of trimming it to
+	 * the locus (crates/reduce/src/locus.rs). A comparison/debug switch. */
+	noTrim?: boolean;
 }
 
 export class GbzClient {
@@ -75,13 +81,18 @@ export class GbzClient {
 			`${locus.start}..${locus.end}`
 		];
 		if (locus.context != null) args.push('--context', String(locus.context));
+		if (locus.noTrim) args.push('--no-trim');
 		if (locus.raw) args.push('--raw');
 		else if (locus.maxVariant != null) args.push('--max-variant', String(locus.maxVariant));
 		return this.send(source, args);
 	}
 
+	/** Stops the worker. Queries still pending resolve as failed, so nothing
+	 * awaiting them hangs. */
 	terminate() {
 		this.worker.terminate();
+		for (const [id, cb] of this.pending) cb({ id, ok: false, error: 'terminated' });
+		this.pending.clear();
 	}
 }
 

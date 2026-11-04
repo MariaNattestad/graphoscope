@@ -1,7 +1,14 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { GbzClient, parseLocus, DEFAULT_CONTEXT, type QuerySource } from '$lib/gbzClient';
-	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
+	import { GbzClient, parseLocus, type QuerySource } from '$lib/gbzClient';
+	import { parseGfa, gfaStats, reducedStatsOf, type Gfa } from '$lib/gfa';
+	import {
+		Escalator,
+		FIRST_PAINT_CONTEXT,
+		unresolvedExits,
+		type EscalationOffer,
+		type EscalationStep
+	} from '$lib/escalation';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import AppBar from '$lib/AppBar.svelte';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
@@ -41,11 +48,18 @@
 
 	// ---- Query state -----------------------------------------------------------
 	let locusText = $state(DEFAULT_GENE);
-	// Subgraph context radius in bp (GBZ-base's `--context`, default 10,000): how
-	// far past the locus haplotypes are followed before they're cut off. Applied on
-	// the next query, so changing it takes a Query click like the locus does.
-	const DEFAULT_CONTEXT_BP = DEFAULT_CONTEXT;
-	let contextBp = $state(DEFAULT_CONTEXT_BP);
+	// Subgraph context radius in bp (GBZ-base's `--context`): how far an allele
+	// leaving the locus is followed before it's cut off. The reducer trims the
+	// shown graph to the locus (plus where alleles leaving it rejoin), so context
+	// no longer pads the reference — it only decides what is resolved.
+	//
+	// Auto (the default): paint at FIRST_PAINT_CONTEXT, then escalate in a
+	// background worker while alleles still leave the fetched window, offering a
+	// better graph via a pill. Typing a number (or a `context` URL param, or
+	// "Increase context") switches to manual, a fixed context with no escalation.
+	let contextAuto = $state(true);
+	// The context of the graph on screen (or of the next manual query).
+	let contextBp = $state(FIRST_PAINT_CONTEXT);
 	// Set to the resolved gene's symbol whenever the current results came from a
 	// gene-name search (manual or an example chip) — kept alongside the
 	// coordinates so a user can look back and remember what they searched for,
@@ -165,9 +179,12 @@
 		const ref = p.get('ref');
 		if (ref === 'grch38' || ref === 'chm13') graphId = ref;
 		const ctxParam = p.get('context');
-		if (ctxParam != null) {
+		if (ctxParam != null && ctxParam !== 'auto') {
 			const ctx = Number(ctxParam);
-			if (Number.isFinite(ctx) && ctx >= 0) contextBp = ctx;
+			if (Number.isFinite(ctx) && ctx >= 0) {
+				contextBp = ctx;
+				contextAuto = false;
+			}
 		}
 		const locus = p.get('locus') ?? p.get('gene');
 		if (locus && locus.trim()) {
@@ -181,7 +198,7 @@
 		const p = new URLSearchParams(window.location.search);
 		p.set('ref', graphId);
 		p.set('locus', queriedGene ?? locusText);
-		if (contextBp !== DEFAULT_CONTEXT_BP) p.set('context', String(contextBp));
+		if (!contextAuto) p.set('context', String(contextBp));
 		else p.delete('context');
 		const qs = p.toString();
 		// replaceState (not a navigation) so this never reloads or adds history
@@ -192,9 +209,13 @@
 	onMount(() => {
 		initAnalytics();
 		client = new GbzClient();
+		escalator = new Escalator(() => new GbzClient());
 		applyUrlParams();
 		run();
-		return () => client?.terminate();
+		return () => {
+			client?.terminate();
+			escalator?.terminate();
+		};
 	});
 
 	// Focus + select the locus field whenever the query popover opens, so the user
@@ -207,6 +228,10 @@
 	});
 
 	async function run(sourceKind: 'coords' | 'gene' | 'example' = 'coords') {
+		// Any background escalation belongs to the previous query.
+		escalator?.cancel();
+		escalationOffer = null;
+		escalationStatus = null;
 		error = null;
 		oversized = null;
 		queriedGene = null;
@@ -227,7 +252,10 @@
 			}
 			locus = parseLocus(locusText, graph.referenceSample);
 			locus.sample = graph.referenceSample;
+			if (contextAuto) contextBp = FIRST_PAINT_CONTEXT;
 			locus.context = contextBp;
+			// Debug/comparison: `?trim=off` shows GBZ-base's untrimmed subgraph.
+			if (new URLSearchParams(window.location.search).get('trim') === 'off') locus.noTrim = true;
 			// The wasm query (crates/reduce) simplifies and walk-counts before it
 			// ever returns, so the browser receives a graph sized by topology, not by
 			// haplotype count. This is what keeps a large/repetitive locus from
@@ -274,6 +302,8 @@
 
 			rawGfa = gfaText;
 			gfa = parseGfa(gfaText);
+			logEscalation({ phase: 'first', locus: locusText, context: locus.context!, result: result });
+			if (contextAuto) startEscalation(qsource, locus, gfa);
 			trackEvent('query', {
 				graph: graph.id,
 				contig: locus.contig,
@@ -314,10 +344,93 @@
 	// exit inspector in the graph, where "there's more past the edge" is the whole
 	// point; doubling is a meaningful jump without a fiddly guess (100 → 200 → 400).
 	function requestMoreContext() {
+		contextAuto = false;
 		contextBp = contextBp > 0 ? contextBp * 2 : 200;
 		trackEvent('widget_interact', { widget: 'graph_layout', action: 'increase_context' });
 		run();
 	}
+
+	// ---- Background context escalation (auto context) ------------------------
+	let escalator: Escalator | null = null;
+	// A better graph found in the background, waiting for the user to take it.
+	let escalationOffer = $state.raw<EscalationOffer | null>(null);
+	// What the background search is doing, for the pill while nothing is offered.
+	let escalationStatus = $state<string | null>(null);
+	const shownExits = $derived(unresolvedExits(gfa?.reduced));
+
+	// Measurement hook: every query's cost and exit count, on the console and on
+	// `window.__escalationLog` (read by hand / by a test harness).
+	function logEscalation(e: {
+		phase: string;
+		locus: string;
+		context: number;
+		result?: Awaited<ReturnType<GbzClient['query']>>;
+		step?: EscalationStep;
+		reason?: string;
+	}) {
+		const st = e.result?.stats;
+		const red = e.result?.gfa ? reducedStatsOf(e.result.gfa) : undefined;
+		const loc = red?.locus;
+		// The reference W line is the reducer's last line: its start/end are the
+		// coordinates of the reference axis actually shown.
+		const wLine = e.result?.gfa?.slice(e.result.gfa.lastIndexOf('\nW\t') + 1).split('\t');
+		const row = {
+			phase: e.phase,
+			refStart: wLine ? Number(wLine[4]) : undefined,
+			refEnd: wLine ? Number(wLine[5]) : undefined,
+			locus: e.locus,
+			context: e.context,
+			reason: e.reason,
+			...(e.step ?? {
+				exits: loc?.exitEdges,
+				rejoins: loc?.rejoins,
+				extLeftBp: loc?.extLeftBp,
+				extRightBp: loc?.extRightBp,
+				fetchedNodes: loc?.fetchedNodes,
+				nodesShown: red?.segmentsAfter,
+				bytesFetched: st?.bytesFetched,
+				requestCount: st?.requestCount,
+				elapsedMs: st?.elapsedMs,
+				wasmMemoryBytes: st?.wasmMemoryBytes,
+				gfaBytes: e.result?.gfa?.length
+			})
+		};
+		const w = window as unknown as { __escalationLog?: unknown[] };
+		(w.__escalationLog ??= []).push(row);
+		console.info('[escalation]', JSON.stringify(row));
+	}
+
+	function startEscalation(source: QuerySource, locus: ReturnType<typeof parseLocus>, shown: Gfa) {
+		const exits = unresolvedExits(shown.reduced);
+		if (!escalator || exits === 0) return;
+		const label = locusText;
+		escalationStatus = `Following ${exits} allele${exits === 1 ? '' : 's'} that leave the locus…`;
+		escalator.start(source, locus, locus.context ?? FIRST_PAINT_CONTEXT, exits, {
+			onResult: (result, context) => logEscalation({ phase: 'step-raw', locus: label, context, result }),
+			onOffer: (offer) => {
+				escalationOffer = offer;
+			},
+			onDone: (reason, steps) => {
+				escalationStatus = null;
+				const last = steps[steps.length - 1];
+				logEscalation({ phase: 'done', locus: label, context: last?.context ?? 0, reason, step: last });
+			}
+		});
+	}
+
+	function applyEscalationOffer() {
+		const offer = escalationOffer;
+		if (!offer) return;
+		escalationOffer = null;
+		rawGfa = offer.gfaText;
+		fetchInfo = offer.stats ?? null;
+		contextBp = offer.context;
+		gfa = parseGfa(offer.gfaText);
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'apply_escalation', context: offer.context });
+	}
+
+	// How many of the alleles leaving the shown graph the offer resolves.
+	const offerResolves = $derived(escalationOffer ? shownExits - escalationOffer.step.exits : 0);
 
 	// ---- Break-glass: view the unsimplified graph -------------------------------
 	// Simplification is what makes a locus renderable, but sometimes you want to
@@ -587,11 +700,22 @@
 								type="number"
 								min="0"
 								step="50"
-								bind:value={contextBp}
+								value={contextAuto ? '' : contextBp}
+								placeholder="auto"
+								oninput={(e) => {
+									const v = (e.currentTarget as HTMLInputElement).value;
+									const n = Number(v);
+									if (v.trim() === '' || !Number.isFinite(n) || n < 0) contextAuto = true;
+									else {
+										contextAuto = false;
+										contextBp = n;
+									}
+								}}
 								onkeydown={(e) => e.key === 'Enter' && run()}
 							/>
 							<span class="qp-ctx-help"
-								>bp past the locus each haplotype is followed before it is cut off</span
+								>how far an allele leaving the locus is followed. Empty = auto: start small,
+								then search wider in the background.</span
 							>
 						</div>
 					</div>
@@ -628,6 +752,23 @@
 				</nav>
 
 				<div class="tabbody" class:pad={view !== 'graph'}>
+					{#if view === 'graph' && (escalationOffer || escalationStatus)}
+						<div class="escalation-pill" role="status">
+							{#if escalationOffer && offerResolves > 0}
+								<button class="esc-apply" onclick={applyEscalationOffer}>
+									{escalationOffer.step.exits === 0
+										? `Found where ${offerResolves === 1 ? 'the allele' : `all ${offerResolves} alleles`} leaving the locus rejoin`
+										: `Found where ${offerResolves} of ${shownExits} leaving alleles rejoin`}
+									— update view
+								</button>
+								<button class="esc-dismiss" aria-label="Dismiss" onclick={() => (escalationOffer = null)}
+									>×</button
+								>
+							{:else if escalationStatus}
+								<span class="esc-status"><span class="ph-spinner"></span> {escalationStatus}</span>
+							{/if}
+						</div>
+					{/if}
 					{#if view === 'graph' && displayGfa}
 						<GraphLayoutView
 							gfa={displayGfa}
@@ -1110,6 +1251,52 @@
 		flex: 1;
 		min-height: 0;
 		overflow: auto;
+	}
+	.tabbody {
+		position: relative;
+	}
+	/* Background-escalation pill: floats over the graph, never moves it. */
+	.escalation-pill {
+		position: absolute;
+		top: 0.6rem;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 5;
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
+		max-width: calc(100% - 32px);
+		padding: 0.25rem 0.35rem;
+		border-radius: 999px;
+		background: var(--panel-bg, #fff);
+		border: 1px solid var(--border, #d0d7de);
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+		font-size: 0.82rem;
+	}
+	.esc-apply {
+		border: 0;
+		background: var(--accent, #2563eb);
+		color: #fff;
+		border-radius: 999px;
+		padding: 0.3rem 0.8rem;
+		cursor: pointer;
+		font: inherit;
+	}
+	.esc-dismiss {
+		border: 0;
+		background: transparent;
+		cursor: pointer;
+		font-size: 1rem;
+		line-height: 1;
+		padding: 0 0.35rem;
+		color: inherit;
+	}
+	.esc-status {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		padding: 0.15rem 0.6rem;
+		opacity: 0.8;
 	}
 	.tabbody.pad {
 		padding: 0.9rem;

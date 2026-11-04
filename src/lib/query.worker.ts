@@ -41,7 +41,15 @@ export interface QueryResult {
 	gfa?: string;
 	stderr?: string;
 	error?: string;
-	stats?: { requestCount: number; bytesFetched: number; dbSize: number; elapsedMs: number };
+	stats?: {
+		requestCount: number;
+		bytesFetched: number;
+		dbSize: number;
+		elapsedMs: number;
+		/** Size of the wasm instance's linear memory when the query finished —
+		 * its high-water mark, since wasm memory never shrinks. */
+		wasmMemoryBytes?: number;
+	};
 }
 
 /** Accumulates bytes written to a WASI fd (used for stdout / stderr). */
@@ -139,11 +147,13 @@ async function runQuery(req: QueryRequest): Promise<QueryResult> {
 	}
 
 	cachedStatsBaseline.set(reader, { requests: reader.requestCount, bytes: reader.bytesFetched });
+	const memory = instance.exports.memory;
 	const stats = {
 		requestCount: reader.requestCount - before.requests,
 		bytesFetched: reader.bytesFetched - before.bytes,
 		dbSize: reader.size,
-		elapsedMs: Math.round(performance.now() - t0)
+		elapsedMs: Math.round(performance.now() - t0),
+		wasmMemoryBytes: memory instanceof WebAssembly.Memory ? memory.buffer.byteLength : undefined
 	};
 
 	if (exitCode !== 0) {

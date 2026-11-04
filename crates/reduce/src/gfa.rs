@@ -257,6 +257,8 @@ pub struct ReduceStats {
     /// `total_walks`; it is a graph-structure diagnostic, not a haplotype count.
     pub walk_records: usize,
     pub total_sequence_bp: usize,
+    /// The query interval and what the locus trim did, when one was applied.
+    pub locus: Option<(std::ops::Range<usize>, crate::locus::LocusStats)>,
 }
 
 /// A segment in the reduced output.
@@ -327,7 +329,7 @@ pub fn write_reduced<W: Write>(
         writeln!(out, "H\tVN:Z:1.1\tRS:Z:{}", reference_samples.join(" "))?;
     }
 
-    writeln!(
+    write!(
         out,
         "X\tSB:i:{}\tSA:i:{}\tLB:i:{}\tLA:i:{}\tST:i:{}\tNR:i:{}\tSN:i:{}\tBR:i:{}\tUM:i:{}\tTW:i:{}\tNW:i:{}\tNS:i:{}\tWR:i:{}\tTS:i:{}",
         stats.segments_before,
@@ -345,6 +347,29 @@ pub fn write_reduced<W: Write>(
         stats.walk_records,
         stats.total_sequence_bp,
     )?;
+    // Locus-trim stats, as extra tags on the same `X` line (a reader that
+    // predates them ignores unknown tags): `QS`/`QE` the query interval, `FN` nodes fetched, `DN` dropped,
+    // `LR` reference nodes in the locus, `KA` alt nodes kept, `XL`/`XR` reference
+    // bp added by rejoin extension, `RJ` rejoin edges, `EX`/`EN` exit edges (to
+    // nodes not fetched) and the kept nodes carrying them.
+    if let Some((iv, l)) = &stats.locus {
+        write!(
+            out,
+            "\tQS:i:{}\tQE:i:{}\tFN:i:{}\tDN:i:{}\tLR:i:{}\tKA:i:{}\tXL:i:{}\tXR:i:{}\tRJ:i:{}\tEX:i:{}\tEN:i:{}",
+            iv.start,
+            iv.end,
+            l.fetched_nodes,
+            l.dropped_nodes,
+            l.locus_ref_nodes,
+            l.kept_alt_nodes,
+            l.ext_left_bp,
+            l.ext_right_bp,
+            l.rejoins,
+            l.exit_edges,
+            l.exit_nodes,
+        )?;
+    }
+    out.write_all(b"\n")?;
 
     for (i, seg) in segments.iter().enumerate() {
         out.write_all(b"S\t")?;

@@ -7,7 +7,7 @@
 // side query and renders this object as JSON, which a JS-capable/headless
 // browser reads. Keeping the shaping here — pure, no Svelte — makes it testable.
 
-import { gfaStats, type Gfa } from './gfa';
+import { gfaStats, type Gfa, type LocusTrimStats } from './gfa';
 
 /** Everything an agent needs to gauge "how tangled is this locus", derived from
  * the reduced graph the wasm query returns. Counts are post-simplification
@@ -47,6 +47,10 @@ export interface GraphComplexity {
 	/** True when the graph arrived reduced (the normal case); false means the
 	 * counts are raw and the "before" fields are 0. */
 	simplified: boolean;
+	/** The locus trim's report (reference = the locus, extended only to rejoin
+	 * points; `exitEdges` > 0 means alleles leave the fetched window and a larger
+	 * `context` would resolve more). Null when the output was not trimmed. */
+	locusTrim: LocusTrimStats | null;
 }
 
 export function graphComplexity(gfa: Gfa, referenceSample?: string): GraphComplexity {
@@ -66,7 +70,8 @@ export function graphComplexity(gfa: Gfa, referenceSample?: string): GraphComple
 		nodesRemoved: r?.nodesRemoved ?? 0,
 		basesRemoved: r?.basesRemoved ?? 0,
 		unchopMerges: r?.unchopMerges ?? 0,
-		simplified: r !== undefined
+		simplified: r !== undefined,
+		locusTrim: r?.locus ?? null
 	};
 }
 

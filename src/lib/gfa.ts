@@ -112,6 +112,36 @@ export interface ReducedStats {
 	 */
 	walkRecords: number;
 	totalSequenceBp: number;
+	/** What the reducer's locus trim did (see crates/reduce/src/locus.rs), when
+	 * the query asked for one. Absent on untrimmed output. */
+	locus?: LocusTrimStats;
+}
+
+/**
+ * The locus trim: the reference shown is the queried locus, context extends only
+ * into alt alleles reached from it, and the reference axis is extended just far
+ * enough to include where an allele (or deletion edge) leaving the locus rejoins.
+ */
+export interface LocusTrimStats {
+	/** Query interval on the reference path (half-open). */
+	queryStart: number;
+	queryEnd: number;
+	/** Nodes GBZ-base fetched, and how many of them the trim dropped. */
+	fetchedNodes: number;
+	droppedNodes: number;
+	/** Reference nodes overlapping the locus, and alt nodes kept. */
+	locusRefNodes: number;
+	keptAltNodes: number;
+	/** Reference bp added left/right to include rejoin points. */
+	extLeftBp: number;
+	extRightBp: number;
+	/** Distinct edges from the kept component onto out-of-locus reference. */
+	rejoins: number;
+	/** Edges from the locus component to nodes that were NOT fetched — alleles
+	 * that leave the fetched window unresolved. 0 means a larger context would
+	 * not change what is shown. `exitNodes` counts the kept nodes carrying them. */
+	exitEdges: number;
+	exitNodes: number;
 }
 
 export interface Gfa {
@@ -123,6 +153,59 @@ export interface Gfa {
 	referenceSamples: string[];
 	/** Present when parsed from a reduced GFA (server-side simplified + walk-counted). */
 	reduced?: ReducedStats;
+}
+
+/** The reduced GFA's `X` stats line, split on tabs. */
+function parseReducedStats(f: string[]): ReducedStats {
+	const reduced: ReducedStats = {
+		segmentsBefore: intTag(f, 'SB') ?? 0,
+		segmentsAfter: intTag(f, 'SA') ?? 0,
+		linksBefore: intTag(f, 'LB') ?? 0,
+		linksAfter: intTag(f, 'LA') ?? 0,
+		sites: intTag(f, 'ST') ?? 0,
+		nodesRemoved: intTag(f, 'NR') ?? 0,
+		snpCount: intTag(f, 'SN') ?? 0,
+		basesRemoved: intTag(f, 'BR') ?? 0,
+		unchopMerges: intTag(f, 'UM') ?? 0,
+		totalWalks: intTag(f, 'TW') ?? 0,
+		nonRefWalks: intTag(f, 'NW') ?? 0,
+		samples: intTag(f, 'NS') ?? 0,
+		walkRecords: intTag(f, 'WR') ?? 0,
+		totalSequenceBp: intTag(f, 'TS') ?? 0
+	};
+	if (intTag(f, 'QS') !== undefined) {
+		reduced.locus = {
+			queryStart: intTag(f, 'QS') ?? 0,
+			queryEnd: intTag(f, 'QE') ?? 0,
+			fetchedNodes: intTag(f, 'FN') ?? 0,
+			droppedNodes: intTag(f, 'DN') ?? 0,
+			locusRefNodes: intTag(f, 'LR') ?? 0,
+			keptAltNodes: intTag(f, 'KA') ?? 0,
+			extLeftBp: intTag(f, 'XL') ?? 0,
+			extRightBp: intTag(f, 'XR') ?? 0,
+			rejoins: intTag(f, 'RJ') ?? 0,
+			exitEdges: intTag(f, 'EX') ?? 0,
+			exitNodes: intTag(f, 'EN') ?? 0
+		};
+	}
+	return reduced;
+}
+
+/**
+ * Just the `X` stats of a reduced GFA, without parsing the graph — cheap enough
+ * to call on a background result that may never be shown. The reducer writes the
+ * `X` line right after the header, so this only scans the first few lines.
+ */
+export function reducedStatsOf(text: string): ReducedStats | undefined {
+	let pos = 0;
+	for (let i = 0; i < 8 && pos < text.length; i++) {
+		const nl = text.indexOf('\n', pos);
+		const line = text.slice(pos, nl < 0 ? text.length : nl);
+		if (line.startsWith('X\t')) return parseReducedStats(line.split('\t'));
+		if (nl < 0) break;
+		pos = nl + 1;
+	}
+	return undefined;
 }
 
 /** Reads a string GFA tag like `MB:Z:1,2,3` from a line's trailing fields. */
@@ -221,22 +304,7 @@ export function parseGfa(text: string): Gfa {
 			}
 			case 'X': {
 				// Reduced-GFA stats line (custom record emitted by `query --format reduced`).
-				reduced = {
-					segmentsBefore: intTag(f, 'SB') ?? 0,
-					segmentsAfter: intTag(f, 'SA') ?? 0,
-					linksBefore: intTag(f, 'LB') ?? 0,
-					linksAfter: intTag(f, 'LA') ?? 0,
-					sites: intTag(f, 'ST') ?? 0,
-					nodesRemoved: intTag(f, 'NR') ?? 0,
-					snpCount: intTag(f, 'SN') ?? 0,
-					basesRemoved: intTag(f, 'BR') ?? 0,
-					unchopMerges: intTag(f, 'UM') ?? 0,
-					totalWalks: intTag(f, 'TW') ?? 0,
-					nonRefWalks: intTag(f, 'NW') ?? 0,
-					samples: intTag(f, 'NS') ?? 0,
-					walkRecords: intTag(f, 'WR') ?? 0,
-					totalSequenceBp: intTag(f, 'TS') ?? 0
-				};
+				reduced = parseReducedStats(f);
 				break;
 			}
 			case 'S': {

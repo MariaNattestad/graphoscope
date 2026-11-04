@@ -27,20 +27,24 @@
 
 mod coverage;
 mod gfa;
+mod locus;
 mod reduce;
 mod simplify;
 
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::env;
 use std::io::{self, Write};
 use std::ops::Range;
 use std::process;
 
-use gbz::FullPathName;
+use gbz::{FullPathName, Orientation};
 use gbz_base::{GBZBase, GraphInterface, Subgraph, SubgraphQuery};
 use getopts::Options;
+
+use crate::locus::LocusQuery;
 
 // Longest-path bp threshold below which a superbubble collapses to the
 // reference. Matches the default in the TypeScript implementation.
@@ -65,9 +69,13 @@ fn run() -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
         let stdout = io::stdout();
         let mut out = io::BufWriter::new(stdout.lock());
-        reduce::reduce(
+        // With `--interval`, trim to that locus too (no exits are known here:
+        // a GFA file says nothing about nodes it does not contain).
+        let query = config.trim.then(|| LocusQuery { interval: config.interval.clone(), ..Default::default() });
+        reduce::reduce_locus(
             |w: &mut dyn Write| w.write_all(text.as_bytes()),
             config.max_variant,
+            query.as_ref(),
             &mut out,
         )
         .map_err(|e| e.to_string())?;
@@ -80,22 +88,51 @@ fn run() -> Result<(), String> {
     let mut subgraph = Subgraph::new();
     subgraph.from_db(&mut graph_if, &config.query)?;
 
-    // `--raw` short-circuits everything below: emit the subgraph exactly as
-    // GBZ-base extracted it, every haplotype walk included. This is what the
-    // viewer offers as a download for anyone who wants the unsimplified graph;
-    // it is deliberately never parsed in the browser.
+    // The locus trim (see locus.rs) needs the interval and, to report exits,
+    // which fetched nodes have edges GBZ-base did not follow. `--no-trim` keeps
+    // GBZ-base's whole context-padded subgraph, as before.
+    let query = config.trim.then(|| LocusQuery {
+        interval: config.interval.clone(),
+        frontier: frontier(&subgraph),
+    });
+
+    // `--raw` short-circuits everything below: emit the subgraph with every
+    // haplotype walk included (trimmed to the locus unless `--no-trim`). This
+    // is what the viewer offers as a download for anyone who wants the
+    // unsimplified graph.
+    let stdout = io::stdout();
+    let mut out = io::BufWriter::new(stdout.lock());
+    let serialize = |mut w: &mut dyn Write| subgraph.write_gfa(&mut w, false);
     if config.raw {
-        let stdout = io::stdout();
-        let mut out = io::BufWriter::new(stdout.lock());
-        subgraph.write_gfa(&mut out, false).map_err(|e| e.to_string())?;
+        match query.as_ref() {
+            Some(q) => reduce::write_raw_locus(serialize, q, &mut out),
+            None => serialize(&mut out),
+        }
+        .map_err(|e| e.to_string())?;
         return out.flush().map_err(|e| e.to_string());
     }
 
-    let stdout = io::stdout();
-    let mut out = io::BufWriter::new(stdout.lock());
-    reduce::reduce(|mut w: &mut dyn Write| subgraph.write_gfa(&mut w, false), config.max_variant, &mut out)
+    reduce::reduce_locus(serialize, config.max_variant, query.as_ref(), &mut out)
         .map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())
+}
+
+/// Fetched nodes with edges, in the full graph, to nodes the subgraph does not
+/// contain — and how many such edges each has.
+fn frontier(subgraph: &Subgraph) -> HashMap<u64, usize> {
+    let mut out = HashMap::new();
+    for id in subgraph.node_iter() {
+        let mut missing = 0;
+        for o in [Orientation::Forward, Orientation::Reverse] {
+            if let Some(it) = subgraph.supergraph_successors(id, o) {
+                missing += it.filter(|&(n, _)| !subgraph.has_node(n)).count();
+            }
+        }
+        if missing > 0 {
+            out.insert(id as u64, missing);
+        }
+    }
+    out
 }
 
 struct Config {
@@ -106,6 +143,9 @@ struct Config {
     raw: bool,
     /// Reduce this GFA file directly, instead of querying a database.
     gfa_input: Option<String>,
+    /// The query interval, and whether to trim the subgraph to it.
+    interval: Range<usize>,
+    trim: bool,
 }
 
 impl Config {
@@ -127,6 +167,11 @@ impl Config {
         );
         opts.optflag("", "raw", "emit the unsimplified subgraph, with every haplotype walk");
         opts.optopt("", "gfa", "reduce this GFA file instead of querying a database", "FILE");
+        opts.optflag(
+            "",
+            "no-trim",
+            "keep the whole context-padded subgraph instead of trimming it to the locus",
+        );
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
         let header = format!(
@@ -145,14 +190,18 @@ impl Config {
             }
         };
 
-        // GFA input needs none of the query arguments.
+        // GFA input needs none of the query arguments; `--interval` is optional
+        // there and, if given, trims to that locus of the reference walk.
         if let Some(gfa) = matches.opt_str("gfa") {
+            let interval = matches.opt_str("interval").map(|s| parse_interval(&s)).transpose()?;
             return Ok(Config {
                 filename: String::new(),
                 query: SubgraphQuery::path_interval(&FullPathName::reference("", ""), 0..0),
                 max_variant: max_variant_of(&matches)?,
                 raw: false,
                 gfa_input: Some(gfa),
+                trim: interval.is_some() && !matches.opt_present("no-trim"),
+                interval: interval.unwrap_or(0..0),
             });
         }
 
@@ -176,9 +225,17 @@ impl Config {
         let max_variant = max_variant_of(&matches)?;
 
         let path_name = FullPathName::reference(&sample, &contig);
-        let query = SubgraphQuery::path_interval(&path_name, interval).with_context(context);
+        let query = SubgraphQuery::path_interval(&path_name, interval.clone()).with_context(context);
 
-        Ok(Config { filename, query, max_variant, raw: matches.opt_present("raw"), gfa_input: None })
+        Ok(Config {
+            filename,
+            query,
+            max_variant,
+            raw: matches.opt_present("raw"),
+            gfa_input: None,
+            interval,
+            trim: !matches.opt_present("no-trim"),
+        })
     }
 }
 

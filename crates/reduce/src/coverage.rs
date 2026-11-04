@@ -55,7 +55,17 @@ impl Coverage {
     /// stands for (its `WT` tag, or 1 when GBZ-base emitted every haplotype
     /// separately) — so the coverage numbers count haplotypes, matching `TW`,
     /// rather than counting deduplicated records.
+    #[cfg(test)]
     pub fn observe(&mut self, steps: &[(u32, bool)], weight: usize) {
+        self.observe_split(steps, &[], weight)
+    }
+
+    /// As `observe`, for a walk the locus trim clipped into several runs:
+    /// `breaks` holds the (ascending) indices at which a new run begins, and no
+    /// edge is counted between the step before a break and the one at it. The
+    /// walk's start and end are its first and last kept steps; a clip point
+    /// inside it is not an endpoint.
+    pub fn observe_split(&mut self, steps: &[(u32, bool)], breaks: &[usize], weight: usize) {
         self.non_ref_walks += weight;
         let w = weight as u32;
 
@@ -78,7 +88,15 @@ impl Coverage {
         }
 
         self.seen_edges.clear();
-        for wd in steps.windows(2) {
+        let mut next_break = breaks.iter().peekable();
+        for (i, wd) in steps.windows(2).enumerate() {
+            // Edge (i, i+1) crosses a gap if a run begins at i+1.
+            while next_break.peek().is_some_and(|&&b| b < i + 1) {
+                next_break.next();
+            }
+            if next_break.peek().is_some_and(|&&b| b == i + 1) {
+                continue;
+            }
             let (a, b) = (wd[0].0, wd[1].0);
             if a == b {
                 continue;

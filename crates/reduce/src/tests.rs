@@ -540,3 +540,278 @@ fn constructed_graphs_collapse_exactly_as_specified() {
         }
     }
 }
+
+//-----------------------------------------------------------------------------
+// Locus trim (locus.rs): the reference shown is the locus, context extends only
+// into alt alleles, and the reference axis grows just far enough to include
+// where something leaving the locus rejoins it.
+
+use crate::locus::LocusQuery;
+use crate::reduce::{reduce_locus, write_raw_locus};
+
+fn run_locus(text: &str, interval: std::ops::Range<usize>, frontier: &[(u64, usize)]) -> String {
+    let q = LocusQuery { interval, frontier: frontier.iter().copied().collect() };
+    let mut out: Vec<u8> = Vec::new();
+    // max_variant 0: nothing collapses, so the trim is observed on its own.
+    reduce_locus(|w: &mut dyn std::io::Write| w.write_all(text.as_bytes()), 0, Some(&q), &mut out)
+        .expect("reduce failed");
+    String::from_utf8(out).expect("output is utf-8")
+}
+
+/// Every original node id the output stands for (chains expanded via `MB`).
+fn output_nodes(gfa: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for l in gfa.lines().filter(|l| l.starts_with("S\t")) {
+        let f: Vec<&str> = l.split('\t').collect();
+        match f.iter().find_map(|t| t.strip_prefix("MB:Z:")) {
+            Some(m) => out.extend(m.split(',').map(String::from)),
+            None => {
+                out.insert(f[1].to_string());
+            }
+        }
+    }
+    out
+}
+
+fn ids(v: &[&str]) -> HashSet<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+fn x_tag(gfa: &str, tag: &str) -> u64 {
+    let x = gfa.lines().find(|l| l.starts_with("X\t")).expect("stats line");
+    int_tag(x, tag).unwrap_or_else(|| panic!("no {} tag on {}", tag, x))
+}
+
+/// (start, end) of the reference W line.
+fn ref_coords(gfa: &str) -> (u64, u64) {
+    let w = gfa.lines().find(|l| l.starts_with("W\t")).expect("reference walk");
+    let f: Vec<&str> = w.split('\t').collect();
+    (f[4].parse().unwrap(), f[5].parse().unwrap())
+}
+
+/// Coverage (`WC`) of the output segment whose id or `MB` members include `id`.
+fn wc_of(gfa: &str, id: &str) -> Option<u64> {
+    gfa.lines().filter(|l| l.starts_with("S\t")).find_map(|l| {
+        let f: Vec<&str> = l.split('\t').collect();
+        let hit = f[1] == id
+            || f.iter().find_map(|t| t.strip_prefix("MB:Z:")).is_some_and(|m| m.split(',').any(|x| x == id));
+        if hit {
+            int_tag(l, "WC")
+        } else {
+            None
+        }
+    })
+}
+
+/// A 9-node reference, 10 bp per node, starting at path offset 1000:
+/// node n covers [1000 + 10(n-1), 1000 + 10n). Extra lines add alts/edges.
+fn ref9(extra_segments: &str, extra_links: &str, walks: &str) -> String {
+    let mut s = String::from("H\tVN:Z:1.1\tRS:Z:ref\n");
+    for n in 1..=9 {
+        s.push_str(&format!("S\t{}\tACGTACGTAC\n", n));
+    }
+    s.push_str(extra_segments);
+    for n in 1..9 {
+        s.push_str(&format!("L\t{}\t+\t{}\t+\t0M\n", n, n + 1));
+    }
+    s.push_str(extra_links);
+    s.push_str("W\tref\t0\tchr1\t1000\t1090\t>1>2>3>4>5>6>7>8>9\n");
+    s.push_str(walks);
+    s
+}
+
+#[test]
+fn locus_trim_keeps_only_the_locus_reference_and_its_alts() {
+    // Alt 20 sits inside the locus (4 -> 20 -> 5); alt 30 sits outside (1 -> 30 -> 2).
+    let g = ref9(
+        "S\t20\tGGGG\nS\t30\tTTTT\n",
+        "L\t4\t+\t20\t+\t0M\nL\t20\t+\t5\t+\t0M\nL\t1\t+\t30\t+\t0M\nL\t30\t+\t2\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t98\t>1>30>2>3>4>20>5>6>7>8>9\n",
+    );
+    // Partial overlap with nodes 4 and 5: both kept whole.
+    let out = run_locus(&g, 1035..1045, &[]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5", "20"]));
+    assert_eq!(ref_coords(&out), (1030, 1050));
+    assert_eq!(x_tag(&out, "FN"), 11);
+    assert_eq!(x_tag(&out, "DN"), 8);
+    assert_eq!(x_tag(&out, "LR"), 2);
+    assert_eq!(x_tag(&out, "KA"), 1);
+    assert_eq!((x_tag(&out, "XL"), x_tag(&out, "XR"), x_tag(&out, "RJ")), (0, 0, 0));
+    // The haplotype is clipped to the locus, not dropped, and still counted once.
+    assert_eq!(x_tag(&out, "NW"), 1);
+    assert_eq!(wc_of(&out, "20"), Some(1));
+}
+
+#[test]
+fn locus_trim_keeps_an_alt_allele_reached_end_to_end() {
+    // A long insertion 4 -> 40 -> 41 -> 42 -> 5, all fetched.
+    let g = ref9(
+        "S\t40\tAAAA\nS\t41\tCCCC\nS\t42\tGGGG\n",
+        "L\t4\t+\t40\t+\t0M\nL\t40\t+\t41\t+\t0M\nL\t41\t+\t42\t+\t0M\nL\t42\t+\t5\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t102\t>1>2>3>4>40>41>42>5>6>7>8>9\n",
+    );
+    let out = run_locus(&g, 1030..1050, &[]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5", "40", "41", "42"]));
+    assert_eq!((x_tag(&out, "EX"), x_tag(&out, "RJ")), (0, 0));
+    assert_eq!(wc_of(&out, "41"), Some(1));
+}
+
+#[test]
+fn locus_trim_reports_an_alt_whose_middle_was_not_fetched_as_an_exit() {
+    // 4 -> 40 -> (41, not fetched) -> 42 -> 6. 42 is reachable only through the
+    // missing node, so from the locus it is anchored outside: dropped.
+    let g = ref9(
+        "S\t40\tAAAA\nS\t42\tGGGG\n",
+        "L\t4\t+\t40\t+\t0M\nL\t42\t+\t6\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t44\t>1>2>3>4>40\nW\tunknown\t2\tchr1\t0\t44\t>42>6>7>8>9\n",
+    );
+    let out = run_locus(&g, 1030..1050, &[(40, 1), (42, 1)]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5", "40"]));
+    assert_eq!((x_tag(&out, "EX"), x_tag(&out, "EN")), (1, 1), "only 40's exit counts");
+    assert_eq!((x_tag(&out, "XL"), x_tag(&out, "XR")), (0, 0));
+    // The second haplotype never touches the locus.
+    assert_eq!(x_tag(&out, "NW"), 1);
+}
+
+#[test]
+fn locus_trim_extends_the_reference_to_where_a_deletion_rejoins() {
+    // A deletion edge 5 -> 8 leaves the locus (4..5) and rejoins at 8. Alt 50
+    // (6 -> 50 -> 7) is anchored only on the extension: not pulled in.
+    let g = ref9(
+        "S\t50\tTTTT\n",
+        "L\t5\t+\t8\t+\t0M\nL\t6\t+\t50\t+\t0M\nL\t50\t+\t7\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t60\t>1>2>3>4>5>8>9\nW\tunknown\t2\tchr1\t0\t94\t>1>2>3>4>5>6>50>7>8>9\n",
+    );
+    let out = run_locus(&g, 1030..1050, &[]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5", "6", "7", "8"]));
+    assert_eq!(ref_coords(&out), (1030, 1080));
+    assert_eq!((x_tag(&out, "XL"), x_tag(&out, "XR"), x_tag(&out, "RJ")), (0, 30, 1));
+    // The deletion edge survives; the extension-only alt's edges do not.
+    assert!(out.lines().any(|l| l.starts_with("L\t") && l.contains("u4\t+\t8\t+")), "{}", out); // 4,5 unchop into u4
+    assert!(!out.contains("\t50\t"));
+    // Haplotype 2 dips into the dropped alt: its two runs count as one walk.
+    assert_eq!(x_tag(&out, "NW"), 2);
+}
+
+#[test]
+fn locus_trim_extends_the_reference_to_where_an_alt_rejoins_on_either_side() {
+    // 4 -> 60 -> 7 leaves the locus to the right; 2 -> 80 -> 4 enters it from
+    // the left. Both are reached from the locus, so both rejoin points count.
+    let g = ref9(
+        "S\t60\tAAAA\nS\t80\tCCCC\n",
+        "L\t4\t+\t60\t+\t0M\nL\t60\t+\t7\t+\t0M\nL\t2\t+\t80\t+\t0M\nL\t80\t+\t4\t+\t0M\n",
+        "",
+    );
+    let out = run_locus(&g, 1030..1050, &[]);
+    assert_eq!(output_nodes(&out), ids(&["2", "3", "4", "5", "6", "7", "60", "80"]));
+    assert_eq!(ref_coords(&out), (1010, 1070));
+    assert_eq!((x_tag(&out, "XL"), x_tag(&out, "XR"), x_tag(&out, "RJ")), (20, 20, 2));
+}
+
+#[test]
+fn a_deletion_rejoining_beyond_the_fetched_reference_is_unresolved_until_it_is_fetched() {
+    // Small context: the reference walk stops at 6, but the deletion 5 -> 8's
+    // far endpoint (1 bp away to GBZ-base) was fetched anyway, with its
+    // neighbour 9; past 9 nothing was fetched. 8 and 9 are not on the walk, so
+    // they read as non-reference and the search reaches the frontier: an exit.
+    let mut small = String::from("H\tVN:Z:1.1\tRS:Z:ref\n");
+    for n in [1, 2, 3, 4, 5, 6, 8, 9] {
+        small.push_str(&format!("S\t{}\tACGTACGTAC\n", n));
+    }
+    small.push_str("L\t1\t+\t2\t+\t0M\nL\t2\t+\t3\t+\t0M\nL\t3\t+\t4\t+\t0M\nL\t4\t+\t5\t+\t0M\n");
+    small.push_str("L\t5\t+\t6\t+\t0M\nL\t5\t+\t8\t+\t0M\nL\t8\t+\t9\t+\t0M\n");
+    small.push_str("W\tref\t0\tchr1\t1000\t1060\t>1>2>3>4>5>6\n");
+    small.push_str("W\tunknown\t1\tchr1\t0\t70\t>1>2>3>4>5>8>9\n");
+    // 6 continues to unfetched 7; 9 continues to unfetched 10.
+    let out = run_locus(&small, 1030..1050, &[(6, 1), (9, 1)]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5", "8", "9"]));
+    assert_eq!(x_tag(&out, "XR"), 0, "nothing to extend to yet");
+    assert_eq!((x_tag(&out, "EX"), x_tag(&out, "EN")), (1, 1), "9's missing edge; 6 is not kept");
+
+    // Larger context: the walk now reaches 8 and 9, the rejoin resolves, and
+    // 8 is shown as the reference it is (9 is past the rejoin: dropped).
+    let big = ref9("", "L\t5\t+\t8\t+\t0M\n", "W\tunknown\t1\tchr1\t0\t70\t>1>2>3>4>5>8>9\n");
+    let out = run_locus(&big, 1030..1050, &[(1, 1), (9, 1)]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5", "6", "7", "8"]));
+    assert_eq!(x_tag(&out, "XR"), 30);
+    assert_eq!(x_tag(&out, "EX"), 0, "the extension's own frontier is not an exit");
+}
+
+#[test]
+fn locus_trim_drops_an_alt_anchored_entirely_outside() {
+    // 7 -> 70 -> 8, and a two-node alt 1 -> 71 -> 72 -> 3: neither touches the locus.
+    let g = ref9(
+        "S\t70\tAAAA\nS\t71\tCCCC\nS\t72\tGGGG\n",
+        "L\t7\t+\t70\t+\t0M\nL\t70\t+\t8\t+\t0M\nL\t1\t+\t71\t+\t0M\nL\t71\t+\t72\t+\t0M\nL\t72\t+\t3\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t94\t>1>71>72>3>4>5>6>7>70>8>9\n",
+    );
+    let out = run_locus(&g, 1030..1050, &[(70, 3), (71, 2)]);
+    assert_eq!(output_nodes(&out), ids(&["4", "5"]));
+    assert_eq!((x_tag(&out, "EX"), x_tag(&out, "RJ")), (0, 0));
+}
+
+#[test]
+fn locus_trim_keeps_real_fixtures_consistent() {
+    // Trim each real locus to the middle third of its reference walk and check
+    // the same invariants the untrimmed output holds to.
+    for name in REAL {
+        let input = fixture(name);
+        let w = input.lines().find(|l| l.starts_with("W\t")).unwrap();
+        let f: Vec<&str> = w.split('\t').collect();
+        let (s, e): (usize, usize) = (f[4].parse().unwrap(), f[5].parse().unwrap());
+        let third = (e - s) / 3;
+        let out = run_locus(&input, s + third..e - third, &[]);
+
+        let input_edges = edges(&input);
+        let chains: HashSet<String> = chain_members(&out).into_iter().map(|(id, _)| id).collect();
+        for (a, b) in edges(&out) {
+            if chains.contains(&a) || chains.contains(&b) {
+                continue;
+            }
+            assert!(input_edges.contains(&(a.clone(), b.clone())), "{}: invented edge {}-{}", name, a, b);
+        }
+        // The kept reference is a contiguous piece of the original, at the
+        // coordinates the W line now claims.
+        let (rs, re) = ref_coords(&out);
+        let full = ref_walk_sequence(&input);
+        let kept = ref_walk_sequence(&out);
+        assert_eq!(kept.len() as u64, re - rs, "{}: W coordinates disagree with sequence", name);
+        assert_eq!(&full[(rs as usize - s)..(re as usize - s)], kept, "{}: reference changed", name);
+        assert!(rs as usize <= s + third && re as usize >= e - third, "{}: locus not covered", name);
+        assert!(x_tag(&out, "DN") > 0, "{}: nothing trimmed", name);
+
+        let non_ref = x_tag(&out, "NW");
+        for line in out.lines().filter(|l| l.starts_with("S\t") || l.starts_with("L\t")) {
+            for tag in ["WC", "WS", "WE"] {
+                if let Some(v) = int_tag(line, tag) {
+                    assert!(v <= non_ref, "{}: {} of {} exceeds {} walks", name, tag, v, non_ref);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn trimmed_raw_output_names_only_kept_nodes() {
+    let g = ref9(
+        "S\t50\tTTTT\nS\t30\tTTTT\n",
+        "L\t5\t+\t8\t+\t0M\nL\t6\t+\t50\t+\t0M\nL\t50\t+\t7\t+\t0M\nL\t1\t+\t30\t+\t0M\nL\t30\t+\t2\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t94\t>1>30>2>3>4>5>6>50>7>8>9\tWT:i:3\n",
+    );
+    let q = LocusQuery { interval: 1030..1050, ..Default::default() };
+    let mut out: Vec<u8> = Vec::new();
+    write_raw_locus(|w: &mut dyn std::io::Write| w.write_all(g.as_bytes()), &q, &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    let kept = ids(&["4", "5", "6", "7", "8"]);
+    assert_eq!(segments(&out).into_iter().map(|(id, _)| id).collect::<HashSet<_>>(), kept);
+    let walks: Vec<&str> = out.lines().filter(|l| l.starts_with("W\t")).collect();
+    assert_eq!(walks[0], "W\tref\t0\tchr1\t1030\t1080\t>4>5>6>7>8");
+    // The haplotype dips into dropped 50: two runs, each keeping its weight.
+    assert_eq!(
+        &walks[1..],
+        &["W\tunknown\t1\tchr1\t0\t30\t>4>5>6\tWT:i:3", "W\tunknown\t1\tchr1\t0\t20\t>7>8\tWT:i:3"]
+    );
+    for (a, b) in edges(&out) {
+        assert!(kept.contains(&a) && kept.contains(&b));
+    }
+}
