@@ -350,12 +350,14 @@ pub fn write_reduced<W: Write>(
     // Locus-trim stats, as extra tags on the same `X` line (a reader that
     // predates them ignores unknown tags): `QS`/`QE` the query interval, `FN` nodes fetched, `DN` dropped,
     // `LR` reference nodes in the locus, `KA` alt nodes kept, `XL`/`XR` reference
-    // bp added by rejoin extension, `RJ` rejoin edges, `EX`/`EN` exit edges (to
-    // nodes not fetched) and the kept nodes carrying them.
+    // bp added by rejoin/span extension, `RJ` rejoin edges, `EX`/`EN` exit edges
+    // (to nodes not fetched) and the kept nodes carrying them, `SP` connections
+    // spanning the locus, `OE` open ends (possible spans not yet fetched), `HT` haplotypes in
+    // the whole graph (compare with `NW`, those reaching the kept graph).
     if let Some((iv, l)) = &stats.locus {
         write!(
             out,
-            "\tQS:i:{}\tQE:i:{}\tFN:i:{}\tDN:i:{}\tLR:i:{}\tKA:i:{}\tXL:i:{}\tXR:i:{}\tRJ:i:{}\tEX:i:{}\tEN:i:{}",
+            "\tQS:i:{}\tQE:i:{}\tFN:i:{}\tDN:i:{}\tLR:i:{}\tKA:i:{}\tXL:i:{}\tXR:i:{}\tRJ:i:{}\tEX:i:{}\tEN:i:{}\tSP:i:{}\tOE:i:{}\tHT:i:{}",
             iv.start,
             iv.end,
             l.fetched_nodes,
@@ -367,6 +369,9 @@ pub fn write_reduced<W: Write>(
             l.rejoins,
             l.exit_edges,
             l.exit_nodes,
+            l.spans,
+            l.open_ends,
+            l.graph_haplotypes,
         )?;
     }
     out.write_all(b"\n")?;

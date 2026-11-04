@@ -142,6 +142,17 @@ export interface LocusTrimStats {
 	 * not change what is shown. `exitNodes` counts the kept nodes carrying them. */
 	exitEdges: number;
 	exitNodes: number;
+	/** Connections spanning the locus without touching it (a deletion of the
+	 * whole locus, a hybrid haplotype from flank to flank) that were kept, the
+	 * reference extended to both of their ends. */
+	spans: number;
+	/** Alt components anchored on one side that run into unfetched nodes and
+	 * head across the locus: spans whose far end isn't fetched yet. Counted with
+	 * `exitEdges` as open ends worth a larger context. */
+	openEnds: number;
+	/** Haplotypes in the whole graph (0 if unknown). Against `totalWalks` it
+	 * shows how many haplotypes go around the locus entirely. */
+	graphHaplotypes: number;
 }
 
 export interface Gfa {
@@ -185,7 +196,10 @@ function parseReducedStats(f: string[]): ReducedStats {
 			extRightBp: intTag(f, 'XR') ?? 0,
 			rejoins: intTag(f, 'RJ') ?? 0,
 			exitEdges: intTag(f, 'EX') ?? 0,
-			exitNodes: intTag(f, 'EN') ?? 0
+			exitNodes: intTag(f, 'EN') ?? 0,
+			spans: intTag(f, 'SP') ?? 0,
+			openEnds: intTag(f, 'OE') ?? 0,
+			graphHaplotypes: intTag(f, 'HT') ?? 0
 		};
 	}
 	return reduced;

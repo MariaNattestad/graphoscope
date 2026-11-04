@@ -1,11 +1,13 @@
 // Background context escalation for a locus query.
 //
 // The reducer trims every query to the locus (crates/reduce/src/locus.rs): the
-// reference shown is the locus, and context only extends into alt alleles
-// reached from it. So context no longer pads what is shown — it only decides how
+// reference shown is the locus (extended to where alleles leaving or spanning it
+// rejoin), and context only extends into alt alleles reached from it. So context no longer pads what is shown — it only decides how
 // far an allele leaving the locus is followed before GBZ-base stops fetching.
 // The reducer reports what was cut off as `exitEdges` (edges from the locus
-// component to nodes that were not fetched).
+// component to nodes that were not fetched) plus `openEnds` (possible
+// connections spanning the locus whose far end wasn't fetched); together, the
+// open ends the ladder tries to resolve.
 //
 // That makes context something to *search* rather than pick: paint first with a
 // small context (fast), then re-query at growing contexts in a background worker,
@@ -51,6 +53,8 @@ export interface EscalationStep {
 	ok: boolean;
 	error?: string;
 	exits: number;
+	missing: number;
+	spans: number;
 	rejoins: number;
 	extLeftBp: number;
 	extRightBp: number;
@@ -70,7 +74,9 @@ export function stepOf(context: number, r: QueryResult): EscalationStep {
 		context,
 		ok: r.ok && !!stats,
 		error: r.ok ? (stats ? undefined : 'no stats line') : r.error,
-		exits: l?.exitEdges ?? 0,
+		exits: openEnds(stats),
+		missing: missingHaplotypes(stats),
+		spans: l?.spans ?? 0,
 		rejoins: l?.rejoins ?? 0,
 		extLeftBp: l?.extLeftBp ?? 0,
 		extRightBp: l?.extRightBp ?? 0,
@@ -84,47 +90,104 @@ export function stepOf(context: number, r: QueryResult): EscalationStep {
 	};
 }
 
-/** Exits the shown graph leaves unresolved, or 0 for an untrimmed graph. */
-export function unresolvedExits(stats: ReducedStats | undefined): number {
-	return stats?.locus?.exitEdges ?? 0;
+/** Open ends the graph leaves unresolved — exit edges plus possible spans
+ * whose far end isn't fetched — or 0 for an untrimmed graph. */
+export function openEnds(stats: ReducedStats | undefined): number {
+	return (stats?.locus?.exitEdges ?? 0) + (stats?.locus?.openEnds ?? 0);
+}
+export const unresolvedExits = openEnds;
+
+/**
+ * Haplotypes in the graph that never reach the kept graph — they go around the
+ * locus. A deletion of the whole locus whose two ends both lie beyond a small
+ * context leaves no node or edge in the fetched subgraph, so this deficit is the
+ * only sign of it at first paint. It also counts haplotypes simply absent here
+ * (assembly gaps, one-copy chrX in males), which no context resolves — so the
+ * ladder chases it only while it keeps shrinking. 0 when the graph's haplotype
+ * count is unknown.
+ */
+export function missingHaplotypes(stats: ReducedStats | undefined): number {
+	const ht = stats?.locus?.graphHaplotypes ?? 0;
+	return ht > 0 && stats ? Math.max(0, ht - stats.totalWalks) : 0;
+}
+/** Below this many missing haplotypes the deficit isn't worth a query. */
+export const MISSING_MIN = 2;
+
+/** What's left unresolved in a view: open ends, and haplotypes going around it. */
+export interface Unresolved {
+	exits: number;
+	missing: number;
+}
+export function unresolvedOf(stats: ReducedStats | undefined): Unresolved {
+	return { exits: openEnds(stats), missing: missingHaplotypes(stats) };
+}
+/** Whether a view is worth escalating from at all. */
+export function worthEscalating(u: Unresolved): boolean {
+	return u.exits > 0 || u.missing >= MISSING_MIN;
+}
+
+/**
+ * Which budget the latest step broke, or null. The byte budget is cumulative
+ * over the run; the others are per step. A step over budget is never offered:
+ * the view stays on the last result that fit (the first paint, or an earlier
+ * step already offered/applied).
+ */
+export function overBudget(
+	steps: EscalationStep[],
+	budget: EscalationBudget = DEFAULT_BUDGET
+): 'bytes' | 'fetched nodes' | 'memory' | 'size' | 'nodes' | null {
+	const last = steps[steps.length - 1];
+	if (!last) return null;
+	if (last.nodesShown > budget.maxNodesShown) return 'nodes';
+	if (last.gfaBytes > budget.maxGfaBytes) return 'size';
+	if (last.wasmMemoryBytes > budget.maxWasmMemoryBytes) return 'memory';
+	if (last.fetchedNodes > budget.maxFetchedNodes) return 'fetched nodes';
+	if (steps.reduce((s, x) => s + x.bytesFetched, 0) > budget.maxBytesFetched) return 'bytes';
+	return null;
 }
 
 /** Why escalation should stop after `steps`, or null to keep going. */
 export function stopReason(
 	steps: EscalationStep[],
-	budget: EscalationBudget = DEFAULT_BUDGET
+	budget: EscalationBudget = DEFAULT_BUDGET,
+	start: Unresolved = { exits: 0, missing: 0 }
 ): 'resolved' | 'error' | 'budget' | 'ladder' | null {
 	const last = steps[steps.length - 1];
 	if (!last) return null;
 	if (!last.ok) return 'error';
-	if (last.nodesShown > budget.maxNodesShown || last.gfaBytes > budget.maxGfaBytes) return 'budget';
-	if (last.exits === 0) return 'resolved';
-	const bytes = steps.reduce((s, x) => s + x.bytesFetched, 0);
-	if (
-		bytes > budget.maxBytesFetched ||
-		last.fetchedNodes > budget.maxFetchedNodes ||
-		last.wasmMemoryBytes > budget.maxWasmMemoryBytes ||
-		last.gfaBytes > budget.maxGfaBytes ||
-		last.nodesShown > budget.maxNodesShown
-	)
-		return 'budget';
+	if (overBudget(steps, budget)) return 'budget';
+	// Keep chasing missing haplotypes only while a step still finds some.
+	const prevMissing = steps.length > 1 ? steps[steps.length - 2].missing : start.missing;
+	const chasing = last.missing >= MISSING_MIN && last.missing < prevMissing;
+	if (last.exits === 0 && !chasing) return 'resolved';
 	if (!ESCALATION_CONTEXTS.some((c) => c > last.context)) return 'ladder';
 	return null;
 }
 
-/** Whether a step's result is worth offering over what is shown: it resolves
- * at least one exit, and is not itself over the size the page will render. */
+/** Whether the latest step is worth offering over what is shown: it resolves at
+ * least one open end (or, with none added, accounts for missing haplotypes) and
+ * stays within every budget. */
 export function isImprovement(
-	step: EscalationStep,
-	shownExits: number,
+	steps: EscalationStep[],
+	shown: Unresolved,
 	budget: EscalationBudget = DEFAULT_BUDGET
 ): boolean {
-	return (
-		step.ok &&
-		step.exits < shownExits &&
-		step.gfaBytes <= budget.maxGfaBytes &&
-		step.nodesShown <= budget.maxNodesShown
-	);
+	const step = steps[steps.length - 1];
+	if (!step || !step.ok || overBudget(steps, budget) !== null) return false;
+	return step.exits < shown.exits || (step.exits <= shown.exits && step.missing < shown.missing);
+}
+
+const kb = (bp: number) => (bp >= 1000 ? `${Math.round(bp / 1000)} kb` : `${bp} bp`);
+
+/** The short note shown when the ladder stops on a budget: where the view
+ * stays, and what was too large. */
+export function budgetNote(steps: EscalationStep[], fromContext: number, budget = DEFAULT_BUDGET): string | null {
+	const which = overBudget(steps, budget);
+	const last = steps[steps.length - 1];
+	if (!which || !last) return null;
+	const kept = steps.length > 1 ? steps[steps.length - 2].context : fromContext;
+	const what = which === 'nodes' ? 'too many nodes' : which === 'memory' ? 'too much memory' : `too large (${which})`;
+	return `Stopped at ${kb(kept)}: the ${kb(last.context)} step was ${what}`;
 }
 
 export interface EscalationOffer {
@@ -133,8 +196,7 @@ export interface EscalationOffer {
 	stats: QueryResult['stats'];
 	step: EscalationStep;
 	/** Exits on screen now, and how many this result resolves. */
-	shownExits: number;
-	resolved: number;
+	shown: Unresolved;
 }
 
 /**
@@ -142,6 +204,9 @@ export interface EscalationOffer {
  * blocks, a query the user starts), reporting each step and every improvement.
  * A new `start` or `cancel` abandons the run in flight — terminating its worker
  * if a query is mid-way, since the wasm runs synchronously and can't be told.
+ * An idle worker is kept across loci, so its DB reader (header, schema and
+ * index pages, warmed once per graph) and its bounded block cache carry over:
+ * the ~3.5 MiB open cost is paid once per session, not once per locus.
  */
 export class Escalator {
 	private client: GbzClient | null = null;
@@ -163,20 +228,21 @@ export class Escalator {
 		source: QuerySource,
 		locus: LocusQuery,
 		fromContext: number,
-		shownExits: number,
+		shown: Unresolved,
 		cb: {
 			onStep?: (step: EscalationStep) => void;
 			/** Every raw result, for logging/measurement. */
 			onResult?: (result: QueryResult, context: number) => void;
 			onOffer: (offer: EscalationOffer) => void;
-			onDone?: (reason: string, steps: EscalationStep[]) => void;
+			/** `note` is set when a budget stopped the ladder (see budgetNote). */
+			onDone?: (reason: string, steps: EscalationStep[], note: string | null) => void;
 		},
 		budget: EscalationBudget = DEFAULT_BUDGET
 	): Promise<void> {
 		this.cancel();
 		const run = this.runId;
 		const steps: EscalationStep[] = [];
-		let best = shownExits;
+		let best = shown;
 		for (const context of ESCALATION_CONTEXTS) {
 			if (context <= fromContext) continue;
 			if (!this.client) this.client = this.makeClient();
@@ -192,24 +258,23 @@ export class Escalator {
 			const step = stepOf(context, r);
 			steps.push(step);
 			cb.onStep?.(step);
-			if (isImprovement(step, best, budget) && r.gfa) {
+			if (isImprovement(steps, best, budget) && r.gfa) {
 				cb.onOffer({
 					context,
 					gfaText: r.gfa,
 					stats: r.stats,
 					step,
-					shownExits,
-					resolved: shownExits - step.exits
+					shown
 				});
-				best = step.exits;
+				best = { exits: step.exits, missing: step.missing };
 			}
-			const reason = stopReason(steps, budget);
+			const reason = stopReason(steps, budget, shown);
 			if (reason) {
-				cb.onDone?.(reason, steps);
+				cb.onDone?.(reason, steps, budgetNote(steps, fromContext, budget));
 				return;
 			}
 		}
-		cb.onDone?.('ladder', steps);
+		cb.onDone?.('ladder', steps, null);
 	}
 
 	terminate() {

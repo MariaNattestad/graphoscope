@@ -94,6 +94,7 @@ fn run() -> Result<(), String> {
     let query = config.trim.then(|| LocusQuery {
         interval: config.interval.clone(),
         frontier: frontier(&subgraph),
+        haplotypes: database.haplotypes(),
     });
 
     // `--raw` short-circuits everything below: emit the subgraph with every

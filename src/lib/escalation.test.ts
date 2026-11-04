@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isImprovement, stepOf, stopReason, type EscalationStep } from './escalation';
+import { budgetNote, isImprovement, missingHaplotypes, stepOf, stopReason, type EscalationStep } from './escalation';
 import { parseGfa, reducedStatsOf } from './gfa';
 
 const X =
@@ -12,6 +12,8 @@ function step(over: Partial<EscalationStep>): EscalationStep {
 		context: 10_000,
 		ok: true,
 		exits: 0,
+		missing: 0,
+		spans: 0,
 		rejoins: 0,
 		extLeftBp: 0,
 		extRightBp: 0,
@@ -32,6 +34,7 @@ describe('locus trim stats', () => {
 		const cheap = reducedStatsOf(GFA)?.locus;
 		expect(full).toEqual(cheap);
 		expect(full).toMatchObject({ queryStart: 1030, extRightBp: 30, rejoins: 1, exitEdges: 4, exitNodes: 2 });
+		expect(missingHaplotypes(parseGfa(GFA.replace('EN:i:2', 'EN:i:2\tHT:i:10')).reduced)).toBe(7);
 	});
 	it('are absent on untrimmed output', () => {
 		expect(reducedStatsOf(GFA.replace(/\tQS:i:.*$/m, ''))?.locus).toBeUndefined();
@@ -60,6 +63,12 @@ describe('stopReason', () => {
 	it('stops when the result is too big to show, even if resolved', () => {
 		expect(stopReason([step({ exits: 0, nodesShown: 1e6 })])).toBe('budget');
 	});
+	it('chases missing haplotypes only while a step finds some', () => {
+		const start = { exits: 0, missing: 20 };
+		expect(stopReason([step({ missing: 5 })], undefined, start)).toBeNull();
+		expect(stopReason([step({ missing: 5 }), step({ missing: 5, context: 50_000 })], undefined, start)).toBe('resolved');
+		expect(stopReason([step({ missing: 20 })], undefined, start)).toBe('resolved');
+	});
 	it('stops on an error', () => {
 		expect(stopReason([step({ ok: false })])).toBe('error');
 	});
@@ -67,11 +76,28 @@ describe('stopReason', () => {
 
 describe('isImprovement', () => {
 	it('needs fewer exits than are shown', () => {
-		expect(isImprovement(step({ exits: 2 }), 5)).toBe(true);
-		expect(isImprovement(step({ exits: 5 }), 5)).toBe(false);
+		expect(isImprovement([step({ exits: 2 })], { exits: 5, missing: 0 })).toBe(true);
+		expect(isImprovement([step({ exits: 5 })], { exits: 5, missing: 0 })).toBe(false);
 	});
-	it('never offers a graph too large to render', () => {
-		expect(isImprovement(step({ exits: 0, gfaBytes: 1e9 }), 5)).toBe(false);
-		expect(isImprovement(step({ exits: 0, nodesShown: 1e6 }), 5)).toBe(false);
+	it('also counts haplotypes found going around the locus', () => {
+		expect(isImprovement([step({ exits: 0, missing: 3 })], { exits: 0, missing: 20 })).toBe(true);
+		expect(isImprovement([step({ exits: 1, missing: 3 })], { exits: 0, missing: 20 })).toBe(false);
+	});
+	it('never offers a step over any budget', () => {
+		for (const over of [{ gfaBytes: 1e9 }, { nodesShown: 1e6 }, { wasmMemoryBytes: 4e9 }, { fetchedNodes: 1e9 }]) {
+			expect(isImprovement([step({ exits: 0, ...over })], { exits: 5, missing: 0 })).toBe(false);
+		}
+		// Cumulative bytes: the second step tips it over, so only the first is offered.
+		const a = step({ exits: 2, bytesFetched: 100e6 });
+		const b = step({ exits: 0, bytesFetched: 100e6, context: 50_000 });
+		expect(isImprovement([a], { exits: 5, missing: 0 })).toBe(true);
+		expect(isImprovement([a, b], { exits: 2, missing: 0 })).toBe(false);
+	});
+	it('names where the view stays when a budget stops the ladder', () => {
+		const a = step({ exits: 2, context: 10_000 });
+		const b = step({ exits: 0, context: 50_000, nodesShown: 1e6 });
+		expect(budgetNote([a, b], 1000)).toBe('Stopped at 10 kb: the 50 kb step was too many nodes');
+		expect(budgetNote([step({ nodesShown: 1e6 })], 1000)).toBe('Stopped at 1 kb: the 10 kb step was too many nodes');
+		expect(budgetNote([a], 1000)).toBeNull();
 	});
 });

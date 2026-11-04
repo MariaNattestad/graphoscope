@@ -43,6 +43,11 @@ pub struct LocusQuery {
     /// fetch, and how many such edges each has. Empty when unknown (e.g. when
     /// reducing a GFA file), in which case no exits are reported.
     pub frontier: HashMap<NodeId, usize>,
+    /// Haplotypes in the whole graph (GBZ metadata), 0 when unknown. Set against
+    /// the haplotypes that reach the kept graph, it shows how many go around
+    /// the locus entirely — e.g. a deletion of the whole locus whose ends are
+    /// both beyond the fetched context, which leaves no trace in the subgraph.
+    pub haplotypes: usize,
 }
 
 /// Counts describing the trim, carried on the reduced GFA's `X` line.
@@ -65,6 +70,14 @@ pub struct LocusStats {
     /// fetched, and the number of kept nodes carrying at least one.
     pub exit_edges: usize,
     pub exit_nodes: usize,
+    /// Connections spanning the locus without touching it (reference edges
+    /// jumping over it, alt components anchored on both sides) that were kept.
+    pub spans: usize,
+    /// Alt components anchored on one side that run into unfetched nodes and
+    /// head across the locus (by node id): possible spans not yet resolved.
+    pub open_ends: usize,
+    /// `LocusQuery::haplotypes`, echoed for the reader.
+    pub graph_haplotypes: usize,
 }
 
 pub struct Trim {
@@ -168,10 +181,105 @@ pub fn plan_trim(graph: &Graph, ref_walk: &RefWalk, q: &LocusQuery) -> Option<Tr
             }
         }
     }
-    let kept_alt_nodes = keep.len() - locus_ref_nodes;
 
-    // Exits: only from what the locus itself reaches (alts and in-locus
-    // reference), not from the extension, whose own alts are not shown.
+    // ---- Connections that span the locus without touching it ---------------
+    // A deletion of the whole locus, or a haplotype that leaves the reference
+    // left of the locus and rejoins right of it (e.g. a CYP2D7/D6 hybrid), never
+    // touches the in-locus reference, so the search above cannot see it. Keep
+    // such a connection and extend the reference just far enough to include
+    // both of its ends: the anchor nearest the locus on each side.
+    let left_of =
+        |id: NodeId| ref_index.get(&id).and_then(|v| v.iter().copied().filter(|&i| i < a).max());
+    let right_of =
+        |id: NodeId| ref_index.get(&id).and_then(|v| v.iter().copied().filter(|&i| i > b).min());
+    let adjacent_on_walk = |u: NodeId, v: NodeId| {
+        let (Some(ui), Some(vi)) = (ref_index.get(&u), ref_index.get(&v)) else { return false };
+        ui.iter().any(|&i| vi.iter().any(|&j| i.abs_diff(j) == 1))
+    };
+    let mut spans = 0;
+    // (a) Reference-to-reference edges jumping over the locus.
+    for l in &graph.links {
+        let (u, v) = (l.from, l.to);
+        if u == v || in_locus(u) || in_locus(v) || adjacent_on_walk(u, v) {
+            continue;
+        }
+        let ends = match (left_of(u), right_of(v), left_of(v), right_of(u)) {
+            (Some(i), Some(j), _, _) | (_, _, Some(i), Some(j)) => Some((i, j)),
+            _ => None,
+        };
+        if let Some((i, j)) = ends {
+            lo = lo.min(i);
+            hi = hi.max(j);
+            spans += 1;
+        }
+    }
+    // (b) Non-reference components not reached from the locus. One anchored on
+    // both sides spans it and is kept. One anchored on a single side that runs
+    // into unfetched nodes may be a spanning connection whose far end is beyond
+    // the fetched reference (its far endpoint is fetched — 1 bp away to
+    // GBZ-base — but not the reference leading to it, so it reads as alt). That
+    // is an *open end*: a larger context may resolve it. Telling it apart from an
+    // ordinary flank allele that was merely cut off needs coordinates we don't
+    // have for unfetched nodes, so this uses node ids: Minigraph-Cactus numbers
+    // nodes in reference order, so a component anchored left of the locus whose
+    // ids lie beyond the locus's (or vice versa) is heading across it. It only
+    // drives escalation, never what is shown, so a misfire costs a query.
+    let locus_ids = || steps[a..=b].iter().map(|s| s.id);
+    let (id_min, id_max) = (locus_ids().min().unwrap(), locus_ids().max().unwrap());
+    let ids_increase = steps[0].id <= steps[steps.len() - 1].id;
+    let mut open_ends = 0;
+    let mut seen: HashSet<NodeId> = HashSet::new();
+    for seg in &graph.segments {
+        let start = seg.id;
+        if ref_index.contains_key(&start) || keep.contains(&start) || !seen.insert(start) {
+            continue;
+        }
+        let mut comp = vec![start];
+        let mut stack = vec![start];
+        let (mut left, mut right): (Option<usize>, Option<usize>) = (None, None);
+        let mut open = false;
+        while let Some(u) = stack.pop() {
+            open |= q.frontier.get(&u).is_some_and(|&n| n > 0);
+            for &v in adj.get(&u).map(Vec::as_slice).unwrap_or(&[]) {
+                if ref_index.contains_key(&v) {
+                    if let Some(i) = left_of(v) {
+                        left = Some(left.map_or(i, |x| x.max(i)));
+                    }
+                    if let Some(j) = right_of(v) {
+                        right = Some(right.map_or(j, |x| x.min(j)));
+                    }
+                } else if seen.insert(v) {
+                    comp.push(v);
+                    stack.push(v);
+                }
+            }
+        }
+        match (left, right) {
+            (Some(i), Some(j)) => {
+                keep.extend(comp);
+                lo = lo.min(i);
+                hi = hi.max(j);
+                spans += 1;
+            }
+            (Some(_), None) | (None, Some(_)) if open => {
+                let toward_right = left.is_some() == ids_increase;
+                let beyond = if toward_right {
+                    comp.iter().any(|&id| id > id_max)
+                } else {
+                    comp.iter().any(|&id| id < id_min)
+                };
+                if beyond {
+                    open_ends += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let kept_alt_nodes = keep.iter().filter(|id| !ref_index.contains_key(id)).count();
+
+    // Exits: only from kept alts (reached from the locus, or spanning it) and
+    // the in-locus reference — not from the extension, whose own alts are not
+    // shown.
     let (mut exit_edges, mut exit_nodes) = (0, 0);
     for &id in &keep {
         if let Some(&n) = q.frontier.get(&id) {
@@ -198,6 +306,9 @@ pub fn plan_trim(graph: &Graph, ref_walk: &RefWalk, q: &LocusQuery) -> Option<Tr
         rejoins: rejoins.len(),
         exit_edges,
         exit_nodes,
+        spans,
+        open_ends,
+        graph_haplotypes: q.haplotypes,
     };
     Some(Trim {
         keep,

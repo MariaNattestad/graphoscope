@@ -5,7 +5,9 @@
 	import {
 		Escalator,
 		FIRST_PAINT_CONTEXT,
-		unresolvedExits,
+		unresolvedOf,
+		worthEscalating,
+		missingHaplotypes,
 		type EscalationOffer,
 		type EscalationStep
 	} from '$lib/escalation';
@@ -37,9 +39,8 @@
 	// The last three are loci that used to be unrenderable: before the reduce
 	// moved into the wasm query, LPA's ~50 MB of haplotype walks crashed the tab
 	// outright, and the fallback that avoided the crash also left the graph
-	// unsimplified. Measured now: LPA 9,406 → 635 nodes in ~6 s, MUC5B
-	// 3,218 → 169, C4A 758 → 58. Keeping them visible is the point — they are
-	// where the pangenome is actually interesting. MLPH is the same locus the /gfa
+	// unsimplified. Keeping them visible is the point — they are where the
+	// pangenome is actually interesting. MLPH is the same locus the /gfa
 	// page ships as a bundled example, so the two entry points share a gene.
 	const EXAMPLE_GENES = ['HLA-A', 'AMY1A', 'SMN1', 'CYP2D6', 'LPA', 'MUC5B', 'C4A', 'MLPH'];
 
@@ -232,6 +233,7 @@
 		escalator?.cancel();
 		escalationOffer = null;
 		escalationStatus = null;
+		escalationNote = null;
 		error = null;
 		oversized = null;
 		queriedGene = null;
@@ -356,7 +358,10 @@
 	let escalationOffer = $state.raw<EscalationOffer | null>(null);
 	// What the background search is doing, for the pill while nothing is offered.
 	let escalationStatus = $state<string | null>(null);
-	const shownExits = $derived(unresolvedExits(gfa?.reduced));
+	// Why the background search stopped early (a budget), shown once, quietly.
+	let escalationNote = $state<string | null>(null);
+	const shownUnresolved = $derived(unresolvedOf(gfa?.reduced));
+	const shownExits = $derived(shownUnresolved.exits);
 
 	// Measurement hook: every query's cost and exit count, on the console and on
 	// `window.__escalationLog` (read by hand / by a test harness).
@@ -383,6 +388,9 @@
 			reason: e.reason,
 			...(e.step ?? {
 				exits: loc?.exitEdges,
+				openEnds: loc?.openEnds,
+				missing: red ? missingHaplotypes(red) : undefined,
+				spans: loc?.spans,
 				rejoins: loc?.rejoins,
 				extLeftBp: loc?.extLeftBp,
 				extRightBp: loc?.extRightBp,
@@ -401,17 +409,21 @@
 	}
 
 	function startEscalation(source: QuerySource, locus: ReturnType<typeof parseLocus>, shown: Gfa) {
-		const exits = unresolvedExits(shown.reduced);
-		if (!escalator || exits === 0) return;
+		const u = unresolvedOf(shown.reduced);
+		if (!escalator || !worthEscalating(u)) return;
 		const label = locusText;
-		escalationStatus = `Following ${exits} allele${exits === 1 ? '' : 's'} that leave the locus…`;
-		escalator.start(source, locus, locus.context ?? FIRST_PAINT_CONTEXT, exits, {
+		escalationStatus =
+			u.exits > 0
+				? `Following ${u.exits} open end${u.exits === 1 ? '' : 's'} past the locus…`
+				: `Looking for ${u.missing} haplotypes that go around the locus…`;
+		escalator.start(source, locus, locus.context ?? FIRST_PAINT_CONTEXT, u, {
 			onResult: (result, context) => logEscalation({ phase: 'step-raw', locus: label, context, result }),
 			onOffer: (offer) => {
 				escalationOffer = offer;
 			},
-			onDone: (reason, steps) => {
+			onDone: (reason, steps, note) => {
 				escalationStatus = null;
+				escalationNote = note;
 				const last = steps[steps.length - 1];
 				logEscalation({ phase: 'done', locus: label, context: last?.context ?? 0, reason, step: last });
 			}
@@ -431,6 +443,9 @@
 
 	// How many of the alleles leaving the shown graph the offer resolves.
 	const offerResolves = $derived(escalationOffer ? shownExits - escalationOffer.step.exits : 0);
+	const offerFinds = $derived(
+		escalationOffer ? shownUnresolved.missing - escalationOffer.step.missing : 0
+	);
 
 	// ---- Break-glass: view the unsimplified graph -------------------------------
 	// Simplification is what makes a locus renderable, but sometimes you want to
@@ -752,13 +767,20 @@
 				</nav>
 
 				<div class="tabbody" class:pad={view !== 'graph'}>
-					{#if view === 'graph' && (escalationOffer || escalationStatus)}
+					{#if view === 'graph' && (escalationOffer || escalationStatus || escalationNote)}
 						<div class="escalation-pill" role="status">
-							{#if escalationOffer && offerResolves > 0}
+							{#if escalationOffer && offerResolves <= 0 && offerFinds > 0}
+								<button class="esc-apply" onclick={applyEscalationOffer}>
+									Found {offerFinds} haplotypes that go around the locus — update view
+								</button>
+								<button class="esc-dismiss" aria-label="Dismiss" onclick={() => (escalationOffer = null)}
+									>×</button
+								>
+							{:else if escalationOffer && offerResolves > 0}
 								<button class="esc-apply" onclick={applyEscalationOffer}>
 									{escalationOffer.step.exits === 0
-										? `Found where ${offerResolves === 1 ? 'the allele' : `all ${offerResolves} alleles`} leaving the locus rejoin`
-										: `Found where ${offerResolves} of ${shownExits} leaving alleles rejoin`}
+										? `Found where ${offerResolves === 1 ? 'the allele' : `all ${offerResolves} alleles`} leaving or spanning the locus rejoin`
+										: `Found where ${offerResolves} of ${shownExits} alleles leaving or spanning the locus rejoin`}
 									— update view
 								</button>
 								<button class="esc-dismiss" aria-label="Dismiss" onclick={() => (escalationOffer = null)}
@@ -766,6 +788,11 @@
 								>
 							{:else if escalationStatus}
 								<span class="esc-status"><span class="ph-spinner"></span> {escalationStatus}</span>
+							{:else if escalationNote}
+								<span class="esc-status esc-note">{escalationNote}</span>
+								<button class="esc-dismiss" aria-label="Dismiss" onclick={() => (escalationNote = null)}
+									>×</button
+								>
 							{/if}
 						</div>
 					{/if}

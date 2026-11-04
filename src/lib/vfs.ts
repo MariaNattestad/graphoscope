@@ -34,10 +34,56 @@ const BLOCK_SIZE = 1 << 16; // 64 KiB blocks: coarser than SQLite's 4 KiB pages,
 const MAX_READAHEAD_SHIFT = 5; // up to 2^5 = 32 blocks = 2 MiB per request
 const READAHEAD_STEP = 2; // shift added per sequential miss: the window quadruples
 
-/** Wraps a block-fetching source with an aligned block cache + readahead. */
-abstract class BlockCachedReader implements RangeReader {
+/** Default ceiling on a reader's block cache. A reader lives as long as its
+ * worker, and the background escalation worker is kept across loci, so without
+ * a bound a long session would hold every block it ever touched. 256 MiB is
+ * well above one 100 kb-context query (single-digit MiB of blocks measured) yet
+ * a small fraction of a tab's memory budget. */
+export const DEFAULT_CACHE_BYTES = 256 * 1024 * 1024;
+
+/** Wraps a block-fetching source with an aligned block cache + readahead.
+ *
+ * The cache is least-recently-used and bounded by `maxCacheBytes`: a hit moves
+ * a block to the back of the Map's insertion order, and inserting evicts from
+ * the front. The pages every query touches (header, schema, the index roots)
+ * are hit on every query, so they stay resident while old loci age out. */
+export abstract class BlockCachedReader implements RangeReader {
 	abstract readonly size: number;
 	private cache = new Map<number, Uint8Array>();
+	private cacheBytes = 0;
+	maxCacheBytes = DEFAULT_CACHE_BYTES;
+
+	/** Bytes currently held in the block cache. */
+	get cachedBytes(): number {
+		return this.cacheBytes;
+	}
+
+	private touch(index: number): Uint8Array | undefined {
+		const b = this.cache.get(index);
+		if (b) {
+			this.cache.delete(index);
+			this.cache.set(index, b);
+		}
+		return b;
+	}
+
+	private put(index: number, data: Uint8Array) {
+		const old = this.cache.get(index);
+		if (old) {
+			this.cacheBytes -= old.length;
+			this.cache.delete(index);
+		}
+		// Copy: a block is a view into its (up to 2 MiB) readahead response, and a
+		// view would keep the whole response alive after its siblings are evicted.
+		const own = data.slice();
+		this.cache.set(index, own);
+		this.cacheBytes += own.length;
+		for (const [k, v] of this.cache) {
+			if (this.cacheBytes <= this.maxCacheBytes || k === index) break;
+			this.cache.delete(k);
+			this.cacheBytes -= v.length;
+		}
+	}
 	// Readahead state: the block index we'd expect next if access is sequential,
 	// and how long the current sequential run is (drives the window size).
 	private expectedNextBlock = -1;
@@ -49,7 +95,7 @@ abstract class BlockCachedReader implements RangeReader {
 	protected abstract fetch(start: number, end: number): Uint8Array;
 
 	private getBlock(index: number): Uint8Array {
-		const cached = this.cache.get(index);
+		const cached = this.touch(index);
 		if (cached) return cached;
 
 		// Grow the readahead window while misses keep arriving in sequence;
@@ -79,12 +125,17 @@ abstract class BlockCachedReader implements RangeReader {
 		this.requestCount++;
 		this.bytesFetched += data.length;
 
+		let first: Uint8Array | undefined;
 		for (let b = index; b < endBlock; b++) {
 			const sliceStart = (b - index) * BLOCK_SIZE;
-			this.cache.set(b, data.subarray(sliceStart, Math.min(sliceStart + BLOCK_SIZE, data.length)));
+			const block = data.subarray(sliceStart, Math.min(sliceStart + BLOCK_SIZE, data.length));
+			if (b === index) first = block.slice();
+			this.put(b, block);
 		}
 		this.expectedNextBlock = endBlock;
-		return this.cache.get(index)!;
+		// Returned from the response itself, so a tiny cache that evicted it at
+		// once still serves this read.
+		return first!;
 	}
 
 	/** Fetch bytes [start, end) asynchronously (for prefetching). */
@@ -93,7 +144,7 @@ abstract class BlockCachedReader implements RangeReader {
 	/** Store an aligned run of blocks starting at block `first`. */
 	protected store(first: number, data: Uint8Array) {
 		for (let b = first, off = 0; off < data.length; b++, off += BLOCK_SIZE) {
-			this.cache.set(b, data.subarray(off, Math.min(off + BLOCK_SIZE, data.length)));
+			this.put(b, data.subarray(off, Math.min(off + BLOCK_SIZE, data.length)));
 		}
 	}
 

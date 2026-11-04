@@ -550,7 +550,7 @@ use crate::locus::LocusQuery;
 use crate::reduce::{reduce_locus, write_raw_locus};
 
 fn run_locus(text: &str, interval: std::ops::Range<usize>, frontier: &[(u64, usize)]) -> String {
-    let q = LocusQuery { interval, frontier: frontier.iter().copied().collect() };
+    let q = LocusQuery { interval, frontier: frontier.iter().copied().collect(), ..Default::default() };
     let mut out: Vec<u8> = Vec::new();
     // max_variant 0: nothing collapses, so the trim is observed on its own.
     reduce_locus(|w: &mut dyn std::io::Write| w.write_all(text.as_bytes()), 0, Some(&q), &mut out)
@@ -814,4 +814,86 @@ fn trimmed_raw_output_names_only_kept_nodes() {
     for (a, b) in edges(&out) {
         assert!(kept.contains(&a) && kept.contains(&b));
     }
+}
+
+/// As `ref9`, but reference node n is numbered 10n, so alt nodes can take ids
+/// between their anchors — the reference-ordered numbering Minigraph-Cactus
+/// uses, which the open-end heuristic relies on. Node 10n covers
+/// [1000 + 10(n-1), 1000 + 10n); the locus 1030..1050 is nodes 40 and 50.
+fn ref9x10(extra_segments: &str, extra_links: &str, walks: &str, last: usize) -> String {
+    let mut s = String::from("H\tVN:Z:1.1\tRS:Z:ref\n");
+    for n in 1..=9 {
+        s.push_str(&format!("S\t{}\tACGTACGTAC\n", 10 * n));
+    }
+    s.push_str(extra_segments);
+    for n in 1..last {
+        s.push_str(&format!("L\t{}\t+\t{}\t+\t0M\n", 10 * n, 10 * (n + 1)));
+    }
+    s.push_str(extra_links);
+    let walk: String = (1..=last).map(|n| format!(">{}", 10 * n)).collect();
+    s.push_str(&format!("W\tref\t0\tchr1\t1000\t{}\t{}\n", 1000 + 10 * last, walk));
+    s.push_str(walks);
+    s
+}
+
+#[test]
+fn locus_trim_keeps_a_deletion_spanning_the_whole_locus() {
+    // 20 -> 70 deletes 30..60, the locus included, without touching it. Alt 61
+    // (60 -> 61 -> 70) is anchored only on the extension: not pulled in.
+    let g = ref9x10(
+        "S\t61\tTTTT\n",
+        "L\t20\t+\t70\t+\t0M\nL\t60\t+\t61\t+\t0M\nL\t61\t+\t70\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t40\t>10>20>70>80>90\n",
+        9,
+    );
+    let out = run_locus(&g, 1030..1050, &[]);
+    assert_eq!(output_nodes(&out), ids(&["20", "30", "40", "50", "60", "70"]));
+    assert_eq!(ref_coords(&out), (1010, 1070));
+    assert_eq!((x_tag(&out, "SP"), x_tag(&out, "XL"), x_tag(&out, "XR")), (1, 20, 20));
+    // The deleting haplotype's clipped run 20 -> 70 crosses the deletion edge.
+    assert_eq!(x_tag(&out, "NW"), 1);
+}
+
+#[test]
+fn locus_trim_keeps_an_alt_path_from_the_left_flank_to_the_right_flank() {
+    // A hybrid haplotype leaves the reference at 20 and rejoins at 70 through
+    // alt nodes 25 -> 26, never touching the locus (40, 50).
+    let g = ref9x10(
+        "S\t25\tAAAA\nS\t26\tCCCC\n",
+        "L\t20\t+\t25\t+\t0M\nL\t25\t+\t26\t+\t0M\nL\t26\t+\t70\t+\t0M\n",
+        "W\tunknown\t1\tchr1\t0\t48\t>10>20>25>26>70>80>90\n",
+        9,
+    );
+    let out = run_locus(&g, 1030..1050, &[]);
+    assert_eq!(output_nodes(&out), ids(&["20", "25", "26", "30", "40", "50", "60", "70"]));
+    assert_eq!(ref_coords(&out), (1010, 1070));
+    assert_eq!((x_tag(&out, "SP"), x_tag(&out, "KA"), x_tag(&out, "OE")), (1, 2, 0));
+}
+
+#[test]
+fn a_span_whose_far_end_is_beyond_the_fetched_reference_is_an_open_end() {
+    // Small context: the walk stops at 60. The spanning deletion 20 -> 80 has
+    // its far end fetched (with 90), but not the reference leading to it, so 80
+    // reads as alt: anchored left only, running into unfetched nodes, with ids
+    // past the locus — an open end. Allele 21, cut off in the left flank, is
+    // anchored the same way but numbered left of the locus: not an open end.
+    let mut small = String::from("H\tVN:Z:1.1\tRS:Z:ref\n");
+    for n in [10, 20, 30, 40, 50, 60, 80, 90] {
+        small.push_str(&format!("S\t{}\tACGTACGTAC\n", n));
+    }
+    small.push_str("S\t21\tGGGG\n");
+    for (u, v) in [(10, 20), (20, 30), (30, 40), (40, 50), (50, 60), (20, 80), (80, 90), (20, 21)] {
+        small.push_str(&format!("L\t{}\t+\t{}\t+\t0M\n", u, v));
+    }
+    small.push_str("W\tref\t0\tchr1\t1000\t1060\t>10>20>30>40>50>60\n");
+    let out = run_locus(&small, 1030..1050, &[(10, 1), (60, 1), (90, 1), (21, 1)]);
+    assert_eq!(output_nodes(&out), ids(&["40", "50"]), "nothing spans yet");
+    assert_eq!((x_tag(&out, "SP"), x_tag(&out, "OE"), x_tag(&out, "EX")), (0, 1, 0));
+
+    // Larger context: 80 is on the walk, the deletion spans the locus, resolved.
+    let big = ref9x10("S\t21\tGGGG\n", "L\t20\t+\t80\t+\t0M\nL\t20\t+\t21\t+\t0M\n", "", 9);
+    let out = run_locus(&big, 1030..1050, &[(10, 1), (90, 1), (21, 1)]);
+    assert_eq!(output_nodes(&out), ids(&["20", "30", "40", "50", "60", "70", "80"]));
+    assert_eq!((x_tag(&out, "SP"), x_tag(&out, "OE"), x_tag(&out, "EX")), (1, 0, 0));
+    assert_eq!(ref_coords(&out), (1010, 1080));
 }
