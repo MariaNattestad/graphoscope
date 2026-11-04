@@ -11,11 +11,13 @@
 //
 //   A. group segments into alleles (contiguous on their home sequence);
 //   B. size each allele (its own bp, or the reference it replaces if larger);
-//   C. keep the backbone + every allele ≥ threshold, plus the shortest route
-//      (multi-source Dijkstra from the backbone) from each kept allele's two ends
-//      back to the backbone; drop everything else;
-//   D. drop small deletion links (skips < threshold), restoring the shortest ones
-//      only where they're needed to keep the graph in one piece;
+//   C. keep the backbone + every allele ≥ threshold (or leaving the locus), plus
+//      the shortest route (multi-source Dijkstra from the backbone) from each kept
+//      allele's two ends back to the backbone, closing off every side of a route
+//      segment the same way; drop everything else;
+//   D. drop small deletion links (skips < threshold), keeping the shortest ones
+//      where they're needed to keep the graph in one piece, and any that is the
+//      last link on a side — a side with no link reads as an off-locus exit;
 //   E. merge runs of kept segments of the same allele that nothing branches off.
 //
 // The output is again a `Gfa`, with walks rerouted through what's kept, so it can
@@ -48,7 +50,7 @@ export interface FoldStats {
 	routeSegments: number;
 	/** Small deletion links dropped (Step D), net of those restored. */
 	droppedSkips: number;
-	/** Dropped skips added back to reconnect the graph. */
+	/** Skips kept anyway: to reconnect the graph, or as the last link on a side. */
 	restoredSkips: number;
 	/** Segments absorbed into a neighbour by Step E. */
 	merged: number;
@@ -398,27 +400,36 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 	for (const id of seg.keys()) if (isBackbone(id)) keep.add(id);
 	// Segments whose whole predecessor chain is already kept.
 	const routed = new Set<string>(keep);
+	// Kept non-backbone segments whose sides still need checking (see closure below).
+	const toClose: string[] = [];
 	const keepRoute = (start: string) => {
 		let cur: string | null = start;
 		while (cur !== null && !routed.has(cur)) {
 			routed.add(cur);
 			keep.add(cur);
+			toClose.push(cur);
 			cur = pred.get(cur) ?? null;
 		}
 	};
+	// A non-backbone side with no link at all is a haplotype leaving the locus (the
+	// window edge cuts it off). Such an allele is kept whatever its size: folding
+	// must never hide where a haplotype goes off-locus.
+	const hasExit = (id: string) =>
+		!isBackbone(id) && (!linksAtSide.has(sideKey(id, START)) || !linksAtSide.has(sideKey(id, END)));
 
 	let keptAlleles = 0;
 	const sizeOrder = [...alleleMembers.keys()].sort();
 	for (const root of sizeOrder) {
 		const members = alleleMembers.get(root)!;
 		if (isBackbone(members[0])) continue;
-		if (alleleSize.get(root)! < threshold) continue;
+		if (alleleSize.get(root)! < threshold && !members.some(hasExit)) continue;
 		if (!members.some((id) => Number.isFinite(reach(id)))) continue; // floating free
 		keptAlleles++;
 		const inAllele = new Set(members);
 		for (const id of members) {
 			keep.add(id);
 			routed.add(id); // the allele is internally connected; its route is below
+			toClose.push(id);
 		}
 		// The allele's two outer ends: the free side of its first and last segment.
 		const first = members[0];
@@ -456,6 +467,32 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 			if (p) keepRoute(p);
 		}
 	}
+	// Close every kept segment off: a side that had links in the input keeps at least
+	// one, routing it back to the backbone like an allele end. Otherwise a route
+	// segment (kept for the side facing the backbone) would leave its other side
+	// hanging, and a hanging side is drawn as a haplotype leaving the locus.
+	while (toClose.length > 0) {
+		const id = toClose.pop()!;
+		for (const side of [START, END] as Side[]) {
+			let best: string | null = null;
+			let closed = false;
+			for (const li of linksAtSide.get(sideKey(id, side)) ?? []) {
+				const l = links[li];
+				const otherId = l.from === id && fromSide(l) === side ? l.to : l.from;
+				if (keep.has(otherId)) {
+					closed = true;
+					break;
+				}
+				if (
+					best === null ||
+					reach(otherId) < reach(best) ||
+					(reach(otherId) === reach(best) && otherId < best)
+				)
+					best = otherId;
+			}
+			if (!closed && best !== null && Number.isFinite(reach(best))) keepRoute(best);
+		}
+	}
 	let routeSegments = 0;
 	for (const id of keep) {
 		if (isBackbone(id)) continue;
@@ -482,15 +519,38 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 		}
 		keptLinkIdx.push(i);
 	});
+	// A skip that is the last link on one of its sides stays: dropping it would
+	// leave that side hanging, drawn as a haplotype leaving the locus.
+	const linksOnSide = new Map<string, number>();
+	const bumpSides = (i: number, d: number) => {
+		const l = links[i];
+		for (const k of [sideKey(l.from, fromSide(l)), sideKey(l.to, toSide(l))])
+			linksOnSide.set(k, (linksOnSide.get(k) ?? 0) + d);
+	};
+	for (const i of keptLinkIdx) bumpSides(i, 1);
+	for (const { i } of skipCandidates) bumpSides(i, 1);
+	skipCandidates.sort((a, b) => a.skip - b.skip || a.i - b.i);
+	let restoredSkips = 0;
+	const droppable: typeof skipCandidates = [];
+	for (const c of skipCandidates) {
+		const l = links[c.i];
+		const lone =
+			linksOnSide.get(sideKey(l.from, fromSide(l)))! <= 1 || linksOnSide.get(sideKey(l.to, toSide(l)))! <= 1;
+		if (lone) {
+			keptLinkIdx.push(c.i);
+			restoredSkips++;
+		} else {
+			bumpSides(c.i, -1);
+			droppable.push(c);
+		}
+	}
 	// Reconnect: union-find over the kept links, then add back the shortest dropped
 	// skips that join pieces which would otherwise float free (a window edge that
 	// falls inside a small deletion).
 	const compUf = new UnionFind();
 	for (const id of keep) compUf.find(id);
 	for (const i of keptLinkIdx) compUf.union(links[i].from, links[i].to);
-	skipCandidates.sort((a, b) => a.skip - b.skip || a.i - b.i);
-	let restoredSkips = 0;
-	for (const { i } of skipCandidates) {
+	for (const { i } of droppable) {
 		if (compUf.union(links[i].from, links[i].to)) {
 			keptLinkIdx.push(i);
 			restoredSkips++;
