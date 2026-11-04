@@ -3,6 +3,7 @@
 	import { select } from 'd3-selection';
 	import { untrack } from 'svelte';
 	import type { LayoutResult } from './forceLayout';
+	import { findExitEnds } from './exitCues';
 	import {
 		heatmapModeColor,
 		discreteColor,
@@ -261,34 +262,14 @@
 		return m;
 	});
 
-	// Node ids that a structural link attaches to. A non-backbone chain end that
-	// isn't in here is a strand that just stops — a haplotype chopped at the
-	// subgraph boundary — which drawExitCues() marks as leaving the locus.
-	const linkedNodeIds = $derived.by(() => {
-		const s = new Set<string>();
-		for (const l of layout.structuralLinkPaths) {
-			s.add(l.fromNode);
-			s.add(l.toNode);
-		}
-		return s;
-	});
+	// Loose strand ends (a non-backbone chain end that no link attaches to — a
+	// haplotype chopped at the subgraph boundary), which drawExitCues() marks as
+	// leaving the locus. Depends only on the layout, so it's computed once.
+	const exitEnds = $derived(findExitEnds(layout));
 
-	// Displayed segments with an off-locus exit (a non-backbone chain end that no link
-	// attaches to — a strand chopped at the subgraph boundary). Depends only on the
-	// layout, so it's computed once and reported to the parent (which uses it to note
-	// in the inspector when a bubble/walk leaves the locus).
-	const exitSegIds = $derived.by(() => {
-		const s = new Set<string>();
-		for (const chain of layout.chains) {
-			if (layout.backboneSegIds.has(chain.segId)) continue;
-			const ids = chain.nodeIds;
-			const loose =
-				(ids.length > 0 && !linkedNodeIds.has(ids[0])) ||
-				(ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1]));
-			if (loose) s.add(chain.segId);
-		}
-		return s;
-	});
+	// Displayed segments with an off-locus exit, reported to the parent (which uses
+	// it to note in the inspector when a bubble/walk leaves the locus).
+	const exitSegIds = $derived(new Set(exitEnds.map((e) => e.segId)));
 	$effect(() => {
 		// When exit cues are hidden (a whole uploaded GFA has no "off-locus" concept)
 		// report none, so the inspector's "leaves the locus" notes stay quiet too.
@@ -1491,48 +1472,41 @@
 			// stretch (the cue fades out well before the frame edge anyway).
 			const HIT_TOL = 5;
 			const HIT_LEN = 90;
-			for (const chain of layout.chains) {
-				if (layout.backboneSegIds.has(chain.segId)) continue; // the reference axis marks its own ends
-				const ids = chain.nodeIds;
-				const endIdx: number[] = [];
-				if (ids.length > 0 && !linkedNodeIds.has(ids[0])) endIdx.push(0);
-				if (ids.length > 1 && !linkedNodeIds.has(ids[ids.length - 1])) endIdx.push(ids.length - 1);
-				const emph = exitHighlightSegments?.has(chain.segId) ?? false;
-				for (const i of endIdx) {
-					const n = layout.nodesById.get(ids[i]);
-					if (!n) continue;
-					const ex = toScreenX(n.x);
-					const ey = toScreenY(n.y);
-					const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
-					const edgeX = side === 'left' ? 0 : width;
-					if (emph) {
-						// This strand belongs to the active bubble/walk: draw its cue bright and
-						// solid-cored so the leaving haplotype is unmistakable.
-						const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
-						grad.addColorStop(0, theme.bubbleHighlight);
-						grad.addColorStop(1, theme.exitCueFade);
-						ctx.strokeStyle = grad;
-						ctx.lineWidth = 2.5;
-					} else {
-						const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
-						grad.addColorStop(0, theme.exitCue);
-						grad.addColorStop(1, theme.exitCueFade);
-						ctx.strokeStyle = grad;
-						ctx.lineWidth = 1.5;
-					}
-					ctx.beginPath();
-					ctx.moveTo(ex, ey);
-					ctx.lineTo(edgeX, ey);
-					ctx.stroke();
-					const nearX = side === 'left' ? Math.max(edgeX, ex - HIT_LEN) : Math.min(edgeX, ex + HIT_LEN);
-					exitHits.push({
-						x0: Math.min(ex, nearX),
-						x1: Math.max(ex, nearX),
-						yTop: ey - HIT_TOL,
-						yBot: ey + HIT_TOL,
-						exit: { segId: chain.segId, side }
-					});
+			for (const end of exitEnds) {
+				const emph = exitHighlightSegments?.has(end.segId) ?? false;
+				const n = layout.nodesById.get(end.nodeId);
+				if (!n) continue;
+				const ex = toScreenX(n.x);
+				const ey = toScreenY(n.y);
+				const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
+				const edgeX = side === 'left' ? 0 : width;
+				if (emph) {
+					// This strand belongs to the active bubble/walk: draw its cue bright and
+					// solid-cored so the leaving haplotype is unmistakable.
+					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					grad.addColorStop(0, theme.bubbleHighlight);
+					grad.addColorStop(1, theme.exitCueFade);
+					ctx.strokeStyle = grad;
+					ctx.lineWidth = 2.5;
+				} else {
+					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					grad.addColorStop(0, theme.exitCue);
+					grad.addColorStop(1, theme.exitCueFade);
+					ctx.strokeStyle = grad;
+					ctx.lineWidth = 1.5;
 				}
+				ctx.beginPath();
+				ctx.moveTo(ex, ey);
+				ctx.lineTo(edgeX, ey);
+				ctx.stroke();
+				const nearX = side === 'left' ? Math.max(edgeX, ex - HIT_LEN) : Math.min(edgeX, ex + HIT_LEN);
+				exitHits.push({
+					x0: Math.min(ex, nearX),
+					x1: Math.max(ex, nearX),
+					yTop: ey - HIT_TOL,
+					yBot: ey + HIT_TOL,
+					exit: { segId: end.segId, side }
+				});
 			}
 		} finally {
 			ctx.setLineDash([]);

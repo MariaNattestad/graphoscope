@@ -4,6 +4,7 @@ import { gfaToGraph } from './gfaToGraph';
 import { foldGfa } from './fold';
 import { buildAssemblyLayout, collapseChains, makeLengthMap } from './assemblyLayout';
 import { buildAndRunLayout } from './forceLayout';
+import { findExitEnds } from './exitCues';
 import smn1 from './fixtures/smn1.gfa?raw';
 import c4a from './fixtures/c4a.gfa?raw';
 
@@ -123,6 +124,54 @@ describe('buildAssemblyLayout', () => {
 			const layout = buildAndRunLayout(graph, { mode: 'assembly', referenceSample: 'GRCh38', assembly: parts, iterations: 30 });
 			expect(layout.chains.length).toBe(graph.segments.size);
 			for (const n of layout.nodesById.values()) expect(Number.isFinite(n.x)).toBe(true);
+		}
+	});
+});
+
+describe('off-locus exit ends after splitting runs', () => {
+	const exitKeys = (layout: ReturnType<typeof buildAssemblyLayout>) =>
+		findExitEnds(layout)
+			.map((e) => `${e.segId}@${layout.nodesById.get(e.nodeId)!.posIndex === 0 ? 'start' : 'end'}`)
+			.sort();
+
+	it('leaves no loose ends at the joins inside a collapsed run', () => {
+		// The 9→10 alt run is linked at both outer ends: nothing leaves the locus, so
+		// splitting it back into 9 and 10 must not leave 9's end / 10's start loose.
+		const layout = buildAssemblyLayout(graphOf(SMALL), { referenceSample: 'REF', iterations: 20 });
+		expect(layout.assembly!.runs.map((r) => r.members)).toEqual([['9', '10']]);
+		expect(findExitEnds(layout)).toEqual([]);
+	});
+
+	it('marks one exit for a run chopped at the locus edge, not one per member', () => {
+		// Alt run 7→8→9 leaves the reference at 1 and never comes back (cut off by the
+		// window): only 9's far end is an exit.
+		const chopped = [
+			'H\tVN:Z:1.1',
+			`S\t1\t${A(100)}`,
+			`S\t2\t${A(100)}`,
+			`S\t7\t${A(30)}`,
+			`S\t8\t${A(30)}`,
+			`S\t9\t${A(30)}`,
+			'L\t1\t+\t2\t+\t0M',
+			'L\t1\t+\t7\t+\t0M',
+			'L\t7\t+\t8\t+\t0M',
+			'L\t8\t+\t9\t+\t0M',
+			'W\tREF\t0\tchr1\t0\t200\t>1>2',
+			'W\thap\t1\tchr1\t0\t190\t>1>7>8>9'
+		].join('\n');
+		const layout = buildAssemblyLayout(graphOf(chopped), { referenceSample: 'REF', iterations: 20 });
+		expect(layout.assembly!.runs.map((r) => r.members)).toEqual([['7', '8', '9']]);
+		expect(exitKeys(layout)).toEqual(['9@end']);
+	});
+
+	it('gives the same exits with and without chain collapsing on real loci', () => {
+		for (const fixture of [smn1, c4a]) {
+			const graph = gfaToGraph(parseGfa(fixture), { referenceSample: 'GRCh38' }).graph;
+			const opts = { referenceSample: 'GRCh38', iterations: 20 };
+			const collapsed = buildAssemblyLayout(graph, opts);
+			const plain = buildAssemblyLayout(graph, { ...opts, assembly: { collapseChains: false } });
+			expect(collapsed.assembly!.runs.length).toBeGreaterThan(0);
+			expect(exitKeys(collapsed)).toEqual(exitKeys(plain));
 		}
 	});
 });
