@@ -3,13 +3,16 @@
 	// the reduced output (small variants collapsed, haplotype walks aggregated
 	// into WC counts), i.e. exactly what the views above are drawing. The
 	// unsimplified subgraph is available as a download rather than a view — it
-	// is the large, walk-dominated response we deliberately never parse.
-	import type { Gfa } from './gfa';
+	// is the large, walk-dominated response we deliberately never parse. The
+	// Fold graph is downloadable too: the graph view's fold at its auto threshold.
+	import { writeGfa, type Gfa } from './gfa';
+	import { foldGfa, niceBp, referenceBp, zoomThreshold } from './graph/fold';
 	import { trackEvent } from './analytics';
 
 	let {
 		gfa,
 		rawText,
+		referenceSample,
 		downloadRaw,
 		downloadingRaw = false,
 		allWalksGfa = null,
@@ -20,6 +23,8 @@
 	}: {
 		gfa: Gfa;
 		rawText: string;
+		/** Sample whose walk is the reference — what the fold folds toward. */
+		referenceSample?: string;
 		/** Fetches and downloads the unsimplified subgraph (every haplotype walk). */
 		downloadRaw?: () => void;
 		downloadingRaw?: boolean;
@@ -72,15 +77,32 @@
 
 	let tab = $state<'segments' | 'links' | 'walks' | 'raw'>('walks');
 
-	function download() {
-		trackEvent('widget_interact', { widget: 'raw_data', action: 'download_gfa' });
-		const blob = new Blob([rawText], { type: 'text/plain' });
+	function save(text: string, filename: string) {
+		const blob = new Blob([text], { type: 'text/plain' });
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = 'subgraph.simplified.gfa';
+		a.download = filename;
 		a.click();
 		URL.revokeObjectURL(url);
+	}
+
+	function download() {
+		trackEvent('widget_interact', { widget: 'raw_data', action: 'download_gfa' });
+		save(rawText, isReduced ? 'subgraph.sites.gfa' : 'subgraph.gfa');
+	}
+
+	// Fold groups segments into alleles by the walk that contributed them, so like
+	// the graph view it folds the full graph once that's loaded. The threshold is
+	// the view's auto one at its default width (the view's own setting doesn't
+	// outlive switching to this tab).
+	const foldSource = $derived(allWalksGfa ?? gfa);
+	const foldThreshold = $derived(niceBp(zoomThreshold(referenceBp(foldSource, referenceSample) / 1000)));
+	function downloadFold() {
+		trackEvent('widget_interact', { widget: 'raw_data', action: 'download_fold_gfa' });
+		const fold = foldGfa(foldSource, foldThreshold, { referenceSample });
+		// The reducer's X stats describe the Sites graph, not this one.
+		save(writeGfa({ ...fold.gfa, reduced: undefined }), 'subgraph.fold.gfa');
 	}
 
 	const rawLineCount = $derived(rawText ? rawText.split('\n').length : 0);
@@ -103,7 +125,18 @@
 		>
 		<button class:active={tab === 'raw'} onclick={() => (tab = 'raw')}>GFA text</button>
 		<span class="spacer"></span>
-		<button class="ghost" onclick={download}>Download simplified .gfa</button>
+		<button
+			class="ghost"
+			onclick={download}
+			title={isReduced ? 'Small variant sites collapsed and unbranched runs merged (the query\'s own simplification)' : undefined}
+			>{isReduced ? 'Download Sites .gfa' : 'Download .gfa'}</button
+		>
+		<button
+			class="ghost"
+			onclick={downloadFold}
+			title={`Alleles under ${foldThreshold.toLocaleString()} bp folded into the reference, unbranched runs merged${allWalksGfa ? ' (from the full graph)' : ''}`}
+			>Download Fold .gfa</button
+		>
 		{#if downloadRaw}
 			<button class="ghost" onclick={downloadRaw} disabled={downloadingRaw}>
 				{downloadingRaw ? 'Fetching…' : 'Download unsimplified .gfa'}
