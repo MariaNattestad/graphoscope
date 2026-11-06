@@ -464,6 +464,13 @@ function splitRuns(
 	const backboneSet = new Set<string>();
 	const refFrac = new Map<string, [number, number]>();
 	const runs: { members: string[]; bp: number }[] = [];
+	// The links *inside* a run were folded away by collapseChains, so the simulation
+	// only saw the run's outer ends. Splitting the run back into members leaves each
+	// interior member end with no link attached, which reads as a loose end — and a
+	// loose end is exactly what the canvas marks as an off-locus exit. Re-emit those
+	// joins (zero-length, member end → next member's start) so every split end that
+	// was joined in the original graph is still joined in the layout.
+	const internalLinks: LayoutResult['structuralLinkPaths'] = [];
 
 	for (const chain of res.chains) {
 		const run = members.get(chain.segId);
@@ -496,6 +503,7 @@ function splitRuns(
 
 		let s0 = 0;
 		let bpAcc = 0;
+		let prevEnd: string | null = null;
 		run.forEach((m, mi) => {
 			const s1 = mi === run.length - 1 ? L : s0 + (ds[mi] / dTotal) * L;
 			const mpts = [at(s0)];
@@ -515,6 +523,9 @@ function splitRuns(
 				return id;
 			});
 			chains.push({ segId: m, nodeIds });
+			if (prevEnd !== null)
+				internalLinks.push({ from: run[mi - 1], to: m, fromNode: prevEnd, toNode: nodeIds[0], bendNode: '' });
+			prevEnd = nodeIds[nodeIds.length - 1];
 			if (isBackbone) backboneSet.add(m);
 			if (frac) {
 				const f0 = frac[0] + ((frac[1] - frac[0]) * bpAcc) / bpTotal;
@@ -536,6 +547,7 @@ function splitRuns(
 		const b = fixEnd(p.to, p.toNode);
 		return { ...p, from: a.seg, fromNode: a.node, to: b.seg, toNode: b.node };
 	});
+	structuralLinkPaths.push(...internalLinks);
 	const routes = res.assembly!.routes.map((r) => {
 		const a = fixEnd(r.from, r.fromNode);
 		const b = fixEnd(r.to, r.toNode);
