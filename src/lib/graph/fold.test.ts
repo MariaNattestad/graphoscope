@@ -144,6 +144,44 @@ describe('foldGfa', () => {
 		expect(r.gfa.segments.size).toBeLessThan(g.segments.size / 3);
 	});
 
+	it('keeps every off-locus exit and never invents one', () => {
+		// A side with no link is drawn as a haplotype leaving the locus.
+		const linkedSides = (g: Gfa) => {
+			const s = new Set<string>();
+			for (const l of g.links) {
+				s.add(`${l.from}:${l.fromOrient === '+' ? 'end' : 'start'}`);
+				s.add(`${l.to}:${l.toOrient === '+' ? 'start' : 'end'}`);
+			}
+			return s;
+		};
+		const looseSides = (g: Gfa, skip: (id: string) => boolean) => {
+			const linked = linkedSides(g);
+			const out: string[] = [];
+			for (const id of g.segments.keys()) {
+				if (skip(id)) continue;
+				for (const side of ['start', 'end']) if (!linked.has(`${id}:${side}`)) out.push(`${id}:${side}`);
+			}
+			return out;
+		};
+		for (const text of [smn1, c4a]) {
+			const g = parseGfa(text);
+			const homes = homePositions(g, 'GRCh38');
+			const exits = looseSides(g, (id) => homes.get(id)?.rank === 0);
+			expect(exits.length).toBeGreaterThan(0);
+			for (const t of [10, 50, 200, 1000, 10000]) {
+				const r = foldGfa(g, t, { referenceSample: 'GRCh38' });
+				// Every original exit survives on its segment's representative...
+				for (const e of exits) expect(r.repOf.has(e.split(':')[0])).toBe(true);
+				// ...and every hanging side in the fold is one of those exits.
+				const inputLoose = new Set(exits.map((e) => e.split(':')[0]));
+				for (const e of looseSides(r.gfa, (id) => r.homes.get(id)?.rank === 0)) {
+					const members = r.gfa.segments.get(e.split(':')[0])!.members ?? [e.split(':')[0]];
+					expect(members.some((m) => inputLoose.has(m)), `${e} at ${t} bp`).toBe(true);
+				}
+			}
+		}
+	});
+
 	it('chains: folding at t1 then t2 is close to folding once at t2', () => {
 		for (const text of [smn1, c4a]) {
 			const g = parseGfa(text);
