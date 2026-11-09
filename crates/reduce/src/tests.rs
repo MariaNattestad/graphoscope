@@ -24,7 +24,7 @@ const FIXTURE_DIR: &str = "../../src/lib/graph/fixtures";
 /// The constructed graphs /playground demonstrates, each isolating one thing the
 /// algorithm has to get right. Expectations are the same ones the TypeScript
 /// suite asserts, so the two implementations are pinned to identical behaviour.
-const SYNTHETIC: [Expected; 9] = [
+const SYNTHETIC: [Expected; 10] = [
     // One site of each kind (src/lib/graph/fixtures.ts describes it): stage 1
     // pops A, B and the SNPs on the reference; stage 2 folds the SNPs inside C
     // and F's exit branch, alt2 into alt1, and keeps both exits.
@@ -50,6 +50,9 @@ const SYNTHETIC: [Expected; 9] = [
     // Stage 1 never pops a cycle (the DAG check), but the haplotypes that loop
     // carry only 4 bp more than the reference, so stage 2 folds their allele.
     Expected::new("cyclic", 0, 0, 0, 0).removed(&["20"]),
+    // Two haplotypes whose paths end on a SNP inside an insertion keep that
+    // SNP's node: a walk always ends where it did.
+    Expected::new("walk_end", 0, 0, 0, 0).after(5),
     // No variation at all: nothing to pop, but unchop merges the run.
     Expected::new("long_run", 0, 0, 0, 0).after(1),
 ];

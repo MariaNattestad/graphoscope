@@ -1,6 +1,6 @@
 <script lang="ts">
-	// Simplification playground: every example graph, one per row, the original
-	// beside the simplified graph, all at one threshold.
+	// Simplification playground: every example graph, one per row — the original,
+	// what Sites makes of it, and what Fold makes of it — all at one threshold.
 	//
 	// The simplification here is not a demo reimplementation — it runs the actual
 	// `query.wasm`, in its `--gfa` mode, over each fixture. So this page and a live
@@ -18,11 +18,9 @@
 	// `?t=<bp>` sets the threshold and `?fixture=<id>` scrolls to an example, so a
 	// link can show exactly the before/after it's talking about.
 	const params = typeof location === 'undefined' ? null : new URLSearchParams(location.search);
+	// One threshold for both: Sites folds variants under it, Fold folds alleles
+	// under it.
 	let maxVariant = $state(Number(params?.get('t')) || 50);
-	// Which simplification the right-hand graphs show: Sites (query.wasm), or the
-	// allele-level fold (src/lib/graph/fold.ts).
-	let method = $state<'wasm' | 'fold'>('wasm');
-	let foldThreshold = $state(100);
 
 	// A row's graphs are only parsed, reduced and laid out once it scrolls near
 	// the viewport: the real loci take seconds each, and the page shouldn't pay
@@ -119,7 +117,7 @@
 	});
 
 	function folded(f: Fixture) {
-		return foldGfa(original(f), foldThreshold, { referenceSample: f.referenceSample });
+		return foldGfa(original(f), maxVariant, { referenceSample: f.referenceSample });
 	}
 </script>
 
@@ -127,72 +125,39 @@
 	<header>
 		<h1>Simplification playground</h1>
 		<p class="sub">
-			Each example graph as it comes in, beside what Sites makes of it: small bubbles popped onto the
-			reference, then each haplotype's allele at every site folded into the nearest kept allele. It runs
-			the same <code>query.wasm</code> the locus browser uses, and the synthetic examples are the ones
+			Each example graph as it comes in, then what each simplification makes of it. <b>Sites</b> pops
+			small bubbles onto the reference, then folds each haplotype's allele at every site into the nearest
+			kept allele; it runs in the same <code>query.wasm</code> the locus browser uses. <b>Fold</b>
+			(<code>src/lib/graph/fold.ts</code>) groups nodes into alleles by the first walk that visits them,
+			keeps the alleles at least the threshold in size and the shortest route from each back to the
+			reference, and folds the rest. The synthetic examples are the ones
 			<code>crates/reduce/src/tests.rs</code> asserts on.
 			<a href="{base}/" data-sveltekit-reload>← back to the browser</a>
 		</p>
 	</header>
 	<div class="controls">
 		<label>
-			Method
-			<select bind:value={method}>
-				<option value="wasm">Sites (query.wasm)</option>
-				<option value="fold">Fold (fold.ts)</option>
-			</select>
+			threshold
+			<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
 		</label>
-		{#if method === 'wasm'}
-			<label>
-				variants under
-				<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
-			</label>
-		{:else}
-			<label>
-				fold alleles under
-				<input type="number" min="0" max="1000000" step="10" bind:value={foldThreshold} /> bp
-			</label>
-		{/if}
+		<span class="muted">Sites: variants under it fold · Fold: alleles under it fold</span>
 	</div>
 
 	{#each ALL_FIXTURES as f (f.id)}
 		{@const shown = visible.has(f.id)}
 		{@const r = reduced[f.id]}
-		{@const fold = shown && method === 'fold' ? folded(f) : null}
-		{@const after = fold ? fold.gfa : r?.gfa}
+		{@const fold = shown ? folded(f) : null}
 		{@const stats = r?.gfa?.reduced}
 		<section class="example" class:real={f.kind === 'real'} id={f.id} use:whenVisible={f.id}>
 			<div class="ex-head">
 				<h2>{f.label}</h2>
 				<p class="desc">{f.description}</p>
-				<p class="stats">
-					{#if fold}
-						{fold.stats.segmentsBefore} → {fold.stats.segmentsAfter} nodes · {fold.stats.keptAlleles} of
-						{fold.stats.alleles} alleles kept
-					{:else if r?.error}
-						<span class="fail">{r.error}</span>
-					{:else if stats}
-						{stats.segmentsBefore.toLocaleString()} → {stats.segmentsAfter.toLocaleString()} nodes
-						{#if stats.alleles}· {stats.allelesShown} of {stats.alleles} alleles shown{/if}
-						{#if r && r.threshold !== maxVariant}<span class="muted"> · updating…</span>{/if}
-						{#if f.expect && r && r.threshold === 50}
-							{@const e = f.expect}
-							{@const ok =
-								stats.sites === e.sites &&
-								stats.nodesRemoved === e.nodesRemoved &&
-								stats.snpCount === e.snpCount &&
-								stats.basesRemoved === e.basesRemoved &&
-								(e.segmentsAfterSimplify == null || stats.segmentsAfter === e.segmentsAfterSimplify)}
-							· <span class={ok ? 'pass' : 'fail'}>{ok ? '✓ as pinned in the tests' : '✗ differs from the tests'}</span>
-						{/if}
-					{:else if shown}
-						<span class="muted">reducing…</span>
-					{/if}
-				</p>
 			</div>
 			<div class="compare">
 				<div class="pane">
-					<span class="pane-label">Original</span>
+					<span class="pane-label"
+						>Original{#if shown}{' · '}{original(f).segments.size.toLocaleString()} nodes{/if}</span
+					>
 					<div class="graph-embed">
 						{#if shown}
 							<GraphLayoutView gfa={original(f)} referenceSample={f.referenceSample} initialFold={false} bare />
@@ -200,10 +165,45 @@
 					</div>
 				</div>
 				<div class="pane">
-					<span class="pane-label">{method === 'fold' ? 'Folded' : 'Sites'}</span>
+					<span class="pane-label">
+						Sites
+						{#if r?.error}
+							<span class="fail">{r.error}</span>
+						{:else if stats}
+							· {stats.segmentsAfter.toLocaleString()} nodes
+							{#if stats.alleles}· {stats.allelesShown} of {stats.alleles} alleles shown{/if}
+							{#if r && r.threshold !== maxVariant}<span class="muted"> · updating…</span>{/if}
+							{#if f.expect && r && r.threshold === 50}
+								{@const e = f.expect}
+								{@const ok =
+									stats.sites === e.sites &&
+									stats.nodesRemoved === e.nodesRemoved &&
+									stats.snpCount === e.snpCount &&
+									stats.basesRemoved === e.basesRemoved &&
+									(e.segmentsAfterSimplify == null || stats.segmentsAfter === e.segmentsAfterSimplify)}
+								· <span class={ok ? 'pass' : 'fail'}>{ok ? '✓ as pinned' : '✗ differs from the tests'}</span>
+							{/if}
+						{:else if shown}
+							<span class="muted">· reducing…</span>
+						{/if}
+					</span>
 					<div class="graph-embed">
-						{#if after}
-							<GraphLayoutView gfa={after} referenceSample={f.referenceSample} initialFold={false} bare />
+						{#if r?.gfa}
+							<GraphLayoutView gfa={r.gfa} referenceSample={f.referenceSample} initialFold={false} bare />
+						{/if}
+					</div>
+				</div>
+				<div class="pane">
+					<span class="pane-label">
+						Fold
+						{#if fold}
+							· {fold.stats.segmentsAfter.toLocaleString()} nodes · {fold.stats.keptAlleles} of {fold.stats
+								.alleles} alleles kept
+						{/if}
+					</span>
+					<div class="graph-embed">
+						{#if fold}
+							<GraphLayoutView gfa={fold.gfa} referenceSample={f.referenceSample} initialFold={false} bare />
 						{/if}
 					</div>
 				</div>
@@ -253,7 +253,6 @@
 	label {
 		font-size: 0.9rem;
 	}
-	select,
 	input[type='number'] {
 		font: inherit;
 		padding: 0.3rem 0.45rem;
@@ -277,15 +276,9 @@
 		font-size: 0.88rem;
 		max-width: 75ch;
 	}
-	.stats {
-		margin: 0.35rem 0 0;
-		font-size: 0.85rem;
-		font-variant-numeric: tabular-nums;
-		min-height: 1.2em;
-	}
 	.compare {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: 1fr 1fr 1fr;
 		gap: 0.8rem;
 	}
 	.pane {
@@ -295,13 +288,17 @@
 		gap: 0.25rem;
 	}
 	.pane-label {
-		font-size: 0.75rem;
-		color: #777;
+		font-size: 0.78rem;
+		color: #555;
+		font-variant-numeric: tabular-nums;
+		/* Room for two lines, so a long label doesn't push its graph below its
+		   neighbours'. */
+		min-height: 2.6em;
 	}
 	/* Height-bounded box so the embedded GraphLayoutView's height:100% resolves.
 	   The synthetic graphs are a handful of nodes; the real loci need room. */
 	.graph-embed {
-		height: 300px;
+		height: 280px;
 	}
 	.real .graph-embed {
 		height: 520px;
