@@ -567,7 +567,6 @@
 	// the same inspector.
 	interface SelectedExit {
 		segId: string;
-		side: 'left' | 'right';
 	}
 	let selectedExit = $state<SelectedExit | null>(null);
 
@@ -2590,8 +2589,8 @@
 						<p class="exit-note">
 							A haplotype leaves the queried window here and continues into the graph
 							<b>beyond the region that was fetched</b>. We can't show where it reconnects — that node
-							is outside this subgraph — so it's marked with a short dashed cue trailing off the
-							edge. The cue only flags the loose end; its direction carries no information. Note that
+							is outside this subgraph — so it's marked with a short dashed cue trailing up toward the
+							top. The cue only flags the loose end; its direction carries no information. Note that
 							reference nodes outside this locus that are pulled in by their connections to this locus
 							are unfortunately not marked as reference (a limitation of querying because they don't
 							appear in the reference walk).
