@@ -20,6 +20,7 @@ import mnpGfa from './fixtures/mnp.gfa?raw';
 import nestedGfa from './fixtures/nested.gfa?raw';
 import cyclicGfa from './fixtures/cyclic.gfa?raw';
 import longRunGfa from './fixtures/long_run.gfa?raw';
+import sitesDemoGfa from './fixtures/sites_demo.gfa?raw';
 import c4a from './fixtures/c4a.gfa?raw';
 import smn1 from './fixtures/smn1.gfa?raw';
 import chr20_200kb from './fixtures/chr20_200kb.gfa?raw';
@@ -249,7 +250,37 @@ const longRun: Fixture = {
 	}
 };
 
+// The worked example of how Sites folds alleles, one site of each kind along a
+// 90-haplotype locus (built by a script, not taken from a real graph):
+//   A  a SNP (1 bp node 2 vs 20)
+//   B  a 30 bp deletion of node 4
+//   C  a 2.8 kb insertion (30, 33) with a SNP inside it (31 vs 32)
+//   D  a 3 kb deletion of node 7
+//   E  a 900 bp reference allele (9-11) with three alternatives: alt1 (50, 52),
+//      alt2 = alt1 plus 40 bp (51), alt3 = a 20 bp swap of node 10 for 53
+//   F  a SNP (14 vs 60), and a branch (61) that leaves the window two ways:
+//      on to 62/63 then 64 (a SNP inside it), or on to 65.
+const sitesDemo: Fixture = {
+	id: 'sites_demo',
+	label: 'Sites: one of each kind of site',
+	description:
+		'A made-up 90-haplotype locus with one site of each kind: A a SNP, B a 30 bp deletion, C a 2.8 kb insertion with a SNP inside, D a 3 kb deletion, E three alternatives to a 900 bp stretch (one 40 bp longer than another, one a 20 bp swap), and F a SNP plus a branch that leaves the window in two places. Sites folds A, B, the SNPs inside C and F, alt2 into alt1 and alt3 into the reference, and keeps the insertion, the deletion, alt1 and both exits.',
+	kind: 'synthetic',
+	referenceSample: REF,
+	gfaText: sitesDemoGfa,
+	expect: {
+		sites: 3,
+		nodesRemoved: 2,
+		snpCount: 1,
+		basesRemoved: 21,
+		removedNodes: ['20', '32', '51', '53', '60', '63'],
+		keptNodes: ['30', '33', '50', '52', '61', '62', '64', '65'],
+		segmentsAfterSimplify: 12
+	}
+};
+
 export const SYNTHETIC_FIXTURES: Fixture[] = [
+	sitesDemo,
 	snp,
 	smallIns,
 	largeIns,

@@ -24,7 +24,13 @@ const FIXTURE_DIR: &str = "../../src/lib/graph/fixtures";
 /// The constructed graphs /playground demonstrates, each isolating one thing the
 /// algorithm has to get right. Expectations are the same ones the TypeScript
 /// suite asserts, so the two implementations are pinned to identical behaviour.
-const SYNTHETIC: [Expected; 11] = [
+const SYNTHETIC: [Expected; 12] = [
+    // One site of each kind (src/lib/graph/fixtures.ts describes it): stage 1
+    // pops A, B and the SNPs on the reference; stage 2 folds the SNPs inside C
+    // and F's exit branch, alt2 into alt1, and keeps both exits.
+    Expected::new("sites_demo", 3, 2, 1, 21)
+        .after(12)
+        .removed(&["20", "32", "51", "53", "60", "63"]),
     // A 1 bp substitution: collapses, and the whole graph unchops to one node.
     Expected::new("snp", 1, 1, 1, 1).after(1).removed(&["20"]),
     // A 4 bp insertion: small enough to collapse.

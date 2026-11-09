@@ -14,8 +14,13 @@
 	import { foldGfa } from '$lib/graph/fold';
 	import { base } from '$app/paths';
 
-	let selectedId = $state(ALL_FIXTURES[0].id);
-	let maxVariant = $state(50);
+	// `?fixture=<id>&t=<bp>` opens an example at a threshold, so a link can show
+	// exactly the before/after it's talking about.
+	const params = typeof location === 'undefined' ? null : new URLSearchParams(location.search);
+	let selectedId = $state(
+		ALL_FIXTURES.find((f) => f.id === params?.get('fixture'))?.id ?? ALL_FIXTURES[0].id
+	);
+	let maxVariant = $state(Number(params?.get('t')) || 50);
 	// Which simplification the right-hand pane shows: the wasm's site popping +
 	// unchop, or the allele-level fold (src/lib/graph/fold.ts).
 	let method = $state<'wasm' | 'fold'>('wasm');
@@ -110,7 +115,8 @@
 	<header>
 		<h1>Simplification playground</h1>
 		<p class="sub">
-			Reference-guided small-variant popping + unchop, run on example graphs by the same
+			Sites — small bubbles popped onto the reference, then each haplotype's allele at every site
+			folded into the nearest kept allele — run on example graphs by the same
 			<code>query.wasm</code> the locus browser uses — not a separate demo implementation. The
 			constructed graphs each isolate one thing the algorithm has to get right, and the numbers below
 			are pinned in <code>crates/reduce/src/tests.rs</code>.
@@ -138,14 +144,14 @@
 			<label>
 				Method
 				<select bind:value={method}>
-					<option value="wasm">pop sites + unchop (query.wasm)</option>
+					<option value="wasm">Sites (query.wasm)</option>
 					<option value="fold">fold alleles (fold.ts)</option>
 				</select>
 			</label>
 			{#if method === 'wasm'}
 				<label>
-					collapse variants ≤
-					<input type="number" min="1" max="2000" bind:value={maxVariant} /> bp
+					variants under
+					<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
 				</label>
 			{:else}
 				<label>
@@ -178,11 +184,15 @@
 			<div class="statgrid">
 				<div><span>segments</span><b>{stats.segmentsBefore} → {stats.segmentsAfter}</b></div>
 				<div><span>links</span><b>{stats.linksBefore} → {stats.linksAfter}</b></div>
-				<div><span>sites collapsed</span><b>{stats.sites}</b></div>
+				<div><span>bubbles popped</span><b>{stats.sites}</b></div>
 				<div><span>nodes removed</span><b>{stats.nodesRemoved}</b></div>
 				<div><span>SNPs</span><b>{stats.snpCount}</b></div>
 				<div><span>alt bp condensed</span><b>{stats.basesRemoved}</b></div>
 				<div><span>unchop merges</span><b>{stats.unchopMerges}</b></div>
+				{#if stats.alleles != null}
+					<div><span>sites with alleles</span><b>{stats.alleleSites}</b></div>
+					<div><span>alleles shown</span><b>{stats.allelesShown} / {stats.alleles}</b></div>
+				{/if}
 			</div>
 			{#if fixture.kind === 'synthetic' && fixture.expect}
 				{@const e = fixture.expect}
