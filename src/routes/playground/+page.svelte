@@ -6,6 +6,9 @@
 	// `query.wasm`, in its `--gfa` mode, over each fixture. So this page and a live
 	// locus query go through the same binary, and the fixtures it shows are the
 	// same files `crates/reduce/src/tests.rs` asserts on.
+	//
+	// Every fixture is a window like the ones the locus browser fetches, so each
+	// pane is `windowedSubgraph` and draws the same exit cues on loose ends.
 	import { onMount } from 'svelte';
 	import { parseGfa, type Gfa } from '$lib/gfa';
 	import { ALL_FIXTURES, type Fixture } from '$lib/graph/fixtures';
@@ -160,7 +163,7 @@
 					>
 					<div class="graph-embed">
 						{#if shown}
-							<GraphLayoutView gfa={original(f)} referenceSample={f.referenceSample} initialFold={false} bare />
+							<GraphLayoutView gfa={original(f)} referenceSample={f.referenceSample} initialFold={false} windowedSubgraph bare />
 						{/if}
 					</div>
 				</div>
@@ -189,7 +192,7 @@
 					</span>
 					<div class="graph-embed">
 						{#if r?.gfa}
-							<GraphLayoutView gfa={r.gfa} referenceSample={f.referenceSample} initialFold={false} bare />
+							<GraphLayoutView gfa={r.gfa} referenceSample={f.referenceSample} initialFold={false} windowedSubgraph bare />
 						{/if}
 					</div>
 				</div>
@@ -203,7 +206,7 @@
 					</span>
 					<div class="graph-embed">
 						{#if fold}
-							<GraphLayoutView gfa={fold.gfa} referenceSample={f.referenceSample} initialFold={false} bare />
+							<GraphLayoutView gfa={fold.gfa} referenceSample={f.referenceSample} initialFold={false} windowedSubgraph bare />
 						{/if}
 					</div>
 				</div>
