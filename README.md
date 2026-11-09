@@ -121,10 +121,14 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   size (its own bp, or the reference it replaces if larger), plus only the shortest
   route from each kept allele back to the reference, drops deletion links under the
   threshold, and merges what's left. So small stubs hanging off a big insertion go
-  too. It reads the full graph (the walks tell it which segments form one allele),
-  fetching it on its own when it's light enough for the haplotype list to auto-load
-  and otherwise folding the simplified graph, with the full one a click away. The
-  *auto* threshold is about 10 px at the fitted zoom.
+  too. It then checks the result against the haplotypes themselves: any haplotype's
+  own variant at least the threshold stays visible (even when its segments were
+  grouped into smaller alleles), no haplotype is cut in two, and a haplotype whose
+  small variant was hidden goes back onto the reference — never through a big allele
+  or deletion it doesn't carry. It reads the full graph (the walks tell it which
+  segments form one allele), fetching it on its own when it's light enough for the
+  haplotype list to auto-load and otherwise folding the simplified graph, with the
+  full one a click away. The *auto* threshold is about 10 px at the fitted zoom.
 - **MSA view** — opened from the node inspector. It lays out the sequence of
   every haplotype base by base along the graph's own nodes (no alignment is
   computed: the graph already says which bases correspond), across the stretch of

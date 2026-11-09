@@ -9,7 +9,7 @@
 // attaches, and can't drift from where the reference is cut.
 //
 // Minigraph-Cactus graphs are acyclic, so "longest/shortest path through the
-// bubble" is well-defined: over the bubble's directed edges (a DAG), the most
+// bubble" is well-defined: over the bubble's oriented segments (a DAG), the most
 // and fewest alternate bases any route takes between its reference attachments.
 // We deliberately do not classify these as insertions or deletions — we just
 // catalogue the two path lengths and let the reader interpret them against the
@@ -66,73 +66,88 @@ function refTouchBp(
 	return null;
 }
 
-/** Longest and shortest source→sink path (in bases) through a set of segments,
- * over the forward (`from`→`to`) directed edges internal to it. Each segment
- * contributes its own length. Returns null if the induced subgraph isn't a DAG
- * (shouldn't happen for Minigraph-Cactus), so the caller can fall back. */
+type Oriented = { from: string; fromOrient: string; to: string; toOrient: string };
+const flip = (o: string) => (o === '+' ? '-' : '+');
+
+/** Longest and shortest path (in bases) through a set of segments, from where a
+ * path enters it to where one leaves. Each segment contributes its own length.
+ *
+ * Paths are traced over *oriented* segments (`id+` / `id-`), with every link read
+ * both ways: `a+ → b-` is the same edge as `b+ → a-`, and a file may spell an edge
+ * either way — `-/-` links and segments stored on the opposite strand are common in
+ * Minigraph-Cactus output. Reading links as plain `from → to` arrows instead makes
+ * the answer depend on that spelling. A path starts where it enters from the
+ * reference (or at an oriented segment nothing leads into) and ends where it leaves
+ * to the reference (or where nothing leads on). Each path is found twice, once per
+ * direction of reading, with the same length. Returns null if the oriented graph
+ * has a cycle, so the caller can fall back. */
 function pathExtremes(
 	comp: Set<string>,
-	dout: Map<string, Set<string>>,
+	links: Oriented[],
+	isRef: (id: string) => boolean,
 	len: (id: string) => number
 ): { shortest: number; longest: number } | null {
+	const key = (id: string, o: string) => `${id}${o}`;
+	const next = new Map<string, string[]>();
 	const indeg = new Map<string, number>();
-	const outdeg = new Map<string, number>();
-	for (const u of comp) {
-		indeg.set(u, indeg.get(u) ?? 0);
-		outdeg.set(u, outdeg.get(u) ?? 0);
-		for (const v of dout.get(u) ?? []) {
-			if (comp.has(v)) {
-				indeg.set(v, (indeg.get(v) ?? 0) + 1);
-				outdeg.set(u, (outdeg.get(u) ?? 0) + 1);
+	const fromRef = new Set<string>();
+	const toRef = new Set<string>();
+	for (const id of comp) for (const o of ['+', '-']) indeg.set(key(id, o), 0);
+	for (const l of links) {
+		const a = comp.has(l.from);
+		const b = comp.has(l.to);
+		if (a && b) {
+			for (const [u, v] of [
+				[key(l.from, l.fromOrient), key(l.to, l.toOrient)],
+				[key(l.to, flip(l.toOrient)), key(l.from, flip(l.fromOrient))]
+			]) {
+				(next.get(u) ?? next.set(u, []).get(u)!).push(v);
+				indeg.set(v, indeg.get(v)! + 1);
 			}
+		} else if (a && isRef(l.to)) {
+			toRef.add(key(l.from, l.fromOrient));
+			fromRef.add(key(l.from, flip(l.fromOrient)));
+		} else if (b && isRef(l.from)) {
+			fromRef.add(key(l.to, l.toOrient));
+			toRef.add(key(l.to, flip(l.toOrient)));
 		}
 	}
-	// Kahn topological order.
-	const ready: string[] = [...comp].filter((n) => (indeg.get(n) ?? 0) === 0);
+	// Kahn topological order over the oriented segments.
 	const ind = new Map(indeg);
-	const order: string[] = [];
-	for (let i = 0; i < ready.length; i++) {
-		const u = ready[i];
-		order.push(u);
-		for (const v of dout.get(u) ?? []) {
-			if (comp.has(v)) {
-				ind.set(v, (ind.get(v) ?? 0) - 1);
-				if (ind.get(v) === 0) ready.push(v);
-			}
+	const order = [...indeg.keys()].filter((n) => ind.get(n) === 0);
+	for (let i = 0; i < order.length; i++)
+		for (const v of next.get(order[i]) ?? []) {
+			ind.set(v, ind.get(v)! - 1);
+			if (ind.get(v) === 0) order.push(v);
 		}
-	}
-	if (order.length !== comp.size) return null; // not a DAG
+	if (order.length !== indeg.size) return null; // not a DAG
 
-	// Path length ending at each node. A source (no internal in-edge) starts a
-	// path at its own length; a non-source's shortest is Infinity until relaxed.
+	// Path length ending at each oriented segment, from the starts.
+	const lenOf = (n: string) => len(n.slice(0, -1));
 	const dmax = new Map<string, number>();
 	const dmin = new Map<string, number>();
-	for (const n of comp) {
-		const src = (indeg.get(n) ?? 0) === 0;
-		dmax.set(n, src ? len(n) : 0);
-		dmin.set(n, src ? len(n) : Infinity);
+	for (const n of order) {
+		if (fromRef.has(n) || indeg.get(n) === 0) {
+			dmax.set(n, lenOf(n));
+			dmin.set(n, lenOf(n));
+		}
 	}
 	for (const u of order) {
-		for (const v of dout.get(u) ?? []) {
-			if (!comp.has(v)) continue;
-			const lv = len(v);
-			if ((dmax.get(u) ?? 0) + lv > (dmax.get(v) ?? 0)) dmax.set(v, (dmax.get(u) ?? 0) + lv);
-			const du = dmin.get(u) ?? Infinity;
-			if (du !== Infinity && du + lv < (dmin.get(v) ?? Infinity)) dmin.set(v, du + lv);
+		const du = dmax.get(u);
+		if (du === undefined) continue;
+		for (const v of next.get(u) ?? []) {
+			dmax.set(v, Math.max(dmax.get(v) ?? -Infinity, du + lenOf(v)));
+			dmin.set(v, Math.min(dmin.get(v) ?? Infinity, dmin.get(u)! + lenOf(v)));
 		}
 	}
-	// Extremes over sink nodes (no internal successor) — where the path exits.
-	let longest = 0;
+	let longest = -Infinity;
 	let shortest = Infinity;
-	for (const n of comp) {
-		if ((outdeg.get(n) ?? 0) === 0) {
-			longest = Math.max(longest, dmax.get(n) ?? 0);
-			const dn = dmin.get(n) ?? Infinity;
-			if (dn !== Infinity) shortest = Math.min(shortest, dn);
-		}
+	for (const n of order) {
+		if (!dmax.has(n) || !(toRef.has(n) || !(next.get(n)?.length ?? 0))) continue;
+		longest = Math.max(longest, dmax.get(n)!);
+		shortest = Math.min(shortest, dmin.get(n)!);
 	}
-	if (shortest === Infinity) shortest = longest;
-	return { shortest, longest };
+	return longest === -Infinity ? null : { shortest, longest };
 }
 
 export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel | null {
@@ -183,20 +198,22 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 	const edgeCov = (a: string, b: string, tagged?: number) =>
 		tagged ?? ensureWalkCov().edge.get(edgeKey(a, b)) ?? 0;
 
-	// Undirected adjacency (for components) and forward directed adjacency (for
-	// path lengths). Skip edges are collected separately.
+	// Undirected adjacency, for components. Skip edges are collected separately.
 	const undir = new Map<string, Set<string>>();
-	const dout = new Map<string, Set<string>>();
-	const addEdge = (m: Map<string, Set<string>>, a: string, b: string) => {
-		let s = m.get(a);
-		if (!s) m.set(a, (s = new Set()));
+	const addEdge = (a: string, b: string) => {
+		let s = undir.get(a);
+		if (!s) undir.set(a, (s = new Set()));
 		s.add(b);
 	};
 	for (const l of gfa.links) {
-		addEdge(dout, l.from, l.to);
-		addEdge(undir, l.from, l.to);
-		addEdge(undir, l.to, l.from);
+		addEdge(l.from, l.to);
+		addEdge(l.to, l.from);
 	}
+
+	// Links touching each segment, so a bubble's path lengths read only its own.
+	const linksOf = new Map<string, Oriented[]>();
+	for (const l of gfa.links)
+		for (const id of new Set([l.from, l.to])) (linksOf.get(id) ?? linksOf.set(id, []).get(id)!).push(l);
 
 	// Attachment bp of every reference↔non-reference link, keyed by the non-ref
 	// endpoint, so each bubble can read where its members touch the reference.
@@ -233,7 +250,11 @@ export function computeBubbles(gfa: Gfa, referenceSample: string): BubbleModel |
 		const entryBp = Math.min(...attaches);
 		const exitBp = Math.max(...attaches);
 		const totalBp = [...comp].reduce((a, n) => a + len(n), 0);
-		const ext = pathExtremes(comp, dout, len) ?? { shortest: totalBp, longest: totalBp };
+		const compLinks = [...new Set([...comp].flatMap((n) => linksOf.get(n) ?? []))];
+		const ext = pathExtremes(comp, compLinks, (n) => refCoord.has(n), len) ?? {
+			shortest: totalBp,
+			longest: totalBp
+		};
 		let coverage = 0;
 		let nodeCount = 0;
 		for (const n of comp) {

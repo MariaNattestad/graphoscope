@@ -20,8 +20,19 @@
 //      last link on a side — a side with no link reads as an off-locus exit;
 //   E. merge runs of kept segments of the same allele that nothing branches off.
 //
-// The output is again a `Gfa`, with walks rerouted through what's kept, so it can
-// be folded again: folding at t1 then t2 ≈ folding once at t2.
+// Two checks against the haplotypes themselves back this up, each re-running the
+// fold at most once with what it found kept:
+//   - haplotype check (end of C): a haplotype's own departure from the backbone at
+//     least the threshold in size stays visible, even when the alleles its segments
+//     were grouped into are each smaller;
+//   - walk check (rerouting): a haplotype the kept graph can't carry from one kept
+//     segment to the next keeps the stretch it actually took.
+//
+// The output is again a `Gfa`, with walks rerouted through what's kept — over the
+// cheapest kept path that costs no more than what the walk lost plus the threshold,
+// so a hidden small variant goes back onto the reference and no haplotype is routed
+// through a big allele or deletion it doesn't carry. It can be folded again:
+// folding at t1 then t2 ≈ folding once at t2.
 
 import type { Gfa, Link, Orient, Segment, Step, Walk } from '../gfa';
 
@@ -48,6 +59,10 @@ export interface FoldStats {
 	keptAlleles: number;
 	/** Small segments kept only as the route from a kept allele to the backbone. */
 	routeSegments: number;
+	/** Segments kept for the haplotypes themselves, whatever their alleles' size: a
+	 * haplotype's own variant at least the threshold (the haplotype check), or the
+	 * stretch that keeps a haplotype connected (the walk check). */
+	rescuedSegments: number;
 	/** Small deletion links dropped (Step D), net of those restored. */
 	droppedSkips: number;
 	/** Skips kept anyway: to reconnect the graph, or as the last link on a side. */
@@ -99,6 +114,18 @@ function exitSide(h: Home): Side {
 /** Home-sequence coordinate of one side of a segment. */
 function sidePos(h: Home, len: number, side: Side): number {
 	return side === entrySide(h) ? h.start : h.start + len;
+}
+/** The side a walk step enters its segment by, and the side it leaves by. */
+function stepEntry(st: Step): Side {
+	return st.orient === '+' ? START : END;
+}
+function stepExit(st: Step): Side {
+	return st.orient === '+' ? END : START;
+}
+/** A home on walk `w` (its `ordinal`-th) for a stretch of it the fold rescues, `pos`
+ * bases in; a name of its own, so the stretch forms alleles apart from any other. */
+function rescueHome(w: Walk, ordinal: number, pos: number): Omit<Home, 'orient'> {
+	return { seq: `rescue:${ordinal}:${w.sample}#${w.hapIndex}#${w.seqId}`, start: pos, rank: ordinal };
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +257,78 @@ class Heap {
 
 const sideKey = (id: string, side: Side) => `${id}\t${side}`;
 
+/** A link seen from one side: the far side, and the home-sequence bases it skips
+ * (so a deletion link costs as much as the sequence it deletes). */
+type SideLink = { id: string; side: Side; skip: number };
+
+function sideLinks(links: Link[], homes: Map<string, Home>, len: (id: string) => number): Map<string, SideLink[]> {
+	const out = new Map<string, SideLink[]>();
+	for (const l of links) {
+		const ha = homes.get(l.from);
+		const hb = homes.get(l.to);
+		const skip =
+			ha && hb && ha.seq === hb.seq && ha.rank === hb.rank
+				? Math.abs(sidePos(hb, len(l.to), toSide(l)) - sidePos(ha, len(l.from), fromSide(l)))
+				: 0;
+		const ka = sideKey(l.from, fromSide(l));
+		const kb = sideKey(l.to, toSide(l));
+		(out.get(ka) ?? out.set(ka, []).get(ka)!).push({ id: l.to, side: toSide(l), skip });
+		(out.get(kb) ?? out.set(kb, []).get(kb)!).push({ id: l.from, side: fromSide(l), skip });
+	}
+	return out;
+}
+
+/**
+ * The cheapest path from leaving step `p` to entering step `q`, costed in bases: the
+ * segments it passes through plus whatever its links skip. Returns the steps between
+ * them, or null if no path costs at most `budget`.
+ */
+function cheapestPath(
+	p: Step,
+	q: Step,
+	budget: number,
+	linksAt: (sideKey: string) => SideLink[] | undefined,
+	len: (id: string) => number
+): Step[] | null {
+	const startKey = sideKey(p.id, stepExit(p));
+	const target = `${q.id}\t>`;
+	const dist = new Map<string, number>([[startKey, 0]]);
+	const back = new Map<string, { prev: string; step: Step | null }>();
+	const heap = new Heap();
+	heap.push(0, startKey);
+	const done = new Set<string>();
+	while (heap.size > 0) {
+		const { d, id: k } = heap.pop();
+		if (done.has(k)) continue;
+		done.add(k);
+		if (k === target) {
+			const path: Step[] = [];
+			for (let cur = back.get(target)!; cur.prev !== startKey; cur = back.get(cur.prev)!)
+				path.push(back.get(cur.prev)!.step!);
+			return path.reverse();
+		}
+		for (const o of linksAt(k) ?? []) {
+			let next: string;
+			let nd: number;
+			let step: Step | null = null;
+			if (o.id === q.id && o.side === stepEntry(q)) {
+				next = target;
+				nd = d + o.skip;
+			} else {
+				if (o.id === q.id || o.id === p.id) continue;
+				step = { id: o.id, orient: o.side === START ? '+' : '-' };
+				next = sideKey(o.id, stepExit(step));
+				nd = d + o.skip + len(o.id);
+			}
+			if (nd > budget || nd >= (dist.get(next) ?? Infinity)) continue;
+			dist.set(next, nd);
+			back.set(next, { prev: k, step });
+			heap.push(nd, next);
+		}
+	}
+	return null;
+}
+
 const COMPLEMENT: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A', N: 'N', a: 't', c: 'g', g: 'c', t: 'a', n: 'n' };
 function revComp(s: string): string {
 	let out = '';
@@ -241,7 +340,22 @@ function revComp(s: string): string {
 // The fold
 
 export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): FoldResult {
-	const homes = opts.homes ?? homePositions(gfa, opts.referenceSample);
+	return fold(gfa, threshold, opts.homes ?? homePositions(gfa, opts.referenceSample), new Set(), false);
+}
+
+/**
+ * The fold, given every segment's home. `rescued` segments are kept whatever their
+ * allele's size: stretches of one haplotype, re-homed onto it, that the haplotype
+ * check or the walk check (below) found must stay. Each check re-runs the fold at
+ * most once; `final` marks the walk check's re-run, after which nothing re-runs.
+ */
+function fold(
+	gfa: Gfa,
+	threshold: number,
+	homes: Map<string, Home>,
+	rescued: Set<string>,
+	final: boolean
+): FoldResult {
 	const seg = gfa.segments;
 	const len = (id: string) => seg.get(id)?.length ?? 0;
 	const isBackbone = (id: string) => homes.get(id)?.rank === 0;
@@ -262,6 +376,7 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 				alleles: 0,
 				keptAlleles: 0,
 				routeSegments: 0,
+				rescuedSegments: 0,
 				droppedSkips: 0,
 				restoredSkips: 0,
 				merged: 0
@@ -418,19 +533,25 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 		!isBackbone(id) && (!linksAtSide.has(sideKey(id, START)) || !linksAtSide.has(sideKey(id, END)));
 
 	let keptAlleles = 0;
+	// Segments kept as (part of) an allele in their own right, not just as a route.
+	const keptAsAllele = new Set<string>();
 	const sizeOrder = [...alleleMembers.keys()].sort();
 	for (const root of sizeOrder) {
 		const members = alleleMembers.get(root)!;
 		if (isBackbone(members[0])) continue;
-		if (alleleSize.get(root)! < threshold && !members.some(hasExit)) continue;
+		if (alleleSize.get(root)! < threshold && !members.some((id) => hasExit(id) || rescued.has(id))) continue;
 		if (!members.some((id) => Number.isFinite(reach(id)))) continue; // floating free
 		keptAlleles++;
 		const inAllele = new Set(members);
 		for (const id of members) {
 			keep.add(id);
+			keptAsAllele.add(id);
 			routed.add(id); // the allele is internally connected; its route is below
 			toClose.push(id);
 		}
+		// A rescued allele is a stretch of one haplotype whose neighbours on that
+		// haplotype are kept, so it is already routed — along the haplotype itself.
+		if (rescued.has(members[0])) continue;
 		// The allele's two outer ends: the free side of its first and last segment.
 		const first = members[0];
 		const last = members[members.length - 1];
@@ -491,6 +612,76 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 					best = otherId;
 			}
 			if (!closed && best !== null && Number.isFinite(reach(best))) keepRoute(best);
+		}
+	}
+	// Haplotype check: no haplotype's variant at least the threshold may vanish.
+	// Alleles group segments by the first walk to visit each one, so a large insertion
+	// whose segments were first visited by several different walks (haplotypes that
+	// share parts of it, in different orders or orientations) is split into pieces
+	// that can each be under the threshold — and all dropped. So read each haplotype's
+	// own excursions off the backbone: one at least the threshold in size (its own bp,
+	// or the reference it replaces) of which less than the threshold was kept has been
+	// hidden. Re-home the segments it needs onto that haplotype — the dropped ones and
+	// the ones kept only as routes — so they form alleles of their own, and fold again
+	// with them kept. Excursions are checked largest first, each against what the
+	// earlier ones rescued, so haplotypes sharing a variant rescue one path through
+	// it, not one each.
+	if (rescued.size === 0 && !final) {
+		const hidden: { w: Walk; ordinal: number; from: number; to: number; size: number }[] = [];
+		let ordinal = 0;
+		for (const w of gfa.walks) {
+			if (w.kind === 'synthetic') continue;
+			ordinal++;
+			const st = w.steps;
+			let last = -1; // the walk's previous backbone step
+			for (let i = 0; i < st.length; i++) {
+				if (!isBackbone(st[i].id)) continue;
+				if (last >= 0 && i - last > 1) {
+					const p = st[last];
+					const q = st[i];
+					const hp = homes.get(p.id)!;
+					const hq = homes.get(q.id)!;
+					const span =
+						hp.seq === hq.seq
+							? Math.abs(sidePos(hq, len(q.id), stepEntry(q)) - sidePos(hp, len(p.id), stepExit(p)))
+							: 0;
+					let alt = 0;
+					for (let j = last + 1; j < i; j++) alt += len(st[j].id);
+					const size = Math.max(alt, span);
+					if (size >= threshold) hidden.push({ w, ordinal, from: last + 1, to: i, size });
+				}
+				last = i;
+			}
+		}
+		hidden.sort((a, b) => b.size - a.size || a.ordinal - b.ordinal || a.from - b.from);
+		const rehomed = new Map<string, Home>();
+		for (const { w, ordinal, from, to } of hidden) {
+			const st = w.steps;
+			let keptBp = 0;
+			const counted = new Set<string>();
+			for (let j = from; j < to; j++) {
+				const id = st[j].id;
+				if ((keep.has(id) || rehomed.has(id)) && !counted.has(id)) {
+					counted.add(id);
+					keptBp += len(id);
+				}
+			}
+			if (keptBp >= threshold) continue;
+			let pos = 0;
+			for (let j = from; j < to; j++) {
+				const s = st[j];
+				if (!keptAsAllele.has(s.id) && !rehomed.has(s.id))
+					rehomed.set(s.id, {
+						...rescueHome(w, ordinal, pos),
+						orient: s.orient
+					});
+				pos += len(s.id);
+			}
+		}
+		if (rehomed.size > 0) {
+			const rehomes = new Map(homes);
+			for (const [id, h] of rehomed) rehomes.set(id, h);
+			return fold(gfa, threshold, rehomes, new Set(rehomed.keys()), false);
 		}
 	}
 	let routeSegments = 0;
@@ -676,66 +867,74 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 	}
 
 	// --- Walks: reroute through the kept segments -------------------------------
-	const outSideLinks = new Map<string, { id: string; side: Side }[]>();
-	for (const l of outLinks) {
-		const a = { id: l.from, side: fromSide(l) };
-		const b = { id: l.to, side: toSide(l) };
-		const ka = sideKey(a.id, a.side);
-		const kb = sideKey(b.id, b.side);
-		(outSideLinks.get(ka) ?? outSideLinks.set(ka, []).get(ka)!).push(b);
-		(outSideLinks.get(kb) ?? outSideLinks.set(kb, []).get(kb)!).push(a);
-	}
-	const exitOf = (st: Step): Side => (st.orient === '+' ? END : START);
-	const entryOf = (st: Step): Side => (st.orient === '+' ? START : END);
+	// Each side's links, with the cost of following one: the home-sequence bases it
+	// jumps over, so a deletion link costs as much as the sequence it deletes.
+	const outLen = (id: string) => outSegments.get(id)!.length;
+	const outSideLinks = sideLinks(outLinks, outHomes, outLen);
 	const linked = (p: Step, q: Step) =>
-		(outSideLinks.get(sideKey(p.id, exitOf(p))) ?? []).some((o) => o.id === q.id && o.side === entryOf(q));
-	// Shortest kept path (by hops, bounded) from leaving `p` to entering `q`.
-	const bridge = (p: Step, q: Step): Step[] | null => {
-		const LIMIT = 64;
-		const startKey = sideKey(p.id, exitOf(p));
-		const back = new Map<string, { prev: string; step: Step } | null>([[startKey, null]]);
-		const queue = [startKey];
-		let head = 0;
-		while (head < queue.length && back.size < LIMIT) {
-			const k = queue[head++];
-			for (const o of outSideLinks.get(k) ?? []) {
-				if (o.id === q.id && o.side === entryOf(q)) {
-					const path: Step[] = [];
-					let cur: string | null = k;
-					while (cur !== null && cur !== startKey) {
-						const b: { prev: string; step: Step } = back.get(cur)!;
-						path.push(b.step);
-						cur = b.prev;
-					}
-					return path.reverse();
-				}
-				if (o.id === q.id || o.id === p.id) continue;
-				const st: Step = { id: o.id, orient: o.side === START ? '+' : '-' };
-				const outKey = sideKey(o.id, exitOf(st));
-				if (back.has(outKey)) continue;
-				back.set(outKey, { prev: k, step: st });
-				queue.push(outKey);
-			}
-		}
-		return null;
+		(outSideLinks.get(sideKey(p.id, stepExit(p))) ?? []).some((o) => o.id === q.id && o.side === stepEntry(q));
+	// A walk only lost what folding hid — variants under the threshold — so the kept
+	// path standing in for what it dropped may cost at most the bases it dropped plus
+	// the threshold. That puts a hidden small variant back on the reference (the
+	// cheapest route), and never routes a haplotype through a big allele or a long
+	// deletion it doesn't carry: if nothing that cheap exists, it isn't bridged.
+	const bridge = (p: Step, q: Step, budget: number) =>
+		cheapestPath(p, q, budget, (k) => outSideLinks.get(k), outLen);
+	// The same question over the input graph, through what's kept plus the stretches
+	// the walk check has kept so far (built on first use).
+	let inSideLinks: Map<string, SideLink[]> | null = null;
+	const bridgedBefore = (p: Step, q: Step, budget: number) => {
+		inSideLinks ??= sideLinks(links, homes, len);
+		const open = (o: SideLink) => keep.has(o.id) || gaps.has(o.id);
+		return cheapestPath(p, q, budget, (k) => inSideLinks!.get(k)?.filter(open), len) !== null;
 	};
-	const outWalks: Walk[] = gfa.walks.map((w) => {
+	// Walk check: a haplotype that can't be bridged between two kept segments keeps
+	// the stretch it actually took, re-homed onto it like a rescued variant, so no
+	// haplotype is cut in two by folding (it takes a route segment kept for something
+	// else, then leaves it through a dropped one) — unless a stretch an earlier
+	// haplotype kept already bridges it, so haplotypes sharing a gap keep one path.
+	const gaps = new Map<string, Home>();
+	const outWalks: Walk[] = gfa.walks.map((w, wi) => {
 		const mapped: Step[] = [];
+		let last: Step | null = null; // the walk's last kept step, as it is in the input
+		let dropped: Step[] = []; // the walk's steps folded away since then
 		for (const st of w.steps) {
 			const rep = repOf.get(st.id);
-			if (rep === undefined) continue;
+			if (rep === undefined) {
+				dropped.push(st);
+				continue;
+			}
 			const mi = memberInfo.get(st.id);
 			const ns: Step = mi ? { id: rep, orient: (st.orient === '+') === mi.forward ? '+' : '-' } : st;
 			const prev = mapped[mapped.length - 1];
-			if (prev && prev.id === ns.id && prev.orient === ns.orient && mi) continue; // same run
+			if (prev && prev.id === ns.id && prev.orient === ns.orient && mi) {
+				last = st;
+				dropped = [];
+				continue; // same run
+			}
 			if (prev && !linked(prev, ns)) {
-				const fill = bridge(prev, ns);
+				const budget = dropped.reduce((bp, d) => bp + len(d.id), threshold);
+				const fill = bridge(prev, ns, budget);
 				if (fill) mapped.push(...fill);
+				else if (!final && !bridgedBefore(last!, st, budget)) {
+					let pos = 0;
+					for (const d of dropped) {
+						if (!gaps.has(d.id)) gaps.set(d.id, { ...rescueHome(w, wi + 1, pos), orient: d.orient });
+						pos += len(d.id);
+					}
+				}
 			}
 			mapped.push(ns);
+			last = st;
+			dropped = [];
 		}
 		return { ...w, steps: mapped };
 	});
+	if (gaps.size > 0 && !final) {
+		const rehomes = new Map(homes);
+		for (const [id, h] of gaps) rehomes.set(id, h);
+		return fold(gfa, threshold, rehomes, new Set([...rescued, ...gaps.keys()]), true);
+	}
 
 	return {
 		gfa: { ...gfa, segments: outSegments, links: outLinks, walks: outWalks },
@@ -750,6 +949,7 @@ export function foldGfa(gfa: Gfa, threshold: number, opts: FoldOptions = {}): Fo
 			alleles: alleleCount,
 			keptAlleles,
 			routeSegments,
+			rescuedSegments: [...rescued].filter((id) => keep.has(id)).length,
 			droppedSkips: skipCandidates.length - restoredSkips,
 			restoredSkips,
 			merged
