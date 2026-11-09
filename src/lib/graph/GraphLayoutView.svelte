@@ -8,6 +8,7 @@
 	// so this component just lays out and draws whatever graph it's given.
 	import { onDestroy, untrack } from 'svelte';
 	import { gfaStats, type Gfa } from '../gfa';
+	import { SITES_DEFAULT, SITES_STEPS } from '../gbzClient';
 	import { limits } from '../limits.svelte';
 	import { gfaToGraph } from './gfaToGraph';
 	import type { GfaGraph } from './types';
@@ -49,6 +50,9 @@
 		discoLoading = false,
 		onRequestDiscoGraph,
 		discoWalksGfa = null,
+		sitesThreshold = SITES_DEFAULT,
+		sitesLoading = false,
+		onSitesThreshold,
 		showingAllNodes = false,
 		allNodesCount = 0,
 		allNodesTooMany = false,
@@ -121,6 +125,11 @@
 		 * disco animates over the *displayed* graph, mapping these walks onto it, so
 		 * this never has to be the graph on screen. */
 		discoWalksGfa?: Gfa | null;
+		/** Sites' allele threshold, and whether the parent is re-querying at a new one. */
+		sitesThreshold?: number;
+		sitesLoading?: boolean;
+		/** Ask the parent for Sites at another threshold (it re-runs the query). */
+		onSitesThreshold?: (t: number) => void;
 		/** Whether the full (unsimplified) graph is the one currently displayed. */
 		showingAllNodes?: boolean;
 		/** Node count the unsimplified graph would have (for the Simplify switch label). */
@@ -1651,7 +1660,7 @@
 								class:active={simplifyMode === 'sites'}
 								aria-pressed={simplifyMode === 'sites'}
 								onclick={() => setSimplify('sites')}
-								title="Collapse small variant sites and merge unbranched runs (the query's own simplification)"
+								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
 								>Sites</button
 							>
 						{/if}
@@ -1679,15 +1688,30 @@
 										>{/if}{/if}
 							{/if}
 						{:else if simplifyMode === 'sites'}
-							{#if discoLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
-								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes · small variant sites collapsed{:else}small
-								variant sites collapsed{/if}
+							{#if discoLoading || sitesLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
+								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes{#if inputGfa.reduced.alleles != null}
+									· {inputGfa.reduced.allelesShown?.toLocaleString()} of {inputGfa.reduced.alleles.toLocaleString()} alleles shown{:else}
+									· small variant sites collapsed{/if}{:else}small variant sites collapsed{/if}
 						{:else if showingAllNodes}
 							all {allNodesCount.toLocaleString()} nodes shown
 						{:else}
 							every node, as loaded
 						{/if}
 					</span>
+					{#if simplifyMode === 'sites' && onSitesThreshold}
+						<label class="fold-threshold">
+							variants under
+							<select
+								value={sitesThreshold}
+								disabled={sitesLoading}
+								onchange={(e) => onSitesThreshold?.(Number(e.currentTarget.value))}
+							>
+								{#each SITES_STEPS as t (t)}
+									<option value={t}>{t.toLocaleString()} bp</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
 					{#if simplifyMode === 'fold'}
 						<label class="fold-threshold">
 							alleles under

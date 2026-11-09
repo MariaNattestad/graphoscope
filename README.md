@@ -314,10 +314,23 @@ Rust crate. It does three things per query:
 1. **Retrieve** the locus subgraph, using
    [GBZ-base](https://github.com/jltsiren/gbz-base) unmodified as a crates.io
    dependency — that's what it's for, and it's the only thing it does here.
-2. **Simplify** the subgraph (`src/simplify.rs`): collapse small reference-anchored
-   superbubbles onto the reference, then merge non-branching chains. A site
-   collapses only if its *longest* entry→exit path is under the threshold, so a
-   small deletion spanning a long reference stretch correctly survives.
+2. **Simplify** the subgraph, in two stages, then merge non-branching chains.
+   Stage 1 (`src/simplify.rs`) collapses small reference-anchored superbubbles
+   onto the reference: a site collapses only if its *longest* entry→exit path is
+   under the threshold (capped at 50 bp), so a small deletion spanning a long
+   reference stretch survives. Stage 2 (`src/alleles.rs`) works per haplotype:
+   it cuts the graph into sites along the reference, reads each haplotype's
+   allele at each site from its walk, and folds every allele into the first
+   kept allele (the reference first, then the most carried) that differs from it
+   by no single variant at least the threshold. Alleles that start or stop
+   inside a site — a haplotype leaving the window, or a path that ends in the
+   pangenome — only fold into alleles that start and stop at the same place, so
+   no exit is lost. The site then keeps only the kept alleles' nodes and links,
+   and every walk is rewritten to its kept allele. So every link drawn is one a
+   haplotype uses, every haplotype is still a path through the graph, and none
+   is moved by a variant of the threshold or more. The threshold (`--max-variant`,
+   50 bp by default) is the *variants under* control beside *Sites*; changing it
+   re-runs the query.
 3. **Aggregate the walks** (`src/coverage.rs`): count how many distinct haplotype
    walks cross each node and edge, emit those as `WC` tags, and drop the walks.
 

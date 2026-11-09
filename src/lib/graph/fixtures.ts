@@ -217,8 +217,9 @@ const nested: Fixture = {
 
 const cyclic: Fixture = {
 	id: 'cyclic',
-	label: 'Cyclic alt (kept)',
-	description: 'An alt node with a self-loop (a tandem-repeat-like cycle) — never collapsed.',
+	label: 'Cyclic alt (folded)',
+	description:
+		'An alt node with a self-loop (a tandem-repeat-like cycle). The bubble pop never collapses a cycle, but the haplotypes that loop are only 4 bp longer than the reference, so their allele folds into it.',
 	kind: 'synthetic',
 	referenceSample: REF,
 	gfaText: cyclicGfa,
@@ -227,7 +228,8 @@ const cyclic: Fixture = {
 		nodesRemoved: 0,
 		snpCount: 0,
 		basesRemoved: 0,
-		keptNodes: ['1', '2', '3', '4', '20']
+		removedNodes: ['20'],
+		keptNodes: ['1', '2', '3', '4']
 	}
 };
 

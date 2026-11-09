@@ -111,6 +111,10 @@ export interface ReducedStats {
 	 * haplotypes.
 	 */
 	walkRecords: number;
+	/** Stage 2 of Sites: sites with more than one allele, distinct alleles, and the representatives kept. */
+	alleleSites?: number;
+	alleles?: number;
+	allelesShown?: number;
 	totalSequenceBp: number;
 }
 
@@ -235,7 +239,10 @@ export function parseGfa(text: string): Gfa {
 					nonRefWalks: intTag(f, 'NW') ?? 0,
 					samples: intTag(f, 'NS') ?? 0,
 					walkRecords: intTag(f, 'WR') ?? 0,
-					totalSequenceBp: intTag(f, 'TS') ?? 0
+					totalSequenceBp: intTag(f, 'TS') ?? 0,
+					alleleSites: intTag(f, 'AS'),
+					alleles: intTag(f, 'AL'),
+					allelesShown: intTag(f, 'AK')
 				};
 				break;
 			}
@@ -411,7 +418,10 @@ export function writeGfa(gfa: Gfa): string {
 				`NW:i:${r.nonRefWalks}`,
 				`NS:i:${r.samples}`,
 				`WR:i:${r.walkRecords}`,
-				`TS:i:${r.totalSequenceBp}`
+				`TS:i:${r.totalSequenceBp}`,
+				...(r.alleles != null
+					? [`AS:i:${r.alleleSites ?? 0}`, `AL:i:${r.alleles}`, `AK:i:${r.allelesShown ?? 0}`]
+					: [])
 			].join('\t')
 		);
 	}

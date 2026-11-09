@@ -25,6 +25,7 @@
 //! O(total steps) — on a repetitive locus that is the difference between tens
 //! of megabytes of transient wasm heap and a few hundred kilobytes.
 
+mod alleles;
 mod coverage;
 mod gfa;
 mod reduce;
@@ -42,8 +43,8 @@ use gbz::FullPathName;
 use gbz_base::{GBZBase, GraphInterface, Subgraph, SubgraphQuery};
 use getopts::Options;
 
-// Longest-path bp threshold below which a superbubble collapses to the
-// reference. Matches the default in the TypeScript implementation.
+// The Sites threshold: alleles that differ by no variant this large or larger
+// fold together (see alleles.rs). Matches SITES_DEFAULT in src/lib/gbzClient.ts.
 const DEFAULT_MAX_VARIANT: usize = 50;
 const DEFAULT_CONTEXT: usize = 100;
 
@@ -122,7 +123,7 @@ impl Config {
         opts.optopt(
             "",
             "max-variant",
-            "longest-path bp threshold for collapsing a small variant",
+            "bp threshold below which a variant folds into the allele it differs from",
             "INT",
         );
         opts.optflag("", "raw", "emit the unsimplified subgraph, with every haplotype walk");
