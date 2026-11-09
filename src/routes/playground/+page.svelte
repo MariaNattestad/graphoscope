@@ -224,7 +224,7 @@
 			     needs a height-bounded box here — the app shell provides one, the
 			     playground's normal document flow doesn't. -->
 			<div class="graph-embed">
-				<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} initialFold={false} />
+				<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} initialFold={false} bare />
 			</div>
 		</section>
 		<section class="panel">
@@ -233,7 +233,7 @@
 			</h2>
 			{#if shown}
 				<div class="graph-embed">
-					<GraphLayoutView gfa={shown} referenceSample={fixture.referenceSample} initialFold={false} />
+					<GraphLayoutView gfa={shown} referenceSample={fixture.referenceSample} initialFold={false} bare />
 				</div>
 			{:else}
 				<p class="muted small">{running ? 'reducing…' : 'no result'}</p>

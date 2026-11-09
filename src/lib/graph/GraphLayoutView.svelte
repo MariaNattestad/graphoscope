@@ -50,6 +50,7 @@
 		discoLoading = false,
 		onRequestDiscoGraph,
 		discoWalksGfa = null,
+		bare = false,
 		sitesThreshold = SITES_DEFAULT,
 		sitesLoading = false,
 		onSitesThreshold,
@@ -125,6 +126,8 @@
 		 * disco animates over the *displayed* graph, mapping these walks onto it, so
 		 * this never has to be the graph on screen. */
 		discoWalksGfa?: Gfa | null;
+		/** Just the graph canvas: no options panel and no legend footer. */
+		bare?: boolean;
 		/** Sites' allele threshold, and whether the parent is re-querying at a new one. */
 		sitesThreshold?: number;
 		sitesLoading?: boolean;
@@ -1601,6 +1604,7 @@
 
 <div class="wrap">
 	<div class="body">
+		{#if !bare}
 		<aside class="sidebar">
 			<!-- Query report: progressive while a query/layout runs, then a one-liner. -->
 			<QueryReport
@@ -2112,6 +2116,7 @@
 			</section>
 			</div>
 		</aside>
+		{/if}
 
 	<div class="stage-col">
 			{#if contextGlowMsg}
@@ -2626,6 +2631,7 @@
 						{/if}
 					</div>
 				{/if}
+		{#if !bare}
 		<div class="foot">
 			<span class="muted"
 				>plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms{referenceFree ? '' : ' · add ⌥/alt to zoom height'}</span
@@ -2655,6 +2661,7 @@
 				<span class="legend-cap">{colorModeInfo.caption}{colorModeInfo.kind === 'heatmap' ? ' →' : ''}</span>
 			</label>
 		</div>
+		{/if}
 	</div>
 	</div>
 </div>
