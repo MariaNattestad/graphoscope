@@ -1,9 +1,9 @@
 <script lang="ts">
-	// Simplification playground: pick an example graph, tweak the threshold, and
-	// compare the original against the simplified graph side by side.
+	// Simplification playground: every example graph, one per row, the original
+	// beside the simplified graph, all at one threshold.
 	//
 	// The simplification here is not a demo reimplementation — it runs the actual
-	// `query.wasm`, in its `--gfa` mode, over the fixture. So this page and a live
+	// `query.wasm`, in its `--gfa` mode, over each fixture. So this page and a live
 	// locus query go through the same binary, and the fixtures it shows are the
 	// same files `crates/reduce/src/tests.rs` asserts on.
 	import { onMount } from 'svelte';
@@ -13,246 +13,203 @@
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import { foldGfa } from '$lib/graph/fold';
 	import { base } from '$app/paths';
+	import { afterNavigate } from '$app/navigation';
 
-	// `?fixture=<id>&t=<bp>` opens an example at a threshold, so a link can show
-	// exactly the before/after it's talking about.
+	// `?t=<bp>` sets the threshold and `?fixture=<id>` scrolls to an example, so a
+	// link can show exactly the before/after it's talking about.
 	const params = typeof location === 'undefined' ? null : new URLSearchParams(location.search);
-	let selectedId = $state(
-		ALL_FIXTURES.find((f) => f.id === params?.get('fixture'))?.id ?? ALL_FIXTURES[0].id
-	);
 	let maxVariant = $state(Number(params?.get('t')) || 50);
-	// Which simplification the right-hand pane shows: the wasm's site popping +
-	// unchop, or the allele-level fold (src/lib/graph/fold.ts).
+	// Which simplification the right-hand graphs show: Sites (query.wasm), or the
+	// allele-level fold (src/lib/graph/fold.ts).
 	let method = $state<'wasm' | 'fold'>('wasm');
 	let foldThreshold = $state(100);
 
-	const fixture = $derived<Fixture>(
-		ALL_FIXTURES.find((f) => f.id === selectedId) ?? ALL_FIXTURES[0]
-	);
-	// Held raw (not $state/$derived) so the parsed graph stays plain objects: the
-	// layout worker structured-clones it, and a deep-proxied graph (reused walk
-	// step objects become Proxies) throws DataCloneError on postMessage — the same
-	// reason the main route holds its gfa as $state.raw.
-	let parsed = $state.raw<Gfa>(parseGfa(ALL_FIXTURES[0].gfaText));
-	$effect(() => {
-		parsed = parseGfa(fixture.gfaText);
-	});
+	// A row's graphs are only parsed, reduced and laid out once it scrolls near
+	// the viewport: the real loci take seconds each, and the page shouldn't pay
+	// for rows nobody has looked at.
+	let visible = $state.raw<Set<string>>(new Set());
+	function whenVisible(node: HTMLElement, id: string) {
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					visible = new Set([...visible, id]);
+					io.disconnect();
+				}
+			},
+			{ rootMargin: '600px 0px' }
+		);
+		io.observe(node);
+		return { destroy: () => io.disconnect() };
+	}
 
-	// The reduced GFA text itself, capped for display.
-	let reducedText = $state('');
-	const REDUCED_LINES = 60;
-	const reducedPreview = $derived(
-		reducedText.split('\n').slice(0, REDUCED_LINES).join('\n') +
-			(reducedText.split('\n').length > REDUCED_LINES ? '\n…' : '')
-	);
+	// Held raw (not $state/$derived) so parsed graphs stay plain objects: the
+	// layout worker structured-clones them, and a deep-proxied graph throws
+	// DataCloneError on postMessage — the same reason the main route holds its
+	// gfa as $state.raw.
+	const parsedCache = new Map<string, Gfa>();
+	function original(f: Fixture): Gfa {
+		let g = parsedCache.get(f.id);
+		if (!g) {
+			g = parseGfa(f.gfaText);
+			parsedCache.set(f.id, g);
+		}
+		return g;
+	}
 
-	let reduced = $state.raw<Gfa | null>(null);
-	let running = $state(false);
-	let error = $state<string | null>(null);
-	let elapsedMs = $state<number | null>(null);
+	interface Reduced {
+		threshold: number;
+		gfa?: Gfa;
+		error?: string;
+		elapsedMs?: number;
+	}
+	let reduced = $state.raw<Record<string, Reduced>>({});
+	// What's been asked of the worker, so a row isn't sent twice per threshold.
+	const requested = new Set<string>();
 
-	let worker: Worker | null = null;
+	let worker = $state.raw<Worker | null>(null);
 	let nextId = 1;
-	let pending = new Map<number, (r: ReduceResult) => void>();
+	const pending = new Map<number, (r: ReduceResult) => void>();
 
 	onMount(() => {
-		worker = new Worker(new URL('$lib/gfaReduce.worker.ts', import.meta.url), { type: 'module' });
-		worker.onmessage = (ev: MessageEvent<ReduceResult>) => {
+		const w = new Worker(new URL('$lib/gfaReduce.worker.ts', import.meta.url), { type: 'module' });
+		w.onmessage = (ev: MessageEvent<ReduceResult>) => {
 			const cb = pending.get(ev.data.id);
 			if (cb) {
 				pending.delete(ev.data.id);
 				cb(ev.data);
 			}
 		};
-		return () => worker?.terminate();
+		worker = w;
+		return () => w.terminate();
+	});
+	// After SvelteKit's own scroll handling, which would otherwise put the page
+	// back at the top once it settles.
+	afterNavigate(() => {
+		const target = params?.get('fixture');
+		if (target) setTimeout(() => document.getElementById(target)?.scrollIntoView(), 100);
 	});
 
-	// Re-reduce whenever the fixture or threshold changes. Only the newest request
-	// is allowed to write the result, so a slow fixture can't overwrite a newer one.
-	let latest = 0;
+	// Reduce every visible row at the current threshold. A row keeps showing its
+	// previous result until the new one lands, and a result for a threshold that
+	// has since changed is dropped.
 	$effect(() => {
-		const text = fixture.gfaText;
 		const mv = maxVariant;
-		if (!worker) return;
-		const id = nextId++;
-		latest = id;
-		running = true;
-		error = null;
-		const req: ReduceRequest = {
-			id,
-			gfaText: text,
-			maxVariant: mv,
-			wasmUrl: `${base}/query.wasm`
-		};
-		new Promise<ReduceResult>((resolve) => {
-			pending.set(id, resolve);
-			worker!.postMessage(req);
-		}).then((result) => {
-			if (id !== latest) return;
-			running = false;
-			elapsedMs = result.elapsedMs ?? null;
-			if (!result.ok) {
-				error = `${result.error}\n${result.stderr ?? ''}`.trim();
-				reduced = null;
-				reducedText = '';
-				return;
-			}
-			reducedText = result.gfa ?? '';
-			reduced = parseGfa(reducedText);
-		});
+		const w = worker;
+		if (!w) return;
+		for (const f of ALL_FIXTURES) {
+			const key = `${f.id}:${mv}`;
+			if (!visible.has(f.id) || requested.has(key)) continue;
+			requested.add(key);
+			const id = nextId++;
+			const req: ReduceRequest = { id, gfaText: f.gfaText, maxVariant: mv, wasmUrl: `${base}/query.wasm` };
+			new Promise<ReduceResult>((resolve) => {
+				pending.set(id, resolve);
+				w.postMessage(req);
+			}).then((result) => {
+				requested.delete(key);
+				if (mv !== maxVariant) return;
+				reduced = {
+					...reduced,
+					[f.id]: result.ok
+						? { threshold: mv, gfa: parseGfa(result.gfa ?? ''), elapsedMs: result.elapsedMs }
+						: { threshold: mv, error: `${result.error}\n${result.stderr ?? ''}`.trim() }
+				};
+			});
+		}
 	});
 
-	const stats = $derived(reduced?.reduced ?? null);
-
-	const folded = $derived(
-		method === 'fold' ? foldGfa(parsed, foldThreshold, { referenceSample: fixture.referenceSample }) : null
-	);
-	const shown = $derived(folded ? folded.gfa : reduced);
-
+	function folded(f: Fixture) {
+		return foldGfa(original(f), foldThreshold, { referenceSample: f.referenceSample });
+	}
 </script>
 
 <main>
 	<header>
 		<h1>Simplification playground</h1>
 		<p class="sub">
-			Sites — small bubbles popped onto the reference, then each haplotype's allele at every site
-			folded into the nearest kept allele — run on example graphs by the same
-			<code>query.wasm</code> the locus browser uses — not a separate demo implementation. The
-			constructed graphs each isolate one thing the algorithm has to get right, and the numbers below
-			are pinned in <code>crates/reduce/src/tests.rs</code>.
+			Each example graph as it comes in, beside what Sites makes of it: small bubbles popped onto the
+			reference, then each haplotype's allele at every site folded into the nearest kept allele. It runs
+			the same <code>query.wasm</code> the locus browser uses, and the synthetic examples are the ones
+			<code>crates/reduce/src/tests.rs</code> asserts on.
 			<a href="{base}/" data-sveltekit-reload>← back to the browser</a>
 		</p>
 	</header>
-
-	<section class="panel">
-		<div class="row">
+	<div class="controls">
+		<label>
+			Method
+			<select bind:value={method}>
+				<option value="wasm">Sites (query.wasm)</option>
+				<option value="fold">Fold (fold.ts)</option>
+			</select>
+		</label>
+		{#if method === 'wasm'}
 			<label>
-				Example
-				<select bind:value={selectedId}>
-					<optgroup label="synthetic">
-						{#each ALL_FIXTURES.filter((f) => f.kind === 'synthetic') as f (f.id)}
-							<option value={f.id}>{f.label}</option>
-						{/each}
-					</optgroup>
-					<optgroup label="real loci">
-						{#each ALL_FIXTURES.filter((f) => f.kind === 'real') as f (f.id)}
-							<option value={f.id}>{f.label}</option>
-						{/each}
-					</optgroup>
-				</select>
+				variants under
+				<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
 			</label>
-			<label>
-				Method
-				<select bind:value={method}>
-					<option value="wasm">Sites (query.wasm)</option>
-					<option value="fold">fold alleles (fold.ts)</option>
-				</select>
-			</label>
-			{#if method === 'wasm'}
-				<label>
-					variants under
-					<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
-				</label>
-			{:else}
-				<label>
-					fold alleles &lt;
-					<input type="number" min="0" max="1000000" step="10" bind:value={foldThreshold} /> bp
-				</label>
-			{/if}
-		</div>
-		<p class="desc">{fixture.description}</p>
-	</section>
-
-	<section class="panel">
-		{#if folded}
-			{@const f = folded.stats}
-			<div class="statgrid">
-				<div><span>segments</span><b>{f.segmentsBefore} → {f.segmentsAfter}</b></div>
-				<div><span>links</span><b>{f.linksBefore} → {f.linksAfter}</b></div>
-				<div><span>alleles kept</span><b>{f.keptAlleles} / {f.alleles}</b></div>
-				<div><span>route segments</span><b>{f.routeSegments}</b></div>
-				<div><span>small skips dropped</span><b>{f.droppedSkips}</b></div>
-				<div><span>skips restored</span><b>{f.restoredSkips}</b></div>
-				<div><span>merged</span><b>{f.merged}</b></div>
-			</div>
-			<p class="muted small">
-				{folded.applied ? 'Folded in the browser by fold.ts.' : 'No reference to fold toward — shown unchanged.'}
-			</p>
-		{:else if error}
-			<pre class="err">{error}</pre>
-		{:else if stats}
-			<div class="statgrid">
-				<div><span>segments</span><b>{stats.segmentsBefore} → {stats.segmentsAfter}</b></div>
-				<div><span>links</span><b>{stats.linksBefore} → {stats.linksAfter}</b></div>
-				<div><span>bubbles popped</span><b>{stats.sites}</b></div>
-				<div><span>nodes removed</span><b>{stats.nodesRemoved}</b></div>
-				<div><span>SNPs</span><b>{stats.snpCount}</b></div>
-				<div><span>alt bp condensed</span><b>{stats.basesRemoved}</b></div>
-				<div><span>unchop merges</span><b>{stats.unchopMerges}</b></div>
-				{#if stats.alleles != null}
-					<div><span>sites with alleles</span><b>{stats.alleleSites}</b></div>
-					<div><span>alleles shown</span><b>{stats.allelesShown} / {stats.alleles}</b></div>
-				{/if}
-			</div>
-			{#if fixture.kind === 'synthetic' && fixture.expect}
-				{@const e = fixture.expect}
-				{@const ok =
-					stats.sites === e.sites &&
-					stats.nodesRemoved === e.nodesRemoved &&
-					stats.snpCount === e.snpCount &&
-					stats.basesRemoved === e.basesRemoved}
-				<p class="muted small">
-					<span class={ok ? 'pass' : 'fail'}>{ok ? '✓ matches' : '✗ differs from'}</span> the pinned
-					expectation: {e.sites} sites · {e.nodesRemoved} nodes · {e.snpCount} SNPs · {e.basesRemoved}
-					alt bp
-					<span class="muted">(also asserted in crates/reduce/src/tests.rs)</span>
-				</p>
-			{/if}
-			<p class="muted small">
-				Reduced by <code>query.wasm</code> — the same binary the locus browser runs{#if elapsedMs !=
-					null}, in {elapsedMs} ms{/if}
-			</p>
 		{:else}
-			<p class="muted small">reducing…</p>
+			<label>
+				fold alleles under
+				<input type="number" min="0" max="1000000" step="10" bind:value={foldThreshold} /> bp
+			</label>
 		{/if}
-	</section>
-
-	<div class="compare">
-		<section class="panel">
-			<h2 class="panel-title">Original · {parsed.segments.size} nodes</h2>
-			<!-- GraphLayoutView fills its parent's height (height:100% chain), so it
-			     needs a height-bounded box here — the app shell provides one, the
-			     playground's normal document flow doesn't. -->
-			<div class="graph-embed">
-				<GraphLayoutView gfa={parsed} referenceSample={fixture.referenceSample} initialFold={false} bare />
-			</div>
-		</section>
-		<section class="panel">
-			<h2 class="panel-title">
-				{method === 'fold' ? 'Folded' : 'Simplified'} · {shown ? shown.segments.size : '…'} nodes
-			</h2>
-			{#if shown}
-				<div class="graph-embed">
-					<GraphLayoutView gfa={shown} referenceSample={fixture.referenceSample} initialFold={false} bare />
-				</div>
-			{:else}
-				<p class="muted small">{running ? 'reducing…' : 'no result'}</p>
-			{/if}
-		</section>
 	</div>
 
-	{#if reduced && method === 'wasm'}
-		<section class="panel">
-			<h2 class="panel-title">Reduced GFA</h2>
-			<p class="muted small">
-				What the wasm returns, and what the browser actually parses: segments and links carrying
-				<code>WC</code> walk-coverage tags, an <code>X</code> line of locus counts, and only the
-				reference <code>W</code> line — every other haplotype walk has been counted into those tags
-				and dropped.
-			</p>
-			<pre class="rawtext">{reducedPreview}</pre>
+	{#each ALL_FIXTURES as f (f.id)}
+		{@const shown = visible.has(f.id)}
+		{@const r = reduced[f.id]}
+		{@const fold = shown && method === 'fold' ? folded(f) : null}
+		{@const after = fold ? fold.gfa : r?.gfa}
+		{@const stats = r?.gfa?.reduced}
+		<section class="example" class:real={f.kind === 'real'} id={f.id} use:whenVisible={f.id}>
+			<div class="ex-head">
+				<h2>{f.label}</h2>
+				<p class="desc">{f.description}</p>
+				<p class="stats">
+					{#if fold}
+						{fold.stats.segmentsBefore} → {fold.stats.segmentsAfter} nodes · {fold.stats.keptAlleles} of
+						{fold.stats.alleles} alleles kept
+					{:else if r?.error}
+						<span class="fail">{r.error}</span>
+					{:else if stats}
+						{stats.segmentsBefore.toLocaleString()} → {stats.segmentsAfter.toLocaleString()} nodes
+						{#if stats.alleles}· {stats.allelesShown} of {stats.alleles} alleles shown{/if}
+						{#if r && r.threshold !== maxVariant}<span class="muted"> · updating…</span>{/if}
+						{#if f.expect && r && r.threshold === 50}
+							{@const e = f.expect}
+							{@const ok =
+								stats.sites === e.sites &&
+								stats.nodesRemoved === e.nodesRemoved &&
+								stats.snpCount === e.snpCount &&
+								stats.basesRemoved === e.basesRemoved &&
+								(e.segmentsAfterSimplify == null || stats.segmentsAfter === e.segmentsAfterSimplify)}
+							· <span class={ok ? 'pass' : 'fail'}>{ok ? '✓ as pinned in the tests' : '✗ differs from the tests'}</span>
+						{/if}
+					{:else if shown}
+						<span class="muted">reducing…</span>
+					{/if}
+				</p>
+			</div>
+			<div class="compare">
+				<div class="pane">
+					<span class="pane-label">Original</span>
+					<div class="graph-embed">
+						{#if shown}
+							<GraphLayoutView gfa={original(f)} referenceSample={f.referenceSample} initialFold={false} bare />
+						{/if}
+					</div>
+				</div>
+				<div class="pane">
+					<span class="pane-label">{method === 'fold' ? 'Folded' : 'Sites'}</span>
+					<div class="graph-embed">
+						{#if after}
+							<GraphLayoutView gfa={after} referenceSample={f.referenceSample} initialFold={false} bare />
+						{/if}
+					</div>
+				</div>
+			</div>
 		</section>
-	{/if}
+	{/each}
 </main>
 
 <style>
@@ -263,31 +220,31 @@
 		background: #fff;
 	}
 	main {
-		max-width: 1300px;
+		max-width: 1400px;
 		margin: 0 auto;
 		padding: 2rem 1.5rem 4rem;
+	}
+	.controls {
+		position: sticky;
+		top: 0;
+		z-index: 2;
+		background: #fff;
+		padding: 0.6rem 0;
+		border-bottom: 1px solid #e6e6e6;
 	}
 	h1 {
 		margin: 0 0 0.2rem;
 		font-size: 1.5rem;
 	}
+	h2 {
+		margin: 0;
+		font-size: 1rem;
+	}
 	.sub {
-		margin: 0 0 1.2rem;
+		margin: 0 0 0.8rem;
 		color: #555;
 	}
-	.panel {
-		border: 1px solid #e6e6e6;
-		border-radius: 10px;
-		padding: 1rem;
-		margin-bottom: 1rem;
-	}
-	.panel-title {
-		margin: 0 0 0.8rem;
-		font-size: 0.95rem;
-		font-weight: 600;
-		color: #444;
-	}
-	.row {
+	.controls {
 		display: flex;
 		gap: 1.2rem;
 		align-items: center;
@@ -306,39 +263,48 @@
 	input[type='number'] {
 		width: 5rem;
 	}
+	.example {
+		padding: 1.2rem 0;
+		border-bottom: 1px solid #eee;
+		scroll-margin-top: 3.5rem;
+	}
+	.ex-head {
+		margin-bottom: 0.6rem;
+	}
 	.desc {
-		margin: 0.8rem 0 0;
+		margin: 0.25rem 0 0;
 		color: #555;
-		font-size: 0.9rem;
+		font-size: 0.88rem;
+		max-width: 75ch;
 	}
-	.statgrid {
-		display: flex;
-		gap: 1.6rem;
-		flex-wrap: wrap;
-	}
-	.statgrid div {
-		display: flex;
-		flex-direction: column;
-	}
-	.statgrid span {
-		color: #777;
-		font-size: 0.75rem;
-	}
-	.statgrid b {
-		font-size: 1.1rem;
+	.stats {
+		margin: 0.35rem 0 0;
+		font-size: 0.85rem;
+		font-variant-numeric: tabular-nums;
+		min-height: 1.2em;
 	}
 	.compare {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
-		gap: 1rem;
+		gap: 0.8rem;
 	}
-	.compare .panel {
-		margin-bottom: 1rem;
+	.pane {
 		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
 	}
-	/* Height-bounded box so the embedded GraphLayoutView's height:100% resolves. */
+	.pane-label {
+		font-size: 0.75rem;
+		color: #777;
+	}
+	/* Height-bounded box so the embedded GraphLayoutView's height:100% resolves.
+	   The synthetic graphs are a handful of nodes; the real loci need room. */
 	.graph-embed {
-		height: 560px;
+		height: 300px;
+	}
+	.real .graph-embed {
+		height: 520px;
 	}
 	.pass {
 		color: #15803d;
@@ -347,29 +313,10 @@
 	.fail {
 		color: #b91c1c;
 		font-weight: 600;
-	}
-	.err {
-		color: #b91c1c;
 		white-space: pre-wrap;
-		font-size: 0.8rem;
-		margin: 0;
-	}
-	.rawtext {
-		background: #0f172a;
-		color: #cbd5e1;
-		padding: 0.8rem;
-		border-radius: 8px;
-		max-height: 340px;
-		overflow: auto;
-		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-		font-size: 0.72rem;
-		line-height: 1.45;
 	}
 	.muted {
 		color: #888;
-	}
-	.small {
-		font-size: 0.8rem;
 	}
 	code {
 		background: #f0f0f0;

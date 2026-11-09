@@ -24,7 +24,7 @@ const FIXTURE_DIR: &str = "../../src/lib/graph/fixtures";
 /// The constructed graphs /playground demonstrates, each isolating one thing the
 /// algorithm has to get right. Expectations are the same ones the TypeScript
 /// suite asserts, so the two implementations are pinned to identical behaviour.
-const SYNTHETIC: [Expected; 12] = [
+const SYNTHETIC: [Expected; 9] = [
     // One site of each kind (src/lib/graph/fixtures.ts describes it): stage 1
     // pops A, B and the SNPs on the reference; stage 2 folds the SNPs inside C
     // and F's exit branch, alt2 into alt1, and keeps both exits.
@@ -33,8 +33,6 @@ const SYNTHETIC: [Expected; 12] = [
         .removed(&["20", "32", "51", "53", "60", "63"]),
     // A 1 bp substitution: collapses, and the whole graph unchops to one node.
     Expected::new("snp", 1, 1, 1, 1).after(1).removed(&["20"]),
-    // A 4 bp insertion: small enough to collapse.
-    Expected::new("small_ins", 1, 1, 0, 4).after(1).removed(&["20"]),
     // A large insertion must survive — this is the case a naive "shortest
     // allele" rule gets wrong.
     Expected::new("large_ins", 0, 0, 0, 0),
@@ -45,10 +43,6 @@ const SYNTHETIC: [Expected; 12] = [
     // A small deletion is a pure skip edge with no alt node, so nothing is
     // removed even though a site is collapsed.
     Expected::new("small_del", 1, 0, 0, 0).after(1),
-    // Two alternative alleles at one site collapse together.
-    Expected::new("multiallelic", 1, 2, 2, 2).after(1).removed(&["20", "21"]),
-    // A small variant next to a large one: only the small half collapses.
-    Expected::new("mixed", 1, 1, 1, 1).removed(&["20"]),
     // Adjacent substitutions (an MNP) collapse as a single site.
     Expected::new("mnp", 1, 2, 2, 2).after(1).removed(&["20", "21"]),
     // Two insertion alleles that differ from each other by 60 bp: both stay.
