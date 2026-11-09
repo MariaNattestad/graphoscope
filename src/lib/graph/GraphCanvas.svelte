@@ -69,7 +69,6 @@
 	// to the inspector so we can explain it and offer more context.
 	export interface SelectedExit {
 		segId: string;
-		side: 'left' | 'right';
 	}
 
 	let {
@@ -875,7 +874,7 @@
 		if (asm?.labels) drawAssemblyLabels(ctx, asmLabels);
 
 		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
-		drawExitCues(ctx, width);
+		drawExitCues(ctx);
 
 		// Spotlight overlay: the current disco walk, traced through its segments'
 		// chains and stroked as a glowing line over the full-brightness base graph.
@@ -1452,11 +1451,11 @@
 	// A haplotype that continues past the queried locus is chopped at the subgraph
 	// boundary, leaving a strand that just stops mid-air — reading as a random
 	// dangle. For each such loose end (a non-backbone chain end no link attaches to)
-	// draw a short fading dashed line toward the nearer frame edge, purely so the cue
-	// has somewhere to trail off to. We can't know *which* node it reconnects to (it's
-	// outside the subgraph), and the side it's drawn on is just whichever edge is
-	// closer on screen — it carries no real direction.
-	function drawExitCues(ctx: CanvasRenderingContext2D, width: number) {
+	// draw a short fading dashed line straight up toward the top of the frame, purely
+	// so the cue has somewhere to trail off to. We can't know *which* node it
+	// reconnects to (it's outside the subgraph), so every cue points the same way — it
+	// carries no real direction.
+	function drawExitCues(ctx: CanvasRenderingContext2D) {
 		exitHits = [];
 		if (!showExits) return;
 		ctx.save();
@@ -1468,7 +1467,7 @@
 			ctx.setLineDash([4, 4]);
 			ctx.lineWidth = 1.5;
 			ctx.lineCap = 'butt';
-			// Clickable band around each dashed line: a few px tall, and only the near
+			// Clickable band around each dashed line: a few px wide, and only the near
 			// stretch (the cue fades out well before the frame edge anyway).
 			const HIT_TOL = 5;
 			const HIT_LEN = 90;
@@ -1478,18 +1477,17 @@
 				if (!n) continue;
 				const ex = toScreenX(n.x);
 				const ey = toScreenY(n.y);
-				const side: 'left' | 'right' = ex < width / 2 ? 'left' : 'right';
-				const edgeX = side === 'left' ? 0 : width;
+				const edgeY = 0;
 				if (emph) {
 					// This strand belongs to the active bubble/walk: draw its cue bright and
 					// solid-cored so the leaving haplotype is unmistakable.
-					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					const grad = ctx.createLinearGradient(ex, ey, ex, edgeY);
 					grad.addColorStop(0, theme.bubbleHighlight);
 					grad.addColorStop(1, theme.exitCueFade);
 					ctx.strokeStyle = grad;
 					ctx.lineWidth = 2.5;
 				} else {
-					const grad = ctx.createLinearGradient(ex, ey, edgeX, ey);
+					const grad = ctx.createLinearGradient(ex, ey, ex, edgeY);
 					grad.addColorStop(0, theme.exitCue);
 					grad.addColorStop(1, theme.exitCueFade);
 					ctx.strokeStyle = grad;
@@ -1497,15 +1495,14 @@
 				}
 				ctx.beginPath();
 				ctx.moveTo(ex, ey);
-				ctx.lineTo(edgeX, ey);
+				ctx.lineTo(ex, edgeY);
 				ctx.stroke();
-				const nearX = side === 'left' ? Math.max(edgeX, ex - HIT_LEN) : Math.min(edgeX, ex + HIT_LEN);
 				exitHits.push({
-					x0: Math.min(ex, nearX),
-					x1: Math.max(ex, nearX),
-					yTop: ey - HIT_TOL,
-					yBot: ey + HIT_TOL,
-					exit: { segId: end.segId, side }
+					x0: ex - HIT_TOL,
+					x1: ex + HIT_TOL,
+					yTop: Math.max(edgeY, ey - HIT_LEN),
+					yBot: ey,
+					exit: { segId: end.segId }
 				});
 			}
 		} finally {
