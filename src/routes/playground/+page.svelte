@@ -1,6 +1,6 @@
 <script lang="ts">
-	// Simplification playground: every example graph, one per row — the original,
-	// what Sites makes of it, and what Fold makes of it — all at one threshold.
+	// Simplification playground: every example graph, one per row — the original
+	// and what Sites makes of it, at one threshold.
 	//
 	// The simplification here is not a demo reimplementation — it runs the actual
 	// `query.wasm`, in its `--gfa` mode, over each fixture. So this page and a live
@@ -14,15 +14,12 @@
 	import { ALL_FIXTURES, type Fixture } from '$lib/graph/fixtures';
 	import type { ReduceRequest, ReduceResult } from '$lib/gfaReduce.worker';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
-	import { foldGfa } from '$lib/graph/fold';
 	import { base } from '$app/paths';
 	import { afterNavigate } from '$app/navigation';
 
 	// `?t=<bp>` sets the threshold and `?fixture=<id>` scrolls to an example, so a
 	// link can show exactly the before/after it's talking about.
 	const params = typeof location === 'undefined' ? null : new URLSearchParams(location.search);
-	// One threshold for both: Sites folds variants under it, Fold folds alleles
-	// under it.
 	let maxVariant = $state(Number(params?.get('t')) || 50);
 
 	// A row's graphs are only parsed, reduced and laid out once it scrolls near
@@ -119,21 +116,15 @@
 		}
 	});
 
-	function folded(f: Fixture) {
-		return foldGfa(original(f), maxVariant, { referenceSample: f.referenceSample });
-	}
 </script>
 
 <main>
 	<header>
 		<h1>Simplification playground</h1>
 		<p class="sub">
-			Each example graph as it comes in, then what each simplification makes of it. <b>Sites</b> pops
-			small bubbles onto the reference, then folds each haplotype's allele at every site into the nearest
-			kept allele; it runs in the same <code>query.wasm</code> the locus browser uses. <b>Fold</b>
-			(<code>src/lib/graph/fold.ts</code>) groups nodes into alleles by the first walk that visits them,
-			keeps the alleles at least the threshold in size and the shortest route from each back to the
-			reference, and folds the rest. The synthetic examples are the ones
+			Each example graph as it comes in, then what <b>Sites</b> makes of it: small bubbles popped onto
+			the reference, then each haplotype's allele at every site folded into the nearest kept allele. It
+			runs in the same <code>query.wasm</code> the locus browser uses. The synthetic examples are the ones
 			<code>crates/reduce/src/tests.rs</code> asserts on.
 			<a href="{base}/" data-sveltekit-reload>← back to the browser</a>
 		</p>
@@ -143,13 +134,12 @@
 			threshold
 			<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
 		</label>
-		<span class="muted">Sites: variants under it fold · Fold: alleles under it fold</span>
+		<span class="muted">Sites folds every variant under it</span>
 	</div>
 
 	{#each ALL_FIXTURES as f (f.id)}
 		{@const shown = visible.has(f.id)}
 		{@const r = reduced[f.id]}
-		{@const fold = shown ? folded(f) : null}
 		{@const stats = r?.gfa?.reduced}
 		<section class="example" class:real={f.kind === 'real'} id={f.id} use:whenVisible={f.id}>
 			<div class="ex-head">
@@ -163,7 +153,7 @@
 					>
 					<div class="graph-embed">
 						{#if shown}
-							<GraphLayoutView gfa={original(f)} referenceSample={f.referenceSample} initialFold={false} windowedSubgraph bare />
+							<GraphLayoutView gfa={original(f)} referenceSample={f.referenceSample} windowedSubgraph bare />
 						{/if}
 					</div>
 				</div>
@@ -192,21 +182,7 @@
 					</span>
 					<div class="graph-embed">
 						{#if r?.gfa}
-							<GraphLayoutView gfa={r.gfa} referenceSample={f.referenceSample} initialFold={false} windowedSubgraph bare />
-						{/if}
-					</div>
-				</div>
-				<div class="pane">
-					<span class="pane-label">
-						Fold
-						{#if fold}
-							· {fold.stats.segmentsAfter.toLocaleString()} nodes · {fold.stats.keptAlleles} of {fold.stats
-								.alleles} alleles kept
-						{/if}
-					</span>
-					<div class="graph-embed">
-						{#if fold}
-							<GraphLayoutView gfa={fold.gfa} referenceSample={f.referenceSample} initialFold={false} windowedSubgraph bare />
+							<GraphLayoutView gfa={r.gfa} referenceSample={f.referenceSample} windowedSubgraph bare />
 						{/if}
 					</div>
 				</div>
@@ -281,7 +257,7 @@
 	}
 	.compare {
 		display: grid;
-		grid-template-columns: 1fr 1fr 1fr;
+		grid-template-columns: 1fr 1fr;
 		gap: 0.8rem;
 	}
 	.pane {

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseGfa, gfaStats, writeGfa } from './gfa';
-import { foldGfa } from './graph/fold';
+import { parseGfa, gfaStats } from './gfa';
 import { ALL_FIXTURES } from './graph/fixtures';
 
 describe('parseGfa + gfaStats', () => {
@@ -88,21 +87,5 @@ describe('parseGfa + gfaStats', () => {
 		// bp span comes from summed segment lengths (P-lines carry no coordinates).
 		expect(p.end - p.start).toBe(20);
 		expect(gfaStats(gfa, 'x').referencePathBp).toBe(20);
-	});
-});
-
-describe('writeGfa', () => {
-	it('round-trips every fixture through parseGfa', () => {
-		for (const fixture of ALL_FIXTURES) {
-			const gfa = parseGfa(fixture.gfaText);
-			expect(parseGfa(writeGfa(gfa)), fixture.id).toEqual(gfa);
-		}
-	});
-
-	it('round-trips a folded graph', () => {
-		for (const fixture of ALL_FIXTURES) {
-			const fold = foldGfa(parseGfa(fixture.gfaText), 50, { referenceSample: fixture.referenceSample });
-			expect(parseGfa(writeGfa(fold.gfa)), fixture.id).toEqual(fold.gfa);
-		}
 	});
 });

@@ -113,29 +113,17 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   and each builds an index over the graph, so on a large locus the control warns
   before switching — Graphoscope's general rule is to show context by default unless
   it would slow the app, then keep it one switch away with a slow-down warning.
-- **Simplify: Fold / Sites / Off.** *Fold* is the default; *Sites* is the query's
-  own simplification (below); *Off* is the full graph. Each shows how many nodes it
-  went from and to underneath the control. *Fold* (`src/lib/graph/fold.ts`) decides per
-  **allele** — the contiguous stretch of sequence one haplotype contributed — rather
-  than per node: it keeps the reference plus every allele at least the threshold in
-  size (its own bp, or the reference it replaces if larger), plus only the shortest
-  route from each kept allele back to the reference, drops deletion links under the
-  threshold, and merges what's left. So small stubs hanging off a big insertion go
-  too. It then checks the result against the haplotypes themselves: any haplotype's
-  own variant at least the threshold stays visible (even when its segments were
-  grouped into smaller alleles), no haplotype is cut in two, and a haplotype whose
-  small variant was hidden goes back onto the reference — never through a big allele
-  or deletion it doesn't carry. It reads the full graph (the walks tell it which
-  segments form one allele), fetching it on its own when it's light enough for the
-  haplotype list to auto-load and otherwise folding the simplified graph, with the
-  full one a click away. The *auto* threshold is about 10 px at the fitted zoom.
+- **Simplify: Sites / Off.** *Sites* is the default and is the query's own
+  simplification (below), with its threshold picked under the control; *Off* is the
+  full graph. Each shows how many nodes it went from and to underneath the control.
+  A whole uploaded GFA is shown as loaded.
 - **MSA view** — opened from the node inspector. It lays out the sequence of
   every haplotype base by base along the graph's own nodes (no alignment is
   computed: the graph already says which bases correspond), across the stretch of
   reference in view when the reference-based graph is zoomed in to 6 kb or less
   (3 kb on a phone), otherwise across a window around the selected node. It reads
   the full graph in the background, while the graph above keeps its view and
-  simplification; MSA node names and clicks map onto the folded or simplified nodes
+  simplification; MSA node names and clicks map onto the simplified nodes
   that hold them.
 - **Assembly graph** layout (`src/lib/graph/assemblyLayout.ts`, under
   Reference-free) — a force layout that reads like an assembly-graph view: the
@@ -146,16 +134,16 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   the length it skips, drawn as a dashed arc; seed the reference along x and rotate
   it left to right; and, for drawing, Catmull-Rom smoothed flat-ended strands with
   tangent edges, a rainbow reference, width by haplotype carriage, and length
-  labels. Best with Simplify set to Fold.
+  labels. Best with Simplify set to Sites.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
 
 [`/playground`](https://marianattestad.github.io/graphoscope/playground) is a
 standalone sandbox for the reference-guided simplification algorithm behind the
-graph layout: pick a fixture (synthetic edge cases or real HPRC loci), tweak the
-collapse threshold, and see the original graph and its simplified form side by
-side through the same layout widget. It's where the simplification approach
+graph layout: every fixture (synthetic edge cases and real HPRC loci) in its own
+row, the original graph beside what Sites makes of it at one shared threshold, with
+the same exit cues the locus browser draws. It's where the simplification approach
 gets prototyped and stress-tested independently of the main query flow — the
 exact fixtures it uses are also what the Rust unit tests assert on
 (`crates/reduce/src/tests.rs`).

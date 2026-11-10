@@ -698,7 +698,6 @@
 						<RawDataView
 							{gfa}
 							rawText={rawGfa}
-							referenceSample={graph.referenceSample}
 							{downloadRaw}
 							{downloadingRaw}
 							allWalksGfa={unsimplified}

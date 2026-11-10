@@ -162,7 +162,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Assembly graph',
 		family: 'free',
 		blurb:
-			'A force layout that reads like an assembly graph: the reference as a backbone running left to right, each variant a visible bubble or loop. Best with Simplify set to Fold.',
+			'A force layout that reads like an assembly graph: the reference as a backbone running left to right, each variant a visible bubble or loop. Best with Simplify set to Sites.',
 		bubblesAbove: false,
 		anchorToReference: false,
 		avoidBaseline: false,

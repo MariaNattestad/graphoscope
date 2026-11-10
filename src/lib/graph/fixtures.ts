@@ -231,7 +231,7 @@ const walkEnd: Fixture = {
 	id: 'walk_end',
 	label: 'A path that ends on a SNP',
 	description:
-		'A 600 bp insertion with a SNP in the middle. Five haplotypes carry the whole insertion; two more stop on the SNP’s alternative base, where their path in the pangenome ends. Sites keeps that 1 bp node, because two haplotypes end on it. Fold folds the SNP and lets them end inside the insertion instead.',
+		'A 600 bp insertion with a SNP in the middle. Five haplotypes carry the whole insertion; two more stop on the SNP’s alternative base, where their path in the pangenome ends. Sites folds the SNP for the haplotype that passes through it, but keeps the 1 bp node, because two haplotypes end on it: a dead end is evidence of where a path stops.',
 	kind: 'synthetic',
 	referenceSample: REF,
 	gfaText: walkEndGfa,
@@ -257,14 +257,6 @@ export const SYNTHETIC_FIXTURES: Fixture[] = [
 	walkEnd,
 	longRun
 ];
-
-/** `text` with its haplotype walks in the opposite order (the reference first). */
-function walksReversed(text: string): string {
-	const lines = text.split('\n').filter((l) => l);
-	const walks = lines.filter((l) => l.startsWith('W'));
-	const rest = lines.filter((l) => !l.startsWith('W'));
-	return [...rest, walks[0], ...walks.slice(1).reverse()].join('\n') + '\n';
-}
 
 // --- real fixtures ------------------------------------------------------------
 
@@ -295,15 +287,6 @@ export const REAL_FIXTURES: Fixture[] = [
 		kind: 'real',
 		referenceSample: 'GRCh38',
 		gfaText: chr20_200kb
-	},
-	{
-		id: 'chr20_200kb_reversed',
-		label: 'chr20, 200 kb, walks in reverse order',
-		description:
-			'The same graph as the row above, with its haplotype walks listed in the opposite order. Sites gives exactly the same result. Fold groups nodes by the first walk in the file that visits them, so it gives a different graph: 325 nodes instead of 225 at 500 bp.',
-		kind: 'real',
-		referenceSample: 'GRCh38',
-		gfaText: walksReversed(chr20_200kb)
 	}
 ];
 
