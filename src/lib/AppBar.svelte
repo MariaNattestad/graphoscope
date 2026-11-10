@@ -40,6 +40,7 @@
 
 	<div class="appbar-links">
 		{@render links?.()}
+		<a class="link-btn how" href="{base}/algorithms" data-sveltekit-reload>How it works</a>
 		<a class="link-btn" href="https://github.com/MariaNattestad/graphoscope" target="_blank" rel="noopener">
 			GitHub ↗
 		</a>
@@ -151,6 +152,10 @@
 		.link-btn {
 			font-size: 0.78rem;
 			padding: 0.2rem 0.25rem;
+		}
+		/* No room beside the locus chip on a phone; About links to it instead. */
+		.how {
+			display: none;
 		}
 	}
 </style>
