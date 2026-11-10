@@ -22,7 +22,7 @@ export interface Backbone {
 	source: string;
 }
 
-class MinHeap {
+export class MinHeap {
 	private items: [number, string][] = [];
 
 	push(item: [number, string]) {
