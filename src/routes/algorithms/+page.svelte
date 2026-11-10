@@ -1,10 +1,10 @@
 <script lang="ts">
-	// How Sites works, drawn on a real locus, and what the Bandage-based views do
+	// How Simplify works, drawn on a real locus, and what the Bandage-based views do
 	// with the same window. The point throughout is a window's loose ends: where
 	// a haplotype leaves the subgraph, which is the only record inside it of where
 	// the full graph goes on.
 	//
-	// Sites runs here in the real `query.wasm` (as in /playground). bandage-core is
+	// Simplify runs here in the real `query.wasm` (as in /playground). bandage-core is
 	// GPL, so none of it is in Graphoscope: its numbers below were measured once,
 	// outside this repository, by running its fold on the same C4A window.
 	import { onMount } from 'svelte';
@@ -53,7 +53,7 @@
 
 	const shown = $derived(sites[JBROWSE_FOLD]);
 
-	// Each original loose end, and the Sites node that now holds it (its own id
+	// Each original loose end, and the simplified node that now holds it (its own id
 	// or an unchopped node listing it in MB): still a loose end there, or not.
 	function exitsIn(g: Gfa) {
 		const loose = new Set(looseEnds(g, fixture.referenceSample));
@@ -80,15 +80,15 @@
 			Graphoscope shows a <b>window</b> cut from a pangenome graph. Wherever a haplotype's path leaves the
 			window, the subgraph has a <b>loose end</b>: the only sign, inside the window, that the graph goes on.
 			(A path can also really end there; inside the window the two look the same, and either way the view is
-			incomplete at that point.) <b>Sites</b> is how Graphoscope simplifies a window, and it is built to keep
+			incomplete at that point.) Graphoscope's <b>Simplify</b> step is built to keep
 			every one of those ends.
 		</p>
 	</header>
 
 	<section>
-		<h2>Sites, step by step</h2>
+		<h2>Simplify, step by step</h2>
 		<svg class="schematic" viewBox="0 0 680 256" role="img" aria-labelledby="steps-title">
-			<title id="steps-title">The three steps of Sites on one site with a loose end</title>
+			<title id="steps-title">The three steps of Simplify on one site with a loose end</title>
 			{#each [0, 1, 2] as p (p)}
 				{@const x = 10 + p * 228}
 				<text {x} y="20" class="panel">{['1 · Find the site', '2 · Read the alleles', '3 · Fold'][p]}</text>
@@ -140,7 +140,7 @@
 		<p>
 			The C4 genes vary in copy number, so in this {original.segments.size.toLocaleString()}-node window many
 			haplotypes leave through extra copies that lie outside it: the window has <b>{exits.length} loose ends</b>.
-			Dashed lines mark them. This is Sites at {JBROWSE_FOLD} bp, the threshold JBrowse would fold this window
+			Dashed lines mark them. This is Simplify at {JBROWSE_FOLD} bp, the threshold JBrowse would fold this window
 			at (below).
 		</p>
 		<div class="compare">
@@ -152,7 +152,7 @@
 			</div>
 			<div class="pane">
 				<span class="pane-label">
-					Sites, {JBROWSE_FOLD} bp
+					Simplify, {JBROWSE_FOLD} bp
 					{#if sitesError}<span class="fail">{sitesError}</span>{:else if shown && shownExits}
 						· {shown.segments.size} nodes · {shownExits.filter((e) => e.kept).length} of {exits.length} loose ends kept
 					{:else}<span class="muted">· reducing…</span>{/if}
@@ -166,7 +166,7 @@
 		</div>
 		{#if shownExits}
 			<table>
-				<thead><tr><th>Loose end</th><th>bp</th><th>In the Sites graph</th></tr></thead>
+				<thead><tr><th>Loose end</th><th>bp</th><th>In the simplified graph</th></tr></thead>
 				<tbody>
 					{#each shownExits as e (e.id)}
 						<tr>
@@ -226,7 +226,7 @@
 			</div>
 		</div>
 
-		<h3>The same C4A window, folded by Sites and by bandage-core</h3>
+		<h3>The same C4A window, folded by Simplify and by bandage-core</h3>
 		<div class="scroll">
 			<table>
 				<thead>
@@ -237,7 +237,7 @@
 				</thead>
 				<tbody>
 					<tr>
-						<th>Sites</th>
+						<th>Simplify</th>
 						{#each THRESHOLDS as t (t)}
 							{@const k = keptAt(t)}
 							<td>
@@ -265,7 +265,7 @@
 		<h2>Side by side</h2>
 		<div class="scroll">
 			<table>
-				<thead><tr><th></th><th>Sites</th><th>Bandage</th><th>JBrowse graph view</th></tr></thead>
+				<thead><tr><th></th><th>Simplify</th><th>Bandage</th><th>JBrowse graph view</th></tr></thead>
 				<tbody>
 					<tr>
 						<th>Simplifies the graph</th>
@@ -318,7 +318,7 @@
 			</li>
 			<li>
 				The bandage-core numbers come from running its <code>foldVariants</code> on the C4A window outside this
-				repository, the way the plugin calls it; bandage-core is GPL and no part of it is in Graphoscope. Sites
+				repository, the way the plugin calls it; bandage-core is GPL and no part of it is in Graphoscope. Simplify
 				runs live in this page.
 			</li>
 		</ul>

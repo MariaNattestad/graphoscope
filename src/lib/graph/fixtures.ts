@@ -4,7 +4,7 @@
 //
 // Synthetic fixtures are small but realistic: a reference backbone with flanks, a
 // variant site in the middle, and several haplotypes (so nodes carry real
-// coverage and branch like a real subgraph). Each isolates one thing Sites has
+// coverage and branch like a real subgraph). Each isolates one thing Simplify has
 // to get right, and carries an `expect` block of what it should do at the
 // default 50 bp threshold, which the page checks live.
 //
@@ -33,11 +33,11 @@ export interface FixtureExpect {
 	snpCount: number;
 	/** Total non-reference interior bases stage 1 removes. */
 	basesRemoved: number;
-	/** Segment ids that must be gone after Sites. */
+	/** Segment ids that must be gone after Simplify. */
 	removedNodes?: string[];
-	/** Segment ids that must survive Sites. */
+	/** Segment ids that must survive Simplify. */
 	keptNodes?: string[];
-	/** Segment count after Sites and unchop, if pinned. */
+	/** Segment count after Simplify and unchop, if pinned. */
 	segmentsAfterSimplify?: number;
 }
 
@@ -69,7 +69,7 @@ const sitesDemo: Fixture = {
 	id: 'sites_demo',
 	label: 'Worked example: one site of each kind',
 	description:
-		'A made-up 90-haplotype locus. A: a SNP. B: a 30 bp deletion. C: a 2.8 kb insertion with a SNP inside. D: a 3 kb deletion. E: three alternatives to a 900 bp stretch, one of them 40 bp longer than another and one a 20 bp swap. F: a SNP, plus a branch that leaves the window in two places. Sites folds the SNPs, the small deletion, the 40 bp difference and the 20 bp swap, and keeps the insertion, the large deletion, one alternative at E and both exits.',
+		'A made-up 90-haplotype locus. A: a SNP. B: a 30 bp deletion. C: a 2.8 kb insertion with a SNP inside. D: a 3 kb deletion. E: three alternatives to a 900 bp stretch, one of them 40 bp longer than another and one a 20 bp swap. F: a SNP, plus a branch that leaves the window in two places. Simplify folds the SNPs, the small deletion, the 40 bp difference and the 20 bp swap, and keeps the insertion, the large deletion, one alternative at E and both exits.',
 	kind: 'synthetic',
 	referenceSample: REF,
 	gfaText: sitesDemoGfa,
@@ -231,7 +231,7 @@ const walkEnd: Fixture = {
 	id: 'walk_end',
 	label: 'A path that ends on a SNP',
 	description:
-		'A 600 bp insertion with a SNP in the middle. Five haplotypes carry the whole insertion; two more stop on the SNP’s alternative base, where their path in the pangenome ends. Sites folds the SNP for the haplotype that passes through it, but keeps the 1 bp node, because two haplotypes end on it: a dead end is evidence of where a path stops.',
+		'A 600 bp insertion with a SNP in the middle. Five haplotypes carry the whole insertion; two more stop on the SNP’s alternative base, where their path in the pangenome ends. Simplify folds the SNP for the haplotype that passes through it, but keeps the 1 bp node, because two haplotypes end on it: a dead end is evidence of where a path stops.',
 	kind: 'synthetic',
 	referenceSample: REF,
 	gfaText: walkEndGfa,
@@ -265,7 +265,7 @@ export const REAL_FIXTURES: Fixture[] = [
 		id: 'c4a',
 		label: 'C4A (MHC class III)',
 		description:
-			'Complement C4A on GRCh38, one of the app’s example loci. C4 varies in copy number and carries the C4A/C4B paralogy, so there is real structural variation beside the SNPs. Sites takes it from 758 nodes to 17 at 50 bp.',
+			'Complement C4A on GRCh38, one of the app’s example loci. C4 varies in copy number and carries the C4A/C4B paralogy, so there is real structural variation beside the SNPs. Simplify takes it from 758 nodes to 17 at 50 bp.',
 		kind: 'real',
 		referenceSample: 'GRCh38',
 		gfaText: c4a
@@ -274,7 +274,7 @@ export const REAL_FIXTURES: Fixture[] = [
 		id: 'smn1',
 		label: 'SMN1 (segmental duplication)',
 		description:
-			'The app’s default locus. SMN1 and SMN2 are near-identical paralogs, so much of the graph is repetitive. Sites takes it from 1,064 nodes to 11 at 50 bp.',
+			'The app’s default locus. SMN1 and SMN2 are near-identical paralogs, so much of the graph is repetitive. Simplify takes it from 1,064 nodes to 11 at 50 bp.',
 		kind: 'real',
 		referenceSample: 'GRCh38',
 		gfaText: smn1
@@ -283,7 +283,7 @@ export const REAL_FIXTURES: Fixture[] = [
 		id: 'chr20_200kb',
 		label: 'chr20, 200 kb',
 		description:
-			'chr20:30,000,000–30,200,000 from the HPRC v1.1 GRCh38 graph: 9,892 nodes and 422 haplotype walks. Sites takes it to 550 nodes at 50 bp and 497 at 500 bp. The original takes several seconds to lay out.',
+			'chr20:30,000,000–30,200,000 from the HPRC v1.1 GRCh38 graph: 9,892 nodes and 422 haplotype walks. Simplify takes it to 550 nodes at 50 bp and 497 at 500 bp. The original takes several seconds to lay out.',
 		kind: 'real',
 		referenceSample: 'GRCh38',
 		gfaText: chr20_200kb

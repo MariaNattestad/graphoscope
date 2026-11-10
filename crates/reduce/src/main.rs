@@ -43,7 +43,7 @@ use gbz::FullPathName;
 use gbz_base::{GBZBase, GraphInterface, SnarlOutput, Subgraph, SubgraphQuery};
 use getopts::Options;
 
-// The Sites threshold: alleles that differ by no variant this large or larger
+// The Simplify threshold: alleles that differ by no variant this large or larger
 // fold together (see alleles.rs). Matches SITES_DEFAULT in src/lib/gbzClient.ts.
 const DEFAULT_MAX_VARIANT: usize = 50;
 const DEFAULT_CONTEXT: usize = 100;
@@ -110,7 +110,7 @@ fn run() -> Result<(), String> {
 
 /// The window as asked, widened to whole top-level snarls when `--snarls` asks
 /// and the result stays within the budget. A haplotype that leaves a plain
-/// window inside a snarl is cut there, and Sites keeps that cut as a loose end;
+/// window inside a snarl is cut there, and Simplify keeps that cut as a loose end;
 /// a whole snarl closes it. Returns which window it used, and on a fallback the
 /// node count that ruled the widened one out.
 fn extract(

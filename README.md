@@ -113,7 +113,7 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   and each builds an index over the graph, so on a large locus the control warns
   before switching — Graphoscope's general rule is to show context by default unless
   it would slow the app, then keep it one switch away with a slow-down warning.
-- **Simplify: Sites / Off.** *Sites* is the default and is the query's own
+- **Simplify: On / Off.** *On* is the default and is the query's own
   simplification (below), with its threshold picked under the control; *Off* is the
   full graph. Each shows how many nodes it went from and to underneath the control.
   A whole uploaded GFA is shown as loaded.
@@ -134,7 +134,7 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   the length it skips, drawn as a dashed arc; seed the reference along x and rotate
   it left to right; and, for drawing, Catmull-Rom smoothed flat-ended strands with
   tangent edges, a rainbow reference, width by haplotype carriage, and length
-  labels. Best with Simplify set to Sites.
+  labels. Best with Simplify on.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
@@ -142,7 +142,7 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 [`/playground`](https://marianattestad.github.io/graphoscope/playground) is a
 standalone sandbox for the reference-guided simplification algorithm behind the
 graph layout: every fixture (synthetic edge cases and real HPRC loci) in its own
-row, the original graph beside what Sites makes of it at one shared threshold, with
+row, the original graph beside what Simplify makes of it at one shared threshold, with
 the same exit cues the locus browser draws. It's where the simplification approach
 gets prototyped and stress-tested independently of the main query flow — the
 exact fixtures it uses are also what the Rust unit tests assert on
@@ -321,7 +321,7 @@ Rust crate. It does three things per query:
    and every walk is rewritten to its kept allele. So every link drawn is one a
    haplotype uses, every haplotype is still a path through the graph, and none
    is moved by a variant of the threshold or more. The threshold (`--max-variant`,
-   50 bp by default) is the *variants under* control beside *Sites*; changing it
+   50 bp by default) is the *variants under* control beside *Simplify*; changing it
    re-runs the query.
 3. **Aggregate the walks** (`src/coverage.rs`): count how many distinct haplotype
    walks cross each node and edge, emit those as `WC` tags, and drop the walks.

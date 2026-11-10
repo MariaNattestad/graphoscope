@@ -191,6 +191,7 @@ const args = [
 	`${start}..${end}`,
 	...(raw ? ['--raw'] : []),
 	...(flag('snarls') ? ['--snarls', flag('snarls')] : []),
+	...(flag('snarl-budget') ? ['--snarl-budget', flag('snarl-budget')] : []),
 	'/data/graph.db'
 ];
 const wasiInstance = new WASI(

@@ -84,7 +84,7 @@
 
 	function download() {
 		trackEvent('widget_interact', { widget: 'raw_data', action: 'download_gfa' });
-		save(rawText, isReduced ? 'subgraph.sites.gfa' : 'subgraph.gfa');
+		save(rawText, isReduced ? 'subgraph.simplified.gfa' : 'subgraph.gfa');
 	}
 
 	const rawLineCount = $derived(rawText ? rawText.split('\n').length : 0);
@@ -111,7 +111,7 @@
 			class="ghost"
 			onclick={download}
 			title={isReduced ? 'Small variant sites collapsed and unbranched runs merged (the query\'s own simplification)' : undefined}
-			>{isReduced ? 'Download Sites .gfa' : 'Download .gfa'}</button
+			>{isReduced ? 'Download simplified .gfa' : 'Download .gfa'}</button
 		>
 		{#if downloadRaw}
 			<button class="ghost" onclick={downloadRaw} disabled={downloadingRaw}>

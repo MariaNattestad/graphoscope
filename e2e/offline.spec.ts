@@ -111,7 +111,7 @@ test.describe('/playground', () => {
 });
 
 test.describe('/algorithms', () => {
-	test('Sites keeps every C4A loose end', async ({ page }) => {
+	test('Simplify keeps every C4A loose end', async ({ page }) => {
 		await page.goto('/algorithms');
 		await expect(page.getByText(/8 of 8 loose ends kept/).first()).toBeVisible({ timeout: 60_000 });
 		await expect(page.getByText('still a loose end')).toHaveCount(8);

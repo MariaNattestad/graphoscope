@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Simplification playground: every example graph, one per row — the original
-	// and what Sites makes of it, at one threshold.
+	// and what Simplify makes of it, at one threshold.
 	//
 	// The simplification here is not a demo reimplementation — it runs the actual
 	// `query.wasm`, in its `--gfa` mode, over each fixture. So this page and a live
@@ -122,7 +122,7 @@
 	<header>
 		<h1>Simplification playground</h1>
 		<p class="sub">
-			Each example graph as it comes in, then what <b>Sites</b> makes of it: small bubbles popped onto
+			Each example graph as it comes in, then what <b>Simplify</b> makes of it: small bubbles popped onto
 			the reference, then each haplotype's allele at every site folded into the nearest kept allele. It
 			runs in the same <code>query.wasm</code> the locus browser uses. The synthetic examples are the ones
 			<code>crates/reduce/src/tests.rs</code> asserts on.
@@ -134,7 +134,7 @@
 			threshold
 			<input type="number" min="1" max="10000" bind:value={maxVariant} /> bp
 		</label>
-		<span class="muted">Sites folds every variant under it</span>
+		<span class="muted">Simplify folds every variant under it</span>
 	</div>
 
 	{#each ALL_FIXTURES as f (f.id)}
@@ -159,7 +159,7 @@
 				</div>
 				<div class="pane">
 					<span class="pane-label">
-						Sites
+						Simplify
 						{#if r?.error}
 							<span class="fail">{r.error}</span>
 						{:else if stats}

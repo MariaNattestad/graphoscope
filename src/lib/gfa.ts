@@ -111,7 +111,7 @@ export interface ReducedStats {
 	 * haplotypes.
 	 */
 	walkRecords: number;
-	/** Stage 2 of Sites: sites with more than one allele, distinct alleles, and the representatives kept. */
+	/** Stage 2 of Simplify: sites with more than one allele, distinct alleles, and the representatives kept. */
 	alleleSites?: number;
 	alleles?: number;
 	allelesShown?: number;

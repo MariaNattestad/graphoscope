@@ -84,7 +84,7 @@
 	// blocking the main thread ~1s when re-laying-out the full graph. Raw keeps it
 	// as plain objects: fast to read and to structured-clone across the worker.
 	let gfa = $state.raw<Gfa | null>(null);
-	// Sites at a threshold other than the query's default: the same query re-run
+	// Simplify at a threshold other than the query's default: the same query re-run
 	// with `--max-variant`, kept beside `gfa` so going back to the default is free.
 	let sitesThreshold = $state(SITES_DEFAULT);
 	let sitesGfa = $state.raw<Gfa | null>(null);
@@ -237,7 +237,7 @@
 			// ever returns, so the browser receives a graph sized by topology, not by
 			// haplotype count. This is what keeps a large/repetitive locus from
 			// blowing up the tab. The query runs at the reducer's default threshold;
-			// Sites' "variants under" control re-runs it at another one
+			// Simplify's "variants under" control re-runs it at another one
 			// (setSitesThreshold). Anyone who wants the uncollapsed graph can
 			// download it instead (downloadRaw below).
 		} catch (e) {
@@ -358,7 +358,7 @@
 		showUnsimplified && unsimplified ? unsimplified : sitesThreshold !== SITES_DEFAULT && sitesGfa ? sitesGfa : gfa
 	);
 
-	// Re-runs the query at another Sites threshold. Only the newest request may
+	// Re-runs the query at another Simplify threshold. Only the newest request may
 	// write its result, so changing the threshold twice quickly can't land the
 	// older one last.
 	let sitesRequest = 0;

@@ -127,10 +127,10 @@
 		discoWalksGfa?: Gfa | null;
 		/** Just the graph canvas: no options panel and no legend footer. */
 		bare?: boolean;
-		/** Sites' allele threshold, and whether the parent is re-querying at a new one. */
+		/** Simplify's allele threshold, and whether the parent is re-querying at a new one. */
 		sitesThreshold?: number;
 		sitesLoading?: boolean;
-		/** Ask the parent for Sites at another threshold (it re-runs the query). */
+		/** Ask the parent for Simplify at another threshold (it re-runs the query). */
 		onSitesThreshold?: (t: number) => void;
 		/** Whether the full (unsimplified) graph is the one currently displayed. */
 		showingAllNodes?: boolean;
@@ -160,7 +160,7 @@
 	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true, labels: true });
 
 	// --- Simplification: sites / off -------------------------------------------
-	// "Sites" is the graph the wasm query already simplified (see
+	// "On" is the graph the wasm query already simplified (see
 	// crates/reduce/src/alleles.rs); "Off" is the full graph the parent swaps in.
 	// A plain GFA (the /gfa page, the playground) is shown as loaded.
 	/** The graph this view lays out and inspects. */
@@ -1589,7 +1589,7 @@
 				</div>
 			{/if}
 			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
-			     most-reached-for actions, share one box. Simplify offers Sites / Off on the
+			     most-reached-for actions, share one box. Simplify offers On / Off on the
 			     hosted locus browser (they swap the parent's reduced and full graphs); a
 			     plain GFA is shown as loaded. -->
 			<section class="group primary">
@@ -1603,7 +1603,7 @@
 								aria-pressed={simplifyMode === 'sites'}
 								onclick={() => setSimplify('sites')}
 								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
-								>Sites</button
+								>On</button
 							>
 						<button
 							type="button"
@@ -1929,7 +1929,7 @@
 									{#if simplifyMode !== 'sites' && hasSitesMode}
 										<p class="assembly-hint">
 											Reads best with small variants folded away.
-											<button type="button" class="link-btn" onclick={() => setSimplify('sites')}>Turn on Sites</button>
+											<button type="button" class="link-btn" onclick={() => setSimplify('sites')}>Turn on Simplify</button>
 										</p>
 									{/if}
 									<span class="parts-title">Layout</span>

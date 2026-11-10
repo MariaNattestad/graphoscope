@@ -1,11 +1,11 @@
-//! Stage 2 of Sites: per-site allele clustering.
+//! Stage 2 of Simplify: per-site allele clustering.
 //!
 //! Stage 1 (`simplify::plan_collapse`) pops small, closed, reference-anchored
 //! bubbles. What it can't touch — large variants, sites with a haplotype that
 //! leaves the window or ends inside them, small variation nested inside a large
 //! allele — is handled here, in terms of haplotypes rather than nodes:
 //!
-//! 1. **Sites.** Every non-reference connected component attaches to the
+//! 1. **Simplify.** Every non-reference connected component attaches to the
 //!    reference at some set of nodes; its site is the reference span between
 //!    the first and last of them. Deletion links span the reference the same
 //!    way. Spans that overlap merge. Each site is closed by construction: only
