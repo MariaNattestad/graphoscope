@@ -157,7 +157,7 @@
 	// --- Assembly graph mode: each part of it on its own switch ----------------
 	// Parts 2–5 change the layout (so they re-run it); Part 6 is drawing only.
 	let assemblyParts = $state<AssemblyOptions>({ ...DEFAULT_ASSEMBLY });
-	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true, labels: true });
+	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true });
 
 	// --- Simplification: sites / off -------------------------------------------
 	// "On" is the graph the wasm query already simplified (see
@@ -312,9 +312,13 @@
 	// The skip-edge bubble under the pointer (reported by the canvas).
 	let hoveredSkip = $state<string | null>(null);
 
-	// The two most-used controls (Simplify + disco) stay pinned; everything else
-	// lives behind these sidebar tabs so the panel stays short as options grow.
-	let ctlTab = $state<'layout' | 'view'>('layout');
+	// The sidebar's two top-level tabs: Inspect (Simplify, the node inspector,
+	// haplotypes) and Settings (layout and view options). Settings sits beside the
+	// graph rather than over it, so a change can be watched as it lands.
+	let sideTab = $state<'inspect' | 'settings'>('inspect');
+
+	// Label the longest nodes on screen with their length (e.g. "6 kb").
+	let showLengthLabels = $state(true);
 
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
@@ -1564,6 +1568,21 @@
 				{walkNoun}
 			/>
 
+			<div class="side-tabs" role="tablist" aria-label="Sidebar">
+				<button
+					role="tab"
+					aria-selected={sideTab === 'inspect'}
+					class:active={sideTab === 'inspect'}
+					onclick={() => (sideTab = 'inspect')}>Inspect</button
+				>
+				<button
+					role="tab"
+					aria-selected={sideTab === 'settings'}
+					class:active={sideTab === 'settings'}
+					onclick={() => (sideTab = 'settings')}>Settings</button
+				>
+			</div>
+
 			<div class="ctl-wrap" class:dimmed={reportBusy}>
 			<!-- Live slowness tip: appears only after a layout that actually ran long,
 			     pointing at the cheapest lever available. Dismissible; one per graph. -->
@@ -1588,6 +1607,7 @@
 					</div>
 				</div>
 			{/if}
+			{#if sideTab === 'inspect'}
 			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
 			     most-reached-for actions, share one box. Simplify offers On / Off on the
 			     hosted locus browser (they swap the parent's reduced and full graphs); a
@@ -1894,13 +1914,9 @@
 				</section>
 			{/if}
 
-			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
-			<nav class="ctl-tabs">
-				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
-				<button class:active={ctlTab === 'view'} onclick={() => (ctlTab = 'view')}>View</button>
-			</nav>
+			{:else}
 			<section class="group ctl-panel">
-				{#if ctlTab === 'layout'}
+				<span class="group-title">Layout</span>
 						<div class="mode-picker">
 							<div class="family-toggle" role="group" aria-label="Layout family">
 								<button
@@ -1960,9 +1976,6 @@
 									<label title="Width follows how many haplotypes pass through the node">
 										<input type="checkbox" bind:checked={assemblyStyle.carriage} /> Width by carriage
 									</label>
-									<label title="Label merged runs and large alleles with their length, and deletion arcs with what they skip">
-										<input type="checkbox" bind:checked={assemblyStyle.labels} /> Length labels
-									</label>
 								</div>
 							{/if}
 							<!-- Backbone picker / note: only meaningful for a reference-anchored
@@ -2009,7 +2022,17 @@
 							</span>
 						</label>
 						{/if}
-					{:else if ctlTab === 'view'}
+			</section>
+			<section class="group ctl-panel">
+				<span class="group-title">View</span>
+						<label class="switch" title="Label the longest nodes on screen with their length; zoom in to label the next-longest. In the assembly view, deletion arcs get what they skip.">
+							<input type="checkbox" bind:checked={showLengthLabels} />
+							<span class="track"><span class="thumb"></span></span>
+							<span class="switch-text">
+								<span class="switch-label">Length labels</span>
+								<span class="switch-sub">longest nodes, e.g. 6 kb</span>
+							</span>
+						</label>
 						{#if !referenceFree}
 							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
 								<input type="checkbox" bind:checked={showGeneTrack} />
@@ -2044,8 +2067,8 @@
 						<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
 							⬇ Export PNG
 						</button>
-					{/if}
 			</section>
+			{/if}
 			</div>
 		</aside>
 		{/if}
@@ -2067,6 +2090,7 @@
 					<GraphCanvas
 						layout={displayLayout}
 						assemblyStyle={modeCfg.assembly ? assemblyStyle : null}
+						lengthLabels={showLengthLabels}
 						refCoords={referenceFree ? undefined : refCoords}
 						genes={referenceFree ? [] : genes}
 						showGenes={showGeneTrack && !referenceFree}
@@ -2756,8 +2780,8 @@
 		gap: 0.5rem;
 	}
 
-	/* Sidebar control tabs (Layout / Nodes / View). */
-	.ctl-tabs {
+	/* The sidebar's top-level tabs (Inspect / Settings). */
+	.side-tabs {
 		display: flex;
 		gap: 2px;
 		background: #eef0f4;
@@ -2765,7 +2789,7 @@
 		border-radius: 8px;
 		padding: 2px;
 	}
-	.ctl-tabs button {
+	.side-tabs button {
 		flex: 1;
 		font: inherit;
 		font-size: 0.72rem;
@@ -2777,10 +2801,10 @@
 		padding: 0.3rem 0.2rem;
 		border-radius: 6px;
 	}
-	.ctl-tabs button:hover {
+	.side-tabs button:hover {
 		color: #333;
 	}
-	.ctl-tabs button.active {
+	.side-tabs button.active {
 		background: #fff;
 		color: #2563eb;
 		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1);

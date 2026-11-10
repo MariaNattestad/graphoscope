@@ -50,8 +50,6 @@
 		rainbow: boolean;
 		/** Strand width follows carriage (haplotypes through the node). */
 		carriage: boolean;
-		/** Length labels on merged runs, large alleles and deletion arcs. */
-		labels: boolean;
 	}
 
 	// A clicked gene-track feature (an exon), surfaced to the inspector.
@@ -94,6 +92,7 @@
 		onExitSegments,
 		lightMode = false,
 		assemblyStyle = null,
+		lengthLabels = false,
 		showExits = true,
 		colorMode = 'coverage',
 		bubbleIdBySeg = null,
@@ -158,6 +157,9 @@
 		lightMode?: boolean;
 		/** Assembly-mode drawing options, or null for the standard look. */
 		assemblyStyle?: AssemblyStyle | null;
+		/** Label the longest nodes on screen with their length (and, in the assembly
+		 * view, merged runs and deletion arcs with what they span or skip). */
+		lengthLabels?: boolean;
 		/** Draw a fading cue from each chopped-off strand toward the frame edge. */
 		showExits?: boolean;
 		/** What each node's fill encodes: walk coverage (default), the size of the
@@ -795,7 +797,7 @@
 				if (asm?.shape) traceCatmull(ctx, pts);
 				else traceSmooth(ctx, pts);
 				ctx.stroke();
-				if (asm?.labels) {
+				if (lengthLabels) {
 					const mid = pts[pts.length >> 1];
 					asmLabels.push({ x: mid.x, y: mid.y, text: `−${fmtBp(r.skipBp)}`, bp: r.skipBp });
 				}
@@ -871,7 +873,7 @@
 		}
 		ctx.globalAlpha = 1;
 		ctx.lineCap = 'round';
-		if (asm?.labels) drawAssemblyLabels(ctx, asmLabels);
+		if (lengthLabels) drawLengthLabels(ctx, asmLabels, width, height);
 
 		// Cues for haplotypes chopped at the subgraph boundary (drawn over strands).
 		drawExitCues(ctx);
@@ -1543,13 +1545,18 @@
 	// stay exact, so a strand still meets its links precisely; the few bend points in
 	// between round off instead of reading as sharp corners. Under 3 points there's
 	// nothing to smooth, so fall back to straight lines.
-	// Length labels: merged runs and large alleles at their midpoint, plus the
-	// deletion arcs collected above; biggest first, skipping any that would overlap.
-	function drawAssemblyLabels(
+	// Length labels: the longest nodes (and the assembly view's merged runs) at their
+	// midpoint, plus any deletion arcs collected above. Biggest first, only what is on
+	// screen, skipping any that would overlap and stopping at MAX_LABELS, so zooming in
+	// labels the next-longest nodes as the big ones scroll away.
+	function drawLengthLabels(
 		ctx: CanvasRenderingContext2D,
-		extra: { x: number; y: number; text: string; bp: number }[]
+		extra: { x: number; y: number; text: string; bp: number }[],
+		width: number,
+		height: number
 	) {
 		const LABEL_MIN_BP = 100;
+		const MAX_LABELS = 12;
 		const cands = [...extra];
 		const midOf = (segIds: string[]) => {
 			const chain = chainBySeg.get(segIds[segIds.length >> 1]);
@@ -1578,6 +1585,8 @@
 		ctx.textBaseline = 'bottom';
 		const placed: { x0: number; y0: number; x1: number; y1: number }[] = [];
 		for (const c of cands) {
+			if (placed.length >= MAX_LABELS) break;
+			if (c.x < 0 || c.x > width || c.y < 20 || c.y > height) continue;
 			const w = ctx.measureText(c.text).width + 6;
 			const box = { x0: c.x - w / 2, y0: c.y - 20, x1: c.x + w / 2, y1: c.y - 5 };
 			if (placed.some((b) => box.x0 < b.x1 && box.x1 > b.x0 && box.y0 < b.y1 && box.y1 > b.y0)) continue;
@@ -1740,7 +1749,7 @@
 		assemblyStyle?.shape;
 		assemblyStyle?.rainbow;
 		assemblyStyle?.carriage;
-		assemblyStyle?.labels;
+		lengthLabels;
 		activeSkipKey;
 		exitHighlightSegments;
 		theme;
