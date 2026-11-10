@@ -1,138 +1,71 @@
 <script lang="ts">
-	// How the algorithms work, drawn on a real locus. Sites (our simplification)
-	// and FM³ (the multilevel force layout behind the Reference-free view) both
-	// shrink the graph they're given — Sites for good, FM³ only as a scaffold while
-	// it lays the graph out — so this page shows what each does with the subgraph's
-	// window exits: the loose ends where a haplotype carries on in the full graph.
+	// How Sites works, drawn on a real locus, and what the Bandage-based views do
+	// with the same window. The point throughout is a window's loose ends: where
+	// a haplotype leaves the subgraph, which is the only record inside it of where
+	// the full graph goes on.
 	//
-	// Everything below the schematics is computed here from the C4A fixture: Sites
-	// by the real `query.wasm` (as in /playground), FM³ by fm3.ts itself, with the
-	// hierarchy captured level by level.
+	// Sites runs here in the real `query.wasm` (as in /playground). bandage-core is
+	// GPL, so none of it is in Graphoscope: its numbers below were measured once,
+	// outside this repository, by running its fold on the same C4A window.
 	import { onMount } from 'svelte';
 	import { base } from '$app/paths';
 	import { parseGfa, type Gfa } from '$lib/gfa';
 	import type { ReduceRequest, ReduceResult } from '$lib/gfaReduce.worker';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import { looseEnds } from '$lib/graph/exitCues';
-	import { runFm3, type Fm3Edge, type Fm3LevelSnapshot } from '$lib/graph/fm3';
 	import { REAL_FIXTURES } from '$lib/graph/fixtures';
 
 	const fixture = REAL_FIXTURES.find((f) => f.id === 'c4a')!;
-	const THRESHOLD = 50;
+	// C4A's 41,121 bp window fit to 1,000 px is ~41 bp/px, and JBrowse folds
+	// variants under ten pixels.
+	const JBROWSE_FOLD = 410;
+	const THRESHOLDS = [50, 200, JBROWSE_FOLD, 1000, 10000];
+
+	// bandage-core 13.1.0's foldVariants(graph without paths, bp, { cut: true }) on
+	// this window, as JBrowse's graph track calls it: segments, and loose ends left.
+	const BANDAGE_FOLD: Record<number, { nodes: number; exits: number }> = {
+		50: { nodes: 17, exits: 8 },
+		200: { nodes: 13, exits: 4 },
+		410: { nodes: 7, exits: 2 },
+		1000: { nodes: 3, exits: 0 },
+		10000: { nodes: 1, exits: 0 }
+	};
 
 	// Held raw: the layout worker structured-clones these (see /playground).
 	const original: Gfa = parseGfa(fixture.gfaText);
 	const exits = looseEnds(original, fixture.referenceSample);
-	const exitSet = new Set(exits);
 
-	let sites = $state.raw<Gfa | null>(null);
+	let sites = $state.raw<Record<number, Gfa>>({});
 	let sitesError = $state<string | null>(null);
 	onMount(() => {
 		const w = new Worker(new URL('$lib/gfaReduce.worker.ts', import.meta.url), { type: 'module' });
 		w.onmessage = (ev: MessageEvent<ReduceResult>) => {
-			if (ev.data.ok) sites = parseGfa(ev.data.gfa ?? '');
+			const t = THRESHOLDS[ev.data.id];
+			if (ev.data.ok) sites = { ...sites, [t]: parseGfa(ev.data.gfa ?? '') };
 			else sitesError = `${ev.data.error}\n${ev.data.stderr ?? ''}`.trim();
-			w.terminate();
 		};
-		const req: ReduceRequest = { id: 1, gfaText: fixture.gfaText, maxVariant: THRESHOLD, wasmUrl: `${base}/query.wasm` };
-		w.postMessage(req);
+		THRESHOLDS.forEach((t, id) => {
+			const req: ReduceRequest = { id, gfaText: fixture.gfaText, maxVariant: t, wasmUrl: `${base}/query.wasm` };
+			w.postMessage(req);
+		});
 		return () => w.terminate();
 	});
 
-	// Each original exit, and the Sites node that now holds it (its own id or an
-	// unchopped node listing it in MB) — still a loose end there, or not.
-	const sitesExits = $derived.by(() => {
-		if (!sites) return null;
-		const loose = new Set(looseEnds(sites, fixture.referenceSample));
+	const shown = $derived(sites[JBROWSE_FOLD]);
+
+	// Each original loose end, and the Sites node that now holds it (its own id
+	// or an unchopped node listing it in MB): still a loose end there, or not.
+	function exitsIn(g: Gfa) {
+		const loose = new Set(looseEnds(g, fixture.referenceSample));
 		const holder = new Map<string, string>();
-		for (const s of sites.segments.values()) for (const m of s.members ?? [s.id]) holder.set(m, s.id);
+		for (const s of g.segments.values()) for (const m of s.members ?? [s.id]) holder.set(m, s.id);
 		return exits.map((id) => {
 			const h = holder.get(id);
 			return { id, holder: h, kept: !!h && loose.has(h) };
 		});
-	});
-
-	// FM³ on the original graph, edges sized the way forceLayout sizes them (half
-	// of each segment's drawn span plus a gap), keeping every level's snapshot.
-	const levels: Fm3LevelSnapshot[] = [];
-	{
-		const span = (id: string) => 4 * Math.sqrt(original.segments.get(id)?.length ?? 1);
-		const seen = new Set<string>();
-		const edges: Fm3Edge[] = [];
-		for (const l of original.links) {
-			if (l.from === l.to) continue;
-			const key = l.from < l.to ? `${l.from} ${l.to}` : `${l.to} ${l.from}`;
-			if (seen.has(key)) continue;
-			seen.add(key);
-			edges.push({ a: l.from, b: l.to, len: (span(l.from) + span(l.to)) / 2 + 10 });
-		}
-		runFm3({ nodes: [...original.segments.keys()], edges, onLevel: (s) => levels.push(s) });
-		levels.sort((a, b) => a.depth - b.depth);
 	}
-
-	/** How each level treats the exits: alone (a node of nothing but exits) or
-	 * absorbed (merged into a node with interior segments). */
-	function exitFate(level: Fm3LevelSnapshot) {
-		let alone = 0;
-		let absorbed = 0;
-		for (const members of level.members.values()) {
-			const n = members.filter((m) => exitSet.has(m)).length;
-			if (!n) continue;
-			if (n === members.length) alone += n;
-			else absorbed += n;
-		}
-		return { alone, absorbed };
-	}
-
-	// The levels worth a panel: the first two coarsenings (where the exits are
-	// swallowed), the middle and the coarsest; then the finished layout.
-	const shownDepths = [...new Set([1, 2, Math.floor((levels.length - 1) / 2), levels.length - 1])]
-		.filter((d) => d > 0 && d < levels.length)
-		.sort((a, b) => a - b);
-
-	const BOX = 260;
-	function fit(level: Fm3LevelSnapshot) {
-		const xs = [...level.pos.values()].map((p) => p.x);
-		const ys = [...level.pos.values()].map((p) => p.y);
-		const minX = Math.min(...xs);
-		const minY = Math.min(...ys);
-		const w = Math.max(1, Math.max(...xs) - minX);
-		const h = Math.max(1, Math.max(...ys) - minY);
-		const k = (BOX - 24) / Math.max(w, h);
-		const ox = (BOX - w * k) / 2;
-		const oy = (BOX - h * k) / 2;
-		return (id: string) => {
-			const p = level.pos.get(id)!;
-			return { x: ox + (p.x - minX) * k, y: oy + (p.y - minY) * k };
-		};
-	}
-	function kind(level: Fm3LevelSnapshot, id: string): 'exit' | 'absorbed' | 'interior' {
-		const members = level.members.get(id) ?? [id];
-		const n = members.filter((m) => exitSet.has(m)).length;
-		return n === 0 ? 'interior' : n === members.length ? 'exit' : 'absorbed';
-	}
-	function radius(level: Fm3LevelSnapshot, id: string) {
-		const r = Math.min(9, 1.6 + Math.sqrt(level.members.get(id)?.length ?? 1) * 0.7);
-		return kind(level, id) === 'interior' ? r : Math.max(r, 3.5);
-	}
-
-	// FM³'s finished drawing: does an exit sit on the outside of the graph, where a
-	// strand leaving the window would point? Rank each exit by its distance from
-	// the drawing's centre among all nodes.
-	const finalLevel = levels[0];
-	const exitPlacement = (() => {
-		const pts = [...finalLevel.pos.values()];
-		const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-		const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-		const dist = (id: string) => Math.hypot(finalLevel.pos.get(id)!.x - cx, finalLevel.pos.get(id)!.y - cy);
-		const all = [...finalLevel.pos.keys()].map(dist).sort((a, b) => a - b);
-		return exits.map((id) => {
-			const d = dist(id);
-			const below = all.filter((x) => x < d).length;
-			return Math.round((100 * below) / all.length);
-		});
-	})();
-	const outerExits = exitPlacement.filter((p) => p >= 90).length;
+	const shownExits = $derived(shown ? exitsIn(shown) : null);
+	const keptAt = (t: number) => (sites[t] ? exitsIn(sites[t]).filter((e) => e.kept).length : null);
 </script>
 
 <svelte:head>
@@ -141,87 +74,101 @@
 
 <main>
 	<header>
-		<a class="back" href="{base}/" data-sveltekit-reload>← back to the browser</a>
+		<a href="{base}/" data-sveltekit-reload>← back to the browser</a>
 		<h1>How it works</h1>
 		<p class="lede">
-			Graphoscope shows a <b>window</b> cut from a pangenome graph. Inside it, every loose end of a
-			haplotype strand is one of two things: a <b>window exit</b>, where the haplotype carries on in the
-			full graph outside the window, or (rarely) a real <b>path end</b>. Either way it marks where this view
-			of the graph is incomplete. This page shows how our simplification, <b>Sites</b>, keeps every one
-			of them, and what <b>FM³</b>, the multilevel force layout behind the Reference-free view, does with
-			them instead.
+			Graphoscope shows a <b>window</b> cut from a pangenome graph. Wherever a haplotype's path leaves the
+			window, the subgraph has a <b>loose end</b>: the only sign, inside the window, that the graph goes on.
+			(A path can also really end there; inside the window the two look the same, and either way the view is
+			incomplete at that point.) <b>Sites</b> is how Graphoscope simplifies a window, and it is built to keep
+			every one of those ends.
 		</p>
 	</header>
 
 	<section>
-		<h2>Sites: fold alleles, keep the exits</h2>
-		<p>
-			Sites works per <b>variant site</b>: a stretch of the reference that non-reference nodes leave and
-			rejoin. At each site, every haplotype contributes one <b>allele</b>, its path across the site. Alleles
-			are compared by their largest difference; each folds into the nearest kept allele within the
-			threshold, and the kept alleles are all that stay. A haplotype that leaves the window inside a site
-			has an allele that <b>ends</b> there. Alleles only fold into alleles that end in the same place, so an
-			exit is never folded into a path that carries on, and its loose end stays exactly where it was.
-		</p>
-		<svg class="schematic" viewBox="0 0 680 250" role="img" aria-labelledby="sites-schematic-title">
-			<title id="sites-schematic-title">Sites before and after on one site with an exit</title>
-			<g>
-				<text x="20" y="22" class="panel">Before</text>
-				<rect x="20" y="34" width="300" height="196" class="window" />
-				<text x="28" y="52" class="note">window</text>
-				<line x1="20" y1="200" x2="320" y2="200" class="ref" />
-				<path d="M70 200 C 90 80, 230 80, 250 200" class="allele" />
-				<path d="M76 200 C 98 96, 222 96, 244 200" class="allele thin" />
-				<circle cx="160" cy="103" r="4" class="snp" />
-				<path d="M262 200 C 266 160, 280 110, 292 70" class="allele exit" />
-				<line x1="292" y1="70" x2="296" y2="34" class="cue" />
-				<text x="276" y="64" class="note" text-anchor="end">exit</text>
-				<text x="160" y="140" class="note" text-anchor="middle">1 bp apart</text>
-			</g>
-			<text x="340" y="132" class="arrow" text-anchor="middle">→</text>
-			<g>
-				<text x="360" y="22" class="panel">After Sites</text>
-				<rect x="360" y="34" width="300" height="196" class="window" />
-				<line x1="360" y1="200" x2="660" y2="200" class="ref" />
-				<path d="M410 200 C 430 80, 570 80, 590 200" class="allele" />
-				<path d="M602 200 C 606 160, 620 110, 632 70" class="allele exit" />
-				<line x1="632" y1="70" x2="636" y2="34" class="cue" />
-				<text x="616" y="64" class="note" text-anchor="end">exit kept</text>
-				<text x="500" y="140" class="note" text-anchor="middle">folded into one</text>
-			</g>
+		<h2>Sites, step by step</h2>
+		<svg class="schematic" viewBox="0 0 680 256" role="img" aria-labelledby="steps-title">
+			<title id="steps-title">The three steps of Sites on one site with a loose end</title>
+			{#each [0, 1, 2] as p (p)}
+				{@const x = 10 + p * 228}
+				<text {x} y="20" class="panel">{['1 · Find the site', '2 · Read the alleles', '3 · Fold'][p]}</text>
+				<rect {x} y="32" width="200" height="200" class="window" />
+				<line x1={x} y1="200" x2={x + 200} y2="200" class="ref" />
+				{#if p === 0}
+					<path d="M{x + 30} 200 C {x + 45} 90, {x + 135} 90, {x + 150} 200" class="allele grey" />
+					<path d="M{x + 162} 200 C {x + 165} 160, {x + 172} 110, {x + 180} 76" class="allele grey" />
+					<path d="M{x + 30} 210 L {x + 30} 216 L {x + 162} 216 L {x + 162} 210" class="bracket" />
+					<text x={x + 96} y="250" class="note" text-anchor="middle">one site</text>
+				{:else}
+					<path d="M{x + 30} 200 C {x + 45} 90, {x + 135} 90, {x + 150} 200" class="allele" />
+					{#if p === 1}
+						<path d="M{x + 36} 200 C {x + 52} 104, {x + 128} 104, {x + 144} 200" class="allele thin" />
+						<circle cx={x + 90} cy="112" r="4" class="snp" />
+						<text x={x + 90} y="74" class="note" text-anchor="middle">3 haplotypes</text>
+						<text x={x + 90} y="178" class="note" text-anchor="middle">1, a SNP apart</text>
+					{:else}
+						<text x={x + 90} y="74" class="note" text-anchor="middle">4 haplotypes</text>
+					{/if}
+					<path d="M{x + 162} 200 C {x + 165} 160, {x + 172} 110, {x + 180} 76" class="allele exit" />
+					<line x1={x + 180} y1="76" x2={x + 183} y2="34" class="cue" />
+					<text x={x + 172} y="58" class="note" text-anchor="end">2 end</text>
+				{/if}
+			{/each}
 		</svg>
+		<ol class="steps">
+			<li>
+				<b>Find the sites.</b> Non-reference nodes that connect to each other form a site, spanning the reference
+				from the first place they attach to the last. That includes paths that leave the reference and don't
+				come back inside the window. Bubbles under 50 bp are popped onto the reference first.
+			</li>
+			<li>
+				<b>Read each haplotype's allele</b> at every site: its path from where it leaves the reference to where it
+				rejoins, or to where the path stops if it leaves the window inside the site.
+			</li>
+			<li>
+				<b>Fold.</b> Alleles that start and end in the same places are compared, and each folds into the nearest
+				kept allele whose largest single difference from it is under the threshold; its haplotype is rerouted
+				onto that allele. Only the kept alleles' nodes stay. An allele that ends inside the window is only ever
+				compared with alleles ending on the same node, so <b>no loose end is folded away</b>. Unbranched runs are
+				then merged into single nodes.
+			</li>
+		</ol>
+	</section>
 
-		<h3>On a real locus: C4A, {original.segments.size.toLocaleString()} nodes, {THRESHOLD} bp</h3>
+	<section>
+		<h2>On a real locus: C4A</h2>
 		<p>
-			The C4 genes vary in copy number, so many haplotypes leave this window through extra copies that
-			sit outside it: the graph has <b>{exits.length} window exits</b>. Dashed lines mark them.
+			The C4 genes vary in copy number, so in this {original.segments.size.toLocaleString()}-node window many
+			haplotypes leave through extra copies that lie outside it: the window has <b>{exits.length} loose ends</b>.
+			Dashed lines mark them. This is Sites at {JBROWSE_FOLD} bp, the threshold JBrowse would fold this window
+			at (below).
 		</p>
 		<div class="compare">
 			<div class="pane">
-				<span class="pane-label">Original · {original.segments.size.toLocaleString()} nodes · {exits.length} exits</span>
+				<span class="pane-label">Original · {original.segments.size.toLocaleString()} nodes · {exits.length} loose ends</span>
 				<div class="graph-embed">
 					<GraphLayoutView gfa={original} referenceSample={fixture.referenceSample} windowedSubgraph bare />
 				</div>
 			</div>
 			<div class="pane">
 				<span class="pane-label">
-					Sites
-					{#if sitesError}<span class="fail">{sitesError}</span>{:else if sites && sitesExits}
-						· {sites.segments.size} nodes · {sitesExits.filter((e) => e.kept).length} of {exits.length} exits kept
+					Sites, {JBROWSE_FOLD} bp
+					{#if sitesError}<span class="fail">{sitesError}</span>{:else if shown && shownExits}
+						· {shown.segments.size} nodes · {shownExits.filter((e) => e.kept).length} of {exits.length} loose ends kept
 					{:else}<span class="muted">· reducing…</span>{/if}
 				</span>
 				<div class="graph-embed">
-					{#if sites}
-						<GraphLayoutView gfa={sites} referenceSample={fixture.referenceSample} windowedSubgraph bare />
+					{#if shown}
+						<GraphLayoutView gfa={shown} referenceSample={fixture.referenceSample} windowedSubgraph bare />
 					{/if}
 				</div>
 			</div>
 		</div>
-		{#if sitesExits}
+		{#if shownExits}
 			<table>
-				<thead><tr><th>Exit node</th><th>bp</th><th>In the Sites graph</th></tr></thead>
+				<thead><tr><th>Loose end</th><th>bp</th><th>In the Sites graph</th></tr></thead>
 				<tbody>
-					{#each sitesExits as e (e.id)}
+					{#each shownExits as e (e.id)}
 						<tr>
 							<td><code>{e.id}</code></td>
 							<td>{original.segments.get(e.id)?.length.toLocaleString()}</td>
@@ -236,103 +183,145 @@
 	</section>
 
 	<section>
-		<h2>FM³: coarsen, lay out, refine</h2>
+		<h2>What the Bandage-based views lose</h2>
 		<p>
-			FM³ (Hachul &amp; Jünger's Fast Multipole Multilevel Method) is a force-directed layout, not a
-			simplification: its final drawing has every node. To get there it builds a hierarchy of ever
-			smaller graphs. Each round picks <b>suns</b>, gives each sun its neighbours as <b>planets</b> and
-			theirs as <b>moons</b>, and collapses each such solar system to one node. The smallest graph is laid
-			out first; then each level is placed around its parent's position and relaxed. The input is only
-			nodes and edges. Nothing in it says a node is a window exit, so an exit is just a node with one
-			neighbour: coarsening merges it into a solar system with interior nodes, and from then on it
-			doesn't exist as anything of its own.
+			<a href="https://github.com/rrwick/Bandage">Bandage</a> was built for assembly graphs, where a dead end is
+			usually a gap in the assembly. It is also how many people look at pangenome loci: on its own, and inside
+			JBrowse's graph genome view, which draws with Bandage's layout and folds with
+			<a href="https://github.com/GMOD/bandage-core">bandage-core</a>.
 		</p>
-		<svg class="schematic" viewBox="0 0 680 220" role="img" aria-labelledby="fm3-schematic-title">
-			<title id="fm3-schematic-title">FM³ absorbing an exit into a solar system</title>
-			<text x="20" y="22" class="panel">Input</text>
-			<line x1="30" y1="150" x2="190" y2="150" class="ref" />
-			<path d="M70 150 Q 90 90 110 70" class="allele exit" />
-			<circle cx="110" cy="70" r="5" class="exit-node" />
-			<circle cx="70" cy="150" r="5" class="node" />
-			<circle cx="130" cy="150" r="5" class="node" />
-			<circle cx="190" cy="150" r="5" class="node" />
-			<text x="120" y="66" class="note">exit</text>
-			<text x="230" y="120" class="arrow" text-anchor="middle">→</text>
-
-			<text x="260" y="22" class="panel">Solar systems</text>
-			<circle cx="330" cy="130" r="58" class="system" />
-			<circle cx="330" cy="150" r="7" class="sun" />
-			<circle cx="290" cy="150" r="5" class="node" />
-			<circle cx="370" cy="150" r="5" class="node" />
-			<circle cx="310" cy="90" r="5" class="exit-node" />
-			<text x="330" y="208" class="note" text-anchor="middle">sun, planets, moons</text>
-			<text x="445" y="120" class="arrow" text-anchor="middle">→</text>
-
-			<text x="475" y="22" class="panel">Coarser graph</text>
-			<circle cx="515" cy="130" r="12" class="node" />
-			<text x="475" y="208" class="note">one node: the exit is gone</text>
-			<text x="545" y="110" class="note">then laid out and</text>
-			<text x="545" y="126" class="note">refined back down:</text>
-			<text x="545" y="142" class="note">the exit returns at</text>
-			<text x="545" y="158" class="note">a random angle</text>
-		</svg>
-
-		<h3>On the same C4A graph</h3>
-		<p>
-			Below are the levels fm3.ts builds from it, coarsening left to right and then laid out back down
-			to every node, with exits in <span class="key exit">red</span>, and a
-			node that has absorbed an exit together with interior nodes in
-			<span class="key absorbed">pink</span>.
-		</p>
-		<div class="levels">
-			{#each [...shownDepths, 0] as d (d)}
-				{@const level = levels[d]}
-				{@const at = fit(level)}
-				{@const fate = exitFate(level)}
-				<figure>
-					<svg viewBox="0 0 {BOX} {BOX}" class="level">
-						{#each level.edges as [a, b] (a + ' ' + b)}
-							{@const p = at(a)}
-							{@const q = at(b)}
-							<line x1={p.x} y1={p.y} x2={q.x} y2={q.y} class="edge" />
-						{/each}
-						{#each level.nodes as id (id)}
-							{@const p = at(id)}
-							<circle cx={p.x} cy={p.y} r={radius(level, id)} class={kind(level, id)} />
-						{/each}
-					</svg>
-					<figcaption>
-						<b>{d === 0 ? 'Final layout' : d === levels.length - 1 ? `Level ${d}, the coarsest` : `Level ${d}`}</b> · {level.nodes.length.toLocaleString()} nodes<br />
-						{#if d === 0}
-							{outerExits} of {exits.length} exits on the outside of the drawing
-						{:else}
-							{fate.alone} of {exits.length} exits still on their own · {fate.absorbed} absorbed
-						{/if}
-					</figcaption>
-				</figure>
-			{/each}
+		<div class="cards">
+			<div class="card">
+				<h3>Bandage</h3>
+				<ul>
+					<li>Draws every node; the only reduction is merging unbranched runs, on request.</li>
+					<li>
+						Reads a GFA's segments and links but not its P or W lines, so it never learns where a haplotype goes
+						or stops. (The BandageNG fork reads them, for highlighting and scope.)
+					</li>
+					<li>
+						A loose end is a "dead end": counted under Graph information and selectable from a menu, but drawn
+						like any other node end, whether a haplotype leaves the window there or the graph really stops.
+					</li>
+				</ul>
+			</div>
+			<div class="card">
+				<h3>JBrowse graph genome view</h3>
+				<ul>
+					<li>
+						Draws a link only when both ends are inside the cut. Reference that runs past the window gets a
+						triangle; a haplotype strand that leaves it gets nothing.
+					</li>
+					<li>
+						Zoomed out, it folds every variant under ten pixels. An allele's size is its own length or the
+						reference it replaces. A strand that leaves the window replaces none, and the window cut it short, so
+						a whole extra C4 copy is sized by the few hundred bp inside the window, and folds away with its loose
+						end.
+					</li>
+					<li>
+						Its <i>walk rows</i> view does record, per haplotype, whether a walk stops or carries on past the
+						window. The graph drawing doesn't.
+					</li>
+				</ul>
+			</div>
 		</div>
-		<p>
-			Every node comes back in the final layout, but the drawing places each exit wherever its forces
-			settle: the {exits.length} exits sit at
-			{exitPlacement.map((p) => `${p}%`).join(', ')} of the way out from the centre (as percentiles of all
-			nodes), so nothing in the picture distinguishes a strand that leaves the window from any other tip.
-			Graphoscope draws its exit cues on top of every layout from the graph itself, not from FM³.
-		</p>
+
+		<h3>The same C4A window, folded by Sites and by bandage-core</h3>
+		<div class="scroll">
+			<table>
+				<thead>
+					<tr>
+						<th>Fold below</th>
+						{#each THRESHOLDS as t (t)}<th>{t.toLocaleString()} bp</th>{/each}
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<th>Sites</th>
+						{#each THRESHOLDS as t (t)}
+							{@const k = keptAt(t)}
+							<td>
+								{k == null ? '…' : `${k} of ${exits.length}`}
+								<span class="muted">· {sites[t]?.segments.size ?? '…'} nodes</span>
+							</td>
+						{/each}
+					</tr>
+					<tr>
+						<th>bandage-core</th>
+						{#each THRESHOLDS as t (t)}
+							<td>
+								{BANDAGE_FOLD[t].exits} of {exits.length}
+								<span class="muted">· {BANDAGE_FOLD[t].nodes} nodes</span>
+							</td>
+						{/each}
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<p class="small">Loose ends kept, and nodes left, on the C4A window at each threshold.</p>
 	</section>
 
 	<section>
 		<h2>Side by side</h2>
-		<table class="summary">
-			<thead><tr><th></th><th>Sites</th><th>FM³</th></tr></thead>
-			<tbody>
-				<tr><th>What it is</th><td>Simplification: a smaller graph</td><td>Layout: positions for every node</td></tr>
-				<tr><th>What it shrinks</th><td>Alleles within the threshold of a kept allele</td><td>Solar systems, temporarily, while it lays out</td></tr>
-				<tr><th>Knows about the reference</th><td>Yes: sites are reference spans</td><td>No</td></tr>
-				<tr><th>Knows about window exits</th><td>Yes: an allele that ends is only folded with alleles ending at the same node</td><td>No: an exit is a node with one neighbour</td></tr>
-				<tr><th>What happens to an exit</th><td>Kept as its own loose end</td><td>Absorbed into a neighbour's system at the first coarsening; back at the end, placed like any tip</td></tr>
-			</tbody>
-		</table>
+		<div class="scroll">
+			<table>
+				<thead><tr><th></th><th>Sites</th><th>Bandage</th><th>JBrowse graph view</th></tr></thead>
+				<tbody>
+					<tr>
+						<th>Simplifies the graph</th>
+						<td>Yes: per site, haplotype allele by allele</td>
+						<td>No: merges unbranched runs on request</td>
+						<td>Zoomed out: folds variants under ten pixels</td>
+					</tr>
+					<tr>
+						<th>Uses haplotype paths</th>
+						<td>Yes: they define the alleles</td>
+						<td>No (BandageNG: to highlight)</td>
+						<td>In walk rows and tube maps; not in the fold</td>
+					</tr>
+					<tr>
+						<th>C4A loose ends at {JBROWSE_FOLD} bp</th>
+						<td>{keptAt(JBROWSE_FOLD) ?? '…'} of {exits.length} kept</td>
+						<td>{exits.length} of {exits.length} drawn (nothing removed)</td>
+						<td>{BANDAGE_FOLD[JBROWSE_FOLD].exits} of {exits.length} kept</td>
+					</tr>
+					<tr>
+						<th>Loose end marked in the drawing</th>
+						<td>Yes: a dashed line</td>
+						<td>No</td>
+						<td>Reference only</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section class="sources">
+		<h2>Sources</h2>
+		<ul>
+			<li>
+				Bandage at <a href="https://github.com/rrwick/Bandage/tree/c89b9cf">c89b9cf</a>: GFA reading in
+				<code>graph/assemblygraph.cpp</code>, dead ends in <code>graph/debruijnnode.cpp</code> and
+				<code>ui/mainwindow.cpp</code>. BandageNG at
+				<a href="https://github.com/asl/BandageNG/tree/5004d97">5004d97</a>.
+			</li>
+			<li>
+				bandage-core at <a href="https://github.com/GMOD/bandage-core/tree/d1bbc26">d1bbc26</a> (npm 13.1.0):
+				<code>src/foldVariants.ts</code>. JBrowse's
+				<a href="https://github.com/GMOD/jbrowse-plugin-graphgenomeviewer/tree/5d5b9a1"
+					>graph genome view plugin at 5d5b9a1</a
+				>
+				calls it as <code>foldVariants(anchored, foldBelowBp, {'{'} cut: true {'}'})</code>, with
+				<code>foldBelowBp</code> ten times the view's bp per pixel. The
+				<a href="https://jbrowse.org/jb2/docs/user_guides/graph_genome_view/">graph genome view docs</a> describe
+				the link and triangle rules.
+			</li>
+			<li>
+				The bandage-core numbers come from running its <code>foldVariants</code> on the C4A window outside this
+				repository, the way the plugin calls it; bandage-core is GPL and no part of it is in Graphoscope. Sites
+				runs live in this page.
+			</li>
+		</ul>
 	</section>
 </main>
 
@@ -350,7 +339,7 @@
 		line-height: 1.55;
 	}
 	h1 {
-		margin: 0.4rem 0 0.4rem;
+		margin: 0.4rem 0;
 		font-size: 1.6rem;
 	}
 	h2 {
@@ -358,18 +347,21 @@
 		font-size: 1.25rem;
 	}
 	h3 {
-		margin: 1.6rem 0 0.4rem;
+		margin: 1.4rem 0 0.4rem;
 		font-size: 1rem;
 	}
-	p {
+	p,
+	.steps {
 		max-width: 75ch;
 	}
 	.lede {
 		color: #333;
 	}
-	.back,
 	a {
 		color: #2563eb;
+	}
+	.steps li {
+		margin-bottom: 0.5rem;
 	}
 	.schematic {
 		width: 100%;
@@ -386,10 +378,6 @@
 		font-size: 12px;
 		fill: #555;
 	}
-	.schematic .arrow {
-		font-size: 28px;
-		fill: #888;
-	}
 	.schematic .window {
 		fill: none;
 		stroke: #9ca3af;
@@ -399,11 +387,19 @@
 		stroke: #6b7280;
 		stroke-width: 4;
 	}
+	.schematic .bracket {
+		fill: none;
+		stroke: #6b7280;
+		stroke-width: 1.5;
+	}
 	.schematic .allele {
 		fill: none;
 		stroke: #f59e0b;
 		stroke-width: 5;
 		stroke-linecap: round;
+	}
+	.schematic .allele.grey {
+		stroke: #9ca3af;
 	}
 	.schematic .allele.thin {
 		stroke-width: 3;
@@ -419,19 +415,6 @@
 		stroke: #dc2626;
 		stroke-width: 2;
 		stroke-dasharray: 3 3;
-	}
-	.schematic .node {
-		fill: #9ca3af;
-	}
-	.schematic .sun {
-		fill: #4b5563;
-	}
-	.schematic .exit-node {
-		fill: #dc2626;
-	}
-	.schematic .system {
-		fill: #f3f4f6;
-		stroke: #d1d5db;
 	}
 	.compare {
 		display: grid;
@@ -450,11 +433,32 @@
 		min-height: 2.6em;
 	}
 	.graph-embed {
-		height: 480px;
+		height: 440px;
+	}
+	.cards {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0.8rem;
+	}
+	.card {
+		border: 1px solid #e5e7eb;
+		border-radius: 10px;
+		padding: 0.2rem 1rem 0.6rem;
+		font-size: 0.9rem;
+	}
+	.card ul {
+		padding-left: 1.1rem;
+		margin: 0.4rem 0 0;
+	}
+	.card li {
+		margin-bottom: 0.4rem;
+	}
+	.scroll {
+		overflow-x: auto;
 	}
 	table {
 		border-collapse: collapse;
-		margin: 1rem 0;
+		margin: 1rem 0 0.3rem;
 		font-size: 0.85rem;
 	}
 	th,
@@ -464,52 +468,21 @@
 		border-bottom: 1px solid #eee;
 		vertical-align: top;
 	}
-	.summary tbody th {
+	tbody th {
 		color: #555;
 		font-weight: 500;
 	}
-	.levels {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-		gap: 0.8rem;
-	}
-	figure {
-		margin: 0;
-	}
-	.level {
-		width: 100%;
-		background: #0d1117;
-		border-radius: 8px;
-	}
-	.level .edge {
-		stroke: #4b5563;
-		stroke-width: 0.6;
-	}
-	.level .interior {
-		fill: #9ca3af;
-	}
-	.level .exit {
-		fill: #ef4444;
-	}
-	.level .absorbed {
-		fill: #f9a8d4;
-	}
-	figcaption {
+	.small {
 		font-size: 0.8rem;
-		color: #555;
-		margin-top: 0.3rem;
+		color: #666;
+		margin-top: 0;
 	}
-	.key {
-		padding: 0 4px;
-		border-radius: 4px;
-		color: #fff;
+	.sources {
+		font-size: 0.85rem;
+		color: #444;
 	}
-	.key.exit {
-		background: #ef4444;
-	}
-	.key.absorbed {
-		background: #f9a8d4;
-		color: #831843;
+	.sources li {
+		margin-bottom: 0.4rem;
 	}
 	.pass {
 		color: #15803d;
@@ -527,7 +500,8 @@
 		border-radius: 4px;
 	}
 	@media (max-width: 700px) {
-		.compare {
+		.compare,
+		.cards {
 			grid-template-columns: 1fr;
 		}
 	}

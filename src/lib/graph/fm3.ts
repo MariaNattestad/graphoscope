@@ -46,19 +46,6 @@ export interface Fm3Options {
 	minCoarseNodes?: number;
 	/** Safety cap on the number of hierarchy levels. */
 	maxLevels?: number;
-	/** Called after each level is refined, coarsest first, so a figure can show
-	 * the hierarchy (the /algorithms page). */
-	onLevel?: (snapshot: Fm3LevelSnapshot) => void;
-}
-
-export interface Fm3LevelSnapshot {
-	/** 0 is the input graph; higher is coarser. */
-	depth: number;
-	nodes: string[];
-	edges: [string, string][];
-	pos: Map<string, { x: number; y: number }>;
-	/** For each node at this level, the input nodes it stands for. */
-	members: Map<string, string[]>;
 }
 
 export interface Fm3Result {
@@ -274,7 +261,6 @@ export function runFm3(options: Fm3Options): Fm3Result {
 		pos.set(id, { x: Math.cos(angle) * ringR, y: Math.sin(angle) * ringR });
 	});
 	refineLevel(coarsest, pos, iterationsPerLevel);
-	if (options.onLevel) options.onLevel(snapshot(levels, levels.length - 1, pos));
 
 	for (let li = levels.length - 2; li >= 0; li--) {
 		const level = levels[li];
@@ -304,7 +290,6 @@ export function runFm3(options: Fm3Options): Fm3Result {
 			}
 		}
 		refineLevel(level, pos, iterationsPerLevel);
-		if (options.onLevel) options.onLevel(snapshot(levels, li, pos));
 	}
 
 	// Only the finest level's positions matter to the caller.
@@ -312,25 +297,4 @@ export function runFm3(options: Fm3Options): Fm3Result {
 	const result = new Map<string, { x: number; y: number }>();
 	for (const id of finest.nodes) result.set(id, pos.get(id) ?? { x: 0, y: 0 });
 	return { pos: result };
-}
-
-function snapshot(levels: Level[], depth: number, pos: Map<string, { x: number; y: number }>): Fm3LevelSnapshot {
-	const level = levels[depth];
-	const members = new Map<string, string[]>();
-	for (const leaf of levels[0].nodes) {
-		let id = leaf;
-		for (let li = 0; li < depth; li++) id = levels[li].parentOf.get(id)!;
-		const list = members.get(id);
-		if (list) list.push(leaf);
-		else members.set(id, [leaf]);
-	}
-	const edges: [string, string][] = [];
-	for (const [a, list] of level.adj) for (const { nb } of list) if (a < nb) edges.push([a, nb]);
-	return {
-		depth,
-		nodes: [...level.nodes],
-		edges,
-		pos: new Map(level.nodes.map((id) => [id, { ...pos.get(id)! }])),
-		members
-	};
 }
