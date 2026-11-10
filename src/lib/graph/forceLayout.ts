@@ -58,6 +58,9 @@ export interface SimNode {
 	 * instead of crumpling. Undefined for backbone nodes (which are pinned). */
 	anchorX?: number;
 	targetY?: number;
+	/** The x range of its bubble's room on the reference (see bubbleShape.ts),
+	 * which anchored layouts hold it inside. */
+	room?: [number, number];
 	/** Free-layout 'flow' mode only: the x this node is pulled toward, derived from
 	 * its graph distance from a component endpoint (see seedLayered). */
 	targetX?: number;
@@ -1005,6 +1008,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 			// anchorForce) and the string keeps its shape instead of crumpling.
 			node.anchorX = x;
 			node.targetY = y;
+			if (spot && !below) node.room = spot.room;
 		});
 	}
 
@@ -1166,8 +1170,38 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		.force('avoidBaseline', opts.avoidBaseline ? avoidBaselineForce : null)
 		.stop();
 
+	// Hard walls, applied after every step: a bubble never sinks to (or through)
+	// the reference line, and never leaves its variant's room. The forces above
+	// only push; near the end of the run, when every force is weak, bead spacing
+	// and links could still win and leave strands under the line or tangled into
+	// a neighbour's space.
+	const floor = opts.avoidBaseline && opts.bubblesAbove;
+	const walls = opts.anchorToReference;
+	function enforceRoom() {
+		for (const node of nodeArray) {
+			if (node.fy != null || belowLineNodeIds.has(node.id)) continue;
+			if (floor) {
+				const top = node.componentBaselineY - minBaselineClearance;
+				if (node.y > top) {
+					node.y = top;
+					if ((node.vy ?? 0) > 0) node.vy = 0;
+				}
+			}
+			if (walls && node.room) {
+				const [lo, hi] = node.room;
+				if (node.x < lo || node.x > hi) {
+					node.x = Math.min(hi, Math.max(lo, node.x));
+					node.vx = 0;
+				}
+			}
+		}
+	}
+
 	const n = Math.max(1, opts.iterations);
-	for (let i = 0; i < n; i++) simulation.tick();
+	for (let i = 0; i < n; i++) {
+		simulation.tick();
+		enforceRoom();
+	}
 
 	return assembleResult(graph, backbones, assignedSegIds, nodesById, chains, structuralLinkPaths);
 }
