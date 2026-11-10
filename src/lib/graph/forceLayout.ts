@@ -204,6 +204,9 @@ const SPREAD_Y_STRENGTH = 0.15;
  * a strand's node spacing, and how hard overlapping beads are pushed apart. */
 const BEAD_RADIUS_PER_SPACING = 0.33;
 const BEAD_STRENGTH = 0.3;
+/** How far toward the reference a bubble node may be pushed, as a fraction of
+ * the height its spot on the loop asks for (see enforceRoom). */
+const FLOOR_PER_PLANNED = 0.5;
 /** Skyline mode: vertical spacing between bubble lanes, in bubble-Y-steps. */
 const LANE_GAP_STEPS = 0.5;
 /** Minimum distance (in world units) a free node is pushed to keep from the backbone line. */
@@ -1174,14 +1177,25 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// the reference line, and never leaves its variant's room. The forces above
 	// only push; near the end of the run, when every force is weak, bead spacing
 	// and links could still win and leave strands under the line or tangled into
-	// a neighbour's space.
+	// a neighbour's space. One shared floor flattened everything a dense tangle
+	// pushed down onto a single indistinguishable line, so each node's floor is
+	// its own: a clearance that varies per segment (1–2×, the same along a strand
+	// so it stays smooth), or half the height its spot on the loop asks for,
+	// whichever is higher.
 	const floor = opts.avoidBaseline && opts.bubblesAbove;
 	const walls = opts.anchorToReference;
+	const floorHeight = new Map<SimNode, number>();
+	for (const node of nodeArray) {
+		const planned = node.targetY != null ? node.componentBaselineY - node.targetY : 0;
+		const clearance =
+			minBaselineClearance * (1.5 + stableUnit(`floor:${node.segId === BEND_SEG_ID ? node.id : node.segId}`));
+		floorHeight.set(node, Math.max(clearance, planned * FLOOR_PER_PLANNED));
+	}
 	function enforceRoom() {
 		for (const node of nodeArray) {
 			if (node.fy != null || belowLineNodeIds.has(node.id)) continue;
 			if (floor) {
-				const top = node.componentBaselineY - minBaselineClearance;
+				const top = node.componentBaselineY - floorHeight.get(node)!;
 				if (node.y > top) {
 					node.y = top;
 					if ((node.vy ?? 0) > 0) node.vy = 0;
