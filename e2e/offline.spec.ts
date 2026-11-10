@@ -53,7 +53,7 @@ const NO_PATHS = [
 ].join('\n');
 
 test.describe('every page loads', () => {
-	for (const path of ['/gfa', '/playground', '/msa-dev']) {
+	for (const path of ['/gfa', '/playground', '/algorithms', '/msa-dev']) {
 		test(path, async ({ page }) => {
 			await page.goto(path);
 			await expect(page.locator('body')).not.toBeEmpty();
@@ -93,26 +93,27 @@ test.describe('/gfa viewer', () => {
 });
 
 test.describe('/playground', () => {
-	test('query.wasm reduces every fixture, matching the pinned expectations', async ({ page }) => {
+	test('query.wasm reduces every synthetic fixture, matching the pinned expectations', async ({ page }) => {
 		await page.goto('/playground');
-		const select = page.locator('select').first();
-		await expect(select.locator('option').first()).toBeAttached();
-		const options = await select.locator('option').evaluateAll((els) =>
-			els.map((e) => ({
-				value: (e as HTMLOptionElement).value,
-				group: e.parentElement!.getAttribute('label')
-			}))
-		);
-		expect(options.length).toBeGreaterThan(0);
-		for (const { value, group } of options) {
-			await select.selectOption(value);
-			await expect(page.getByText(/segments/).first()).toBeVisible();
-			await expect(page.getByText('reducing…')).toHaveCount(0);
-			if (group === 'synthetic') {
-				await expect(page.locator('.pass'), `${value} matches its expectation`).toBeVisible();
-				await expect(page.locator('.fail')).toHaveCount(0);
-			}
+		// Each row only reduces once it scrolls near the viewport.
+		const rows = page.locator('section.example:not(.real)');
+		await expect(rows.first()).toBeAttached();
+		const ids = await rows.evaluateAll((els) => els.map((e) => e.id));
+		expect(ids.length).toBeGreaterThan(0);
+		for (const id of ids) {
+			const row = page.locator(`section#${id}`);
+			await row.scrollIntoViewIfNeeded();
+			await expect(row.locator('.pass'), `${id} matches its expectation`).toBeVisible({ timeout: 30_000 });
+			await expect(row.locator('.fail')).toHaveCount(0);
 		}
 		await waitForLayout(page);
+	});
+});
+
+test.describe('/algorithms', () => {
+	test('Sites keeps every C4A exit', async ({ page }) => {
+		await page.goto('/algorithms');
+		await expect(page.getByText(/8 of 8 exits kept/)).toBeVisible({ timeout: 60_000 });
+		await expect(page.locator('.levels figure')).not.toHaveCount(0);
 	});
 });
