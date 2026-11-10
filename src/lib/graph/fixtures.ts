@@ -245,7 +245,7 @@ const walkEnd: Fixture = {
 	}
 };
 
-export const SYNTHETIC_FIXTURES: Fixture[] = [
+const SYNTHETIC_FIXTURES: Fixture[] = [
 	sitesDemo,
 	snp,
 	smallDel,
@@ -260,7 +260,7 @@ export const SYNTHETIC_FIXTURES: Fixture[] = [
 
 // --- real fixtures ------------------------------------------------------------
 
-export const REAL_FIXTURES: Fixture[] = [
+const REAL_FIXTURES: Fixture[] = [
 	{
 		id: 'c4a',
 		label: 'C4A (MHC class III)',

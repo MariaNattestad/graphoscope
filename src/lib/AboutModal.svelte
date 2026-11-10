@@ -72,9 +72,7 @@
 					alternate alleles are shorter than a <b>collapse threshold</b> (50&nbsp;bp). Then, at every
 					variant site, it folds each haplotype's allele into the nearest kept allele that differs from it
 					by less than the threshold, keeping every place a haplotype leaves the window, and merges the
-					resulting non-branching runs of nodes into single segments.
-					<a href="{base}/algorithms" data-sveltekit-reload>How it works</a> walks through it on a real
-					locus. Crucially, instead of keeping
+					resulting non-branching runs of nodes into single segments. Crucially, instead of keeping
 					every walk it just <b>counts</b> how many pass through each node and edge — that count is
 					what the gold&#8202;→&#8202;red colouring shows. The effect on memory is large: a locus
 					like LPA drops from hundreds of megabytes of parsed graph to a few.
