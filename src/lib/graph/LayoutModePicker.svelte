@@ -70,12 +70,6 @@
 					<path d="M50 26 C 54 24, 57 27, 61 25" stroke="#8b5cf6" stroke-width="2.6" fill="none" />
 					<path class="alt" d="M24 25 C 20 6, 40 4, 36 24" />
 					<path class="link" d="M44 27 C 47 38, 56 38, 58 27" stroke-dasharray="2 2" />
-				{:else if m.id === 'naive'}
-					<!-- A plain force layout pinned only along the reference line. -->
-					<path class="alt" d="M10 35 C 16 18, 26 46, 34 30 S 50 14, 54 35" />
-					<circle class="dot" cx="20" cy="29" r="1.6" />
-					<circle class="dot" cx="34" cy="30" r="1.6" />
-					<circle class="dot" cx="46" cy="22" r="1.6" />
 				{:else if m.id === 'fm3'}
 					<!-- An untangled ribbon with its bubbles opened out. -->
 					<path class="alt" d="M5 26 C 14 10, 24 10, 32 20 S 50 30, 59 14" />

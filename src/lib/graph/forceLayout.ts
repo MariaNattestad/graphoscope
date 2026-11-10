@@ -124,30 +124,16 @@ export interface LayoutOptions {
 	maxEdgesPerSegment?: number;
 	unitEdgeLength?: number;
 	iterations?: number;
-	/** Keep every non-reference bubble on one side of the backbone (above it)
-	 * instead of letting them fall either way. Halves the vertical spread and
-	 * leaves the space below the reference line free for coordinate tracks. */
-	bubblesAbove?: boolean;
 	/** Route each structural link through an invisible bend node so it curves
 	 * clear of the backbone instead of lying invisibly on top of it. Costs one
 	 * simulation node per link; turn off for a rough, faster layout. */
 	bendNodes?: boolean;
-	/** Pull each bubble node horizontally back toward the reference position it
-	 * attaches to, so a bubble stacks into a tidy vertical column over its
-	 * reference node instead of trailing sideways across the canvas. On by
-	 * default; turning it off gives the older, freer relaxation where the link
-	 * forces open bubbles out into more organic shapes. */
-	anchorToReference?: boolean;
-	/** (Anchored modes) push bubble nodes clear of the reference line so nothing
-	 * overlaps it. On by default; off lets the relaxation drift across the line —
-	 * part of the freer, older "naive" look. */
-	avoidBaseline?: boolean;
 	/** (Anchored modes) place bubbles deterministically in bp-proportional lanes
 	 * above the reference instead of force-relaxing them (see laneLayout.ts). */
 	lanes?: boolean;
 	/** Sample name to anchor the backbone on (its path is preferred as backbone). */
 	referenceSample?: string;
-	/** Which named layout mode to use. Anchored modes ('stacked', 'naive', 'classic')
+	/** Which named layout mode to use. Anchored modes ('stacked', 'classic')
 	 * lay out along the reference backbone; free modes ('fm3', 'simple-force',
 	 * 'flow', 'layered', 'radial') ignore the backbone for positioning and run a
 	 * force simulation tuned per mode (see layoutModes.ts). Defaults to 'stacked'. */
@@ -176,9 +162,6 @@ const DEFAULTS: Required<Omit<LayoutOptions, 'referenceSample' | 'mode' | 'strai
 	unitEdgeLength: 18,
 	iterations: 350,
 	bendNodes: true,
-	bubblesAbove: false,
-	anchorToReference: true,
-	avoidBaseline: true,
 	lanes: false
 };
 
@@ -720,9 +703,6 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	}
 	const opts = {
 		...DEFAULTS,
-		bubblesAbove: modeCfg.bubblesAbove,
-		anchorToReference: modeCfg.anchorToReference,
-		avoidBaseline: modeCfg.avoidBaseline,
 		lanes: modeCfg.lanes,
 		bendNodes: modeCfg.bendNodes,
 		...options
@@ -995,10 +975,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				y = straightenY;
 				belowLineNodeIds.add(nodeId);
 			} else if (spot) {
-				// A whole bubble takes one side, keyed by where it leaves the reference.
-				const sign = opts.bubblesAbove ? -1 : stableUnit(`side:${spot.attachX}`) >= 0 ? 1 : -1;
 				x = spot.x;
-				y = spot.baseY + sign * spot.height;
+				y = spot.baseY - spot.height;
 			} else {
 				// Not connected to the reference at all.
 				x = i * opts.unitEdgeLength;
@@ -1080,8 +1058,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		const a = nodesById.get(path.fromNode)!;
 		const b = nodesById.get(path.toNode)!;
 		bend.x = (a.x + b.x) / 2 + stableUnit(path.bendNode) * 6;
-		const bendSign = opts.bubblesAbove ? -1 : stableUnit(path.bendNode + ':y') >= 0 ? 1 : -1;
-		bend.y = (a.y + b.y) / 2 + bendSign * bubbleYStep * 0.4;
+		bend.y = (a.y + b.y) / 2 - bubbleYStep * 0.4;
 		bend.componentBaselineY = a.componentBaselineY;
 	}
 
@@ -1096,7 +1073,6 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		for (const node of nodeArray) {
 			if (node.fy != null) continue; // backbone nodes are fixed, exempt
 			const dy = node.y - node.componentBaselineY;
-			const absDy = Math.abs(dy);
 			// Bubbles that belong to the straightened lower track are held below the
 			// reference (off the line), not pushed back up through it.
 			if (belowLineNodeIds.has(node.id)) {
@@ -1106,17 +1082,12 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 				}
 				continue;
 			}
-			// One-sided: anything that has drifted below the line is pushed back up
-			// through it, not away from it, so the space below stays clear.
-			if (opts.bubblesAbove && dy > -minBaselineClearance) {
+			// Bubbles stay above the line: anything that has drifted below it is
+			// pushed back up through it, not away from it, so the space below stays
+			// clear for the gene track.
+			if (dy > -minBaselineClearance) {
 				const target = node.componentBaselineY - minBaselineClearance;
 				node.vy = (node.vy ?? 0) + (target - node.y) * BASELINE_PUSH_GAIN * alpha;
-				continue;
-			}
-			if (absDy < minBaselineClearance) {
-				const dir = dy !== 0 ? Math.sign(dy) : stableUnit(node.id) >= 0 ? 1 : -1;
-				const push = (minBaselineClearance - absDy) * BASELINE_PUSH_GAIN * alpha;
-				node.vy = (node.vy ?? 0) + dir * push;
 			}
 		}
 	}
@@ -1124,9 +1095,7 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// Pulls each bubble node back toward its spot on its loop of string, so the
 	// strand keeps that shape while charge and collide only nudge neighbouring
 	// strands apart. Without it a bubble slides arbitrarily far from where it
-	// attaches. With `anchorToReference` off it doesn't run — the simulation falls
-	// back to charge + links + collide + the baseline push, which is the older,
-	// freer relaxation (seeded on the loop but not held to it).
+	// attaches.
 	function anchorForce(alpha: number) {
 		for (const node of nodeArray) {
 			if (node.fy != null) continue; // backbone nodes are pinned
@@ -1168,9 +1137,8 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 		.force('charge', forceManyBody().strength(-40).distanceMax(400))
 		.force('collide', forceCollide(8))
 		.force('beads', beadForce)
-		.force('anchor', opts.anchorToReference ? anchorForce : null)
-		// 'naive' turns this off, letting bubbles drift across the reference line.
-		.force('avoidBaseline', opts.avoidBaseline ? avoidBaselineForce : null)
+		.force('anchor', anchorForce)
+		.force('avoidBaseline', avoidBaselineForce)
 		.stop();
 
 	// Hard walls, applied after every step: a bubble never sinks to (or through)
@@ -1182,8 +1150,6 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// its own: a clearance that varies per segment (1–2×, the same along a strand
 	// so it stays smooth), or half the height its spot on the loop asks for,
 	// whichever is higher.
-	const floor = opts.avoidBaseline && opts.bubblesAbove;
-	const walls = opts.anchorToReference;
 	const floorHeight = new Map<SimNode, number>();
 	for (const node of nodeArray) {
 		const planned = node.targetY != null ? node.componentBaselineY - node.targetY : 0;
@@ -1194,14 +1160,12 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	function enforceRoom() {
 		for (const node of nodeArray) {
 			if (node.fy != null || belowLineNodeIds.has(node.id)) continue;
-			if (floor) {
-				const top = node.componentBaselineY - floorHeight.get(node)!;
-				if (node.y > top) {
-					node.y = top;
-					if ((node.vy ?? 0) > 0) node.vy = 0;
-				}
+			const top = node.componentBaselineY - floorHeight.get(node)!;
+			if (node.y > top) {
+				node.y = top;
+				if ((node.vy ?? 0) > 0) node.vy = 0;
 			}
-			if (walls && node.room) {
+			if (node.room) {
 				const [lo, hi] = node.room;
 				if (node.x < lo || node.x > hi) {
 					node.x = Math.min(hi, Math.max(lo, node.x));

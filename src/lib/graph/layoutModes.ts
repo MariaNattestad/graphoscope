@@ -26,7 +26,6 @@ export type LayoutMode =
 	// reference-anchored
 	| 'classic'
 	| 'stacked'
-	| 'naive'
 	// reference-seeded, free-standing
 	| 'assembly'
 	// reference-free
@@ -61,18 +60,8 @@ export interface LayoutModeConfig {
 	/** One-line description for the UI. */
 	blurb: string;
 	// --- anchored-mode knobs (ignored by free modes) ---
-	/** Keep bubbles on one side (above the reference line), freeing the space below
-	 * for the gene track. */
-	bubblesAbove: boolean;
-	/** Pull each bubble onto its reference node's x so it stacks into a tidy column.
-	 * Off gives the older, freer relaxation where bubbles open out sideways. */
-	anchorToReference: boolean;
-	/** Push bubbles clear of the reference line so nothing overlaps it. Off lets the
-	 * relaxation drift across the line (part of the "naive" older look). */
-	avoidBaseline: boolean;
 	/** Place bubbles deterministically in bp-proportional lanes above the
-	 * reference, with no force relaxation (see laneLayout.ts). Overrides the force
-	 * knobs above. */
+	 * reference, with no force relaxation (see laneLayout.ts). */
 	lanes: boolean;
 	/** A force layout that reads like an assembly-graph view (assemblyLayout.ts):
 	 * seeded from the reference but not pinned to it, so it's drawn without a
@@ -94,20 +83,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		family: 'anchored',
 		blurb:
 			'A force layout along a straight reference axis: each bubble is pulled into a column over the reference position it attaches to, and its strands relax into their own shape.',
-		bubblesAbove: true,
-		anchorToReference: true,
-		avoidBaseline: true,
-		lanes: false,
-		bendNodes: false
-	},
-	{
-		id: 'naive',
-		label: 'Naïve',
-		family: 'anchored',
-		blurb: 'The reference on a straight axis, but otherwise a simple force-directed layout.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		bendNodes: false
 	},
@@ -117,9 +92,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		family: 'anchored',
 		blurb:
 			'Each bubble placed directly above the reference as horizontal lanes at true bp scale, alleles side by side, with no simulation. Good for structuring extremely dense loci.',
-		bubblesAbove: true,
-		anchorToReference: true,
-		avoidBaseline: true,
 		lanes: true,
 		// Skyline never simulates, so bend nodes cost nothing; they carry the skip arcs.
 		bendNodes: true
@@ -133,9 +105,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		family: 'free',
 		blurb:
 			'Multilevel force-directed (FM³) layout: coarsens the graph, lays out the coarse skeleton, then refines down to a clean, untangled drawing. The best general reference-free view.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		// The strand/"noodle" curve comes from each segment's length-proportional
 		// bead chain bending, not from bend nodes on the connectors — so we skip bend
@@ -163,9 +132,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		family: 'free',
 		blurb:
 			'A force layout that reads like an assembly graph: the reference as a backbone running left to right, each variant a visible bubble or loop. Best with Simplify on.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		assembly: true,
 		bendNodes: false
@@ -175,9 +141,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Simple force-directed',
 		family: 'free',
 		blurb: 'Plain force layout — no reference, no anchoring. The graph finds its own shape.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		bendNodes: false,
 		refFree: {
@@ -194,9 +157,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Flow',
 		family: 'free',
 		blurb: 'Left-to-right layering by graph distance — direction without picking a reference.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		bendNodes: true,
 		refFree: {
@@ -214,9 +174,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		family: 'free',
 		blurb:
 			'Sugiyama-style layered drawing: ranks by graph distance with the rows ordered to minimise edge crossings. Best for DAG-like graphs.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		bendNodes: true,
 		refFree: {
@@ -234,9 +191,6 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Radial',
 		family: 'free',
 		blurb: 'Grows outward from a central node by graph depth. An overview of overall topology.',
-		bubblesAbove: false,
-		anchorToReference: false,
-		avoidBaseline: false,
 		lanes: false,
 		bendNodes: true,
 		refFree: {

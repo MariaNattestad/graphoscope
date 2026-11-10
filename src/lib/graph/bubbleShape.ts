@@ -41,8 +41,6 @@ export interface StringSpot {
 	height: number;
 	/** The reference line's y where the strand attaches. */
 	baseY: number;
-	/** Where the strand leaves the reference, so a whole bubble can pick one side. */
-	attachX: number;
 	/** The x range of its variant's room, which the layout keeps it inside. */
 	room: [number, number];
 }
@@ -240,7 +238,6 @@ export function bubbleStringSpots(
 					x: r.x + (lane - r.x) * (width > 0 ? Math.min(1, (4 * d) / width) : 0),
 					height: Math.max(minHeight, d),
 					baseY: r.y,
-					attachX: r.x,
 					room: v < 0 ? [-Infinity, Infinity] : roomOf(v)
 				});
 				return;
@@ -256,7 +253,6 @@ export function bubbleStringSpots(
 				// anyway, so the ends of the loop don't start out fighting it.
 				height: Math.max(minHeight, height),
 				baseY: (a.y + b.y) / 2,
-				attachX: a.x,
 				room: [lo, hi]
 			});
 		});
