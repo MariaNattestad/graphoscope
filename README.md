@@ -113,25 +113,17 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   and each builds an index over the graph, so on a large locus the control warns
   before switching — Graphoscope's general rule is to show context by default unless
   it would slow the app, then keep it one switch away with a slow-down warning.
-- **Simplify: Fold / Sites / Off.** *Fold* is the default; *Sites* is the query's
-  own simplification (below); *Off* is the full graph. Each shows how many nodes it
-  went from and to underneath the control. *Fold* (`src/lib/graph/fold.ts`) decides per
-  **allele** — the contiguous stretch of sequence one haplotype contributed — rather
-  than per node: it keeps the reference plus every allele at least the threshold in
-  size (its own bp, or the reference it replaces if larger), plus only the shortest
-  route from each kept allele back to the reference, drops deletion links under the
-  threshold, and merges what's left. So small stubs hanging off a big insertion go
-  too. It reads the full graph (the walks tell it which segments form one allele),
-  fetching it on its own when it's light enough for the haplotype list to auto-load
-  and otherwise folding the simplified graph, with the full one a click away. The
-  *auto* threshold is about 10 px at the fitted zoom.
+- **Simplify: On / Off.** *On* is the default and is the query's own
+  simplification (below), with its threshold picked under the control; *Off* is the
+  full graph. Each shows how many nodes it went from and to underneath the control.
+  A whole uploaded GFA is shown as loaded.
 - **MSA view** — opened from the node inspector. It lays out the sequence of
   every haplotype base by base along the graph's own nodes (no alignment is
   computed: the graph already says which bases correspond), across the stretch of
   reference in view when the reference-based graph is zoomed in to 6 kb or less
   (3 kb on a phone), otherwise across a window around the selected node. It reads
   the full graph in the background, while the graph above keeps its view and
-  simplification; MSA node names and clicks map onto the folded or simplified nodes
+  simplification; MSA node names and clicks map onto the simplified nodes
   that hold them.
 - **Assembly graph** layout (`src/lib/graph/assemblyLayout.ts`, under
   Reference-free) — a force layout that reads like an assembly-graph view: the
@@ -142,16 +134,16 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
   the length it skips, drawn as a dashed arc; seed the reference along x and rotate
   it left to right; and, for drawing, Catmull-Rom smoothed flat-ended strands with
   tangent edges, a rainbow reference, width by haplotype carriage, and length
-  labels. Best with Simplify set to Fold.
+  labels. Best with Simplify on.
 - **Raw data** (`src/lib/RawDataView.svelte`) — walks / segments / links / raw GFA.
 
 ### Simplification playground
 
 [`/playground`](https://marianattestad.github.io/graphoscope/playground) is a
 standalone sandbox for the reference-guided simplification algorithm behind the
-graph layout: pick a fixture (synthetic edge cases or real HPRC loci), tweak the
-collapse threshold, and see the original graph and its simplified form side by
-side through the same layout widget. It's where the simplification approach
+graph layout: every fixture (synthetic edge cases and real HPRC loci) in its own
+row, the original graph beside what Simplify makes of it at one shared threshold, with
+the same exit cues the locus browser draws. It's where the simplification approach
 gets prototyped and stress-tested independently of the main query flow — the
 exact fixtures it uses are also what the Rust unit tests assert on
 (`crates/reduce/src/tests.rs`).
@@ -314,10 +306,23 @@ Rust crate. It does three things per query:
 1. **Retrieve** the locus subgraph, using
    [GBZ-base](https://github.com/jltsiren/gbz-base) unmodified as a crates.io
    dependency — that's what it's for, and it's the only thing it does here.
-2. **Simplify** the subgraph (`src/simplify.rs`): collapse small reference-anchored
-   superbubbles onto the reference, then merge non-branching chains. A site
-   collapses only if its *longest* entry→exit path is under the threshold, so a
-   small deletion spanning a long reference stretch correctly survives.
+2. **Simplify** the subgraph, in two stages, then merge non-branching chains.
+   Stage 1 (`src/simplify.rs`) collapses small reference-anchored superbubbles
+   onto the reference: a site collapses only if its *longest* entry→exit path is
+   under the threshold (capped at 50 bp), so a small deletion spanning a long
+   reference stretch survives. Stage 2 (`src/alleles.rs`) works per haplotype:
+   it cuts the graph into sites along the reference, reads each haplotype's
+   allele at each site from its walk, and folds every allele into the first
+   kept allele (the reference first, then the most carried) that differs from it
+   by no single variant at least the threshold. Alleles that start or stop
+   inside a site — a haplotype leaving the window, or a path that ends in the
+   pangenome — only fold into alleles that start and stop at the same place, so
+   no exit is lost. The site then keeps only the kept alleles' nodes and links,
+   and every walk is rewritten to its kept allele. So every link drawn is one a
+   haplotype uses, every haplotype is still a path through the graph, and none
+   is moved by a variant of the threshold or more. The threshold (`--max-variant`,
+   50 bp by default) is the *variants under* control beside *Simplify*; changing it
+   re-runs the query.
 3. **Aggregate the walks** (`src/coverage.rs`): count how many distinct haplotype
    walks cross each node and edge, emit those as `WC` tags, and drop the walks.
 

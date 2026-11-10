@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::gfa::Step;
 use crate::reduce::reduce;
 
 const FIXTURE_DIR: &str = "../../src/lib/graph/fixtures";
@@ -23,11 +24,15 @@ const FIXTURE_DIR: &str = "../../src/lib/graph/fixtures";
 /// The constructed graphs /playground demonstrates, each isolating one thing the
 /// algorithm has to get right. Expectations are the same ones the TypeScript
 /// suite asserts, so the two implementations are pinned to identical behaviour.
-const SYNTHETIC: [Expected; 11] = [
+const SYNTHETIC: [Expected; 10] = [
+    // One site of each kind (src/lib/graph/fixtures.ts describes it): stage 1
+    // pops A, B and the SNPs on the reference; stage 2 folds the SNPs inside C
+    // and F's exit branch, alt2 into alt1, and keeps both exits.
+    Expected::new("sites_demo", 3, 2, 1, 21)
+        .after(12)
+        .removed(&["20", "32", "51", "53", "60", "63"]),
     // A 1 bp substitution: collapses, and the whole graph unchops to one node.
     Expected::new("snp", 1, 1, 1, 1).after(1).removed(&["20"]),
-    // A 4 bp insertion: small enough to collapse.
-    Expected::new("small_ins", 1, 1, 0, 4).after(1).removed(&["20"]),
     // A large insertion must survive — this is the case a naive "shortest
     // allele" rule gets wrong.
     Expected::new("large_ins", 0, 0, 0, 0),
@@ -38,16 +43,16 @@ const SYNTHETIC: [Expected; 11] = [
     // A small deletion is a pure skip edge with no alt node, so nothing is
     // removed even though a site is collapsed.
     Expected::new("small_del", 1, 0, 0, 0).after(1),
-    // Two alternative alleles at one site collapse together.
-    Expected::new("multiallelic", 1, 2, 2, 2).after(1).removed(&["20", "21"]),
-    // A small variant next to a large one: only the small half collapses.
-    Expected::new("mixed", 1, 1, 1, 1).removed(&["20"]),
     // Adjacent substitutions (an MNP) collapse as a single site.
     Expected::new("mnp", 1, 2, 2, 2).after(1).removed(&["20", "21"]),
-    // Nested complexity is left alone rather than guessed at.
+    // Two insertion alleles that differ from each other by 60 bp: both stay.
     Expected::new("nested", 0, 0, 0, 0),
-    // A cycle must never be collapsed — the DAG check catches it.
-    Expected::new("cyclic", 0, 0, 0, 0),
+    // Stage 1 never pops a cycle (the DAG check), but the haplotypes that loop
+    // carry only 4 bp more than the reference, so stage 2 folds their allele.
+    Expected::new("cyclic", 0, 0, 0, 0).removed(&["20"]),
+    // Two haplotypes whose paths end on a SNP inside an insertion keep that
+    // SNP's node: a walk always ends where it did.
+    Expected::new("walk_end", 0, 0, 0, 0).after(5),
     // No variation at all: nothing to pop, but unchop merges the run.
     Expected::new("long_run", 0, 0, 0, 0).after(1),
 ];
@@ -109,7 +114,7 @@ fn fixture(name: &str) -> String {
 
 fn run_reduce(text: &str, max_variant: usize) -> String {
     let mut out: Vec<u8> = Vec::new();
-    reduce(|w: &mut dyn std::io::Write| w.write_all(text.as_bytes()), max_variant, &mut out)
+    reduce(|w: &mut dyn std::io::Write| w.write_all(text.as_bytes()), max_variant, None, &mut out)
         .expect("reduce failed");
     String::from_utf8(out).expect("output is utf-8")
 }
@@ -406,7 +411,7 @@ fn a_higher_threshold_never_keeps_more_nodes() {
     for name in all_fixtures() {
         let input = fixture(name);
         let mut previous = usize::MAX;
-        for threshold in [10, 50, 250] {
+        for threshold in [10, 50, 250, 500, 1000, 5000] {
             let out = run_reduce(&input, threshold);
             let count = segments(&out).len();
             assert!(
@@ -537,6 +542,142 @@ fn constructed_graphs_collapse_exactly_as_specified() {
                 e.id,
                 gone
             );
+        }
+    }
+}
+
+/// Runs both stages over a fixture keeping every walk, which the real pipeline
+/// never does, so each haplotype can be compared before and after.
+struct Traced {
+    /// (is_ref, raw steps, after stage 1, after stage 2)
+    walks: Vec<(bool, Vec<Step>, Vec<Step>, Vec<Step>)>,
+    nodes: HashSet<u64>,
+    links: HashSet<(u64, u64)>,
+}
+
+fn trace(text: &str, threshold: usize) -> Traced {
+    use crate::gfa::{self, StepIter};
+    use crate::reduce::reverse_strand_of_reference;
+    use crate::simplify::{plan_collapse, Aggregates, Graph};
+    use std::collections::HashMap;
+
+    let mut graph = Graph::default();
+    let mut agg = Aggregates::default();
+    let mut rs: Vec<String> = Vec::new();
+    let mut raw: Vec<(bool, Vec<Step>, usize)> = Vec::new();
+    let mut ref_idx: HashMap<u64, usize> = HashMap::new();
+    for line in text.lines().map(str::as_bytes) {
+        match gfa::line_type(line) {
+            b'H' => rs = gfa::parse_reference_samples(line).unwrap_or(rs),
+            b'S' => graph.add_segment(gfa::parse_segment(line).unwrap()),
+            b'L' => graph.links.push(gfa::parse_link(line).unwrap()),
+            b'W' => {
+                let steps: Vec<Step> = StepIter::new(gfa::walk_field(line)).collect();
+                let is_ref = !raw.iter().any(|w| w.0)
+                    && rs.iter().any(|r| r.as_bytes() == gfa::walk_sample(line));
+                if is_ref {
+                    for (i, s) in steps.iter().enumerate() {
+                        ref_idx.entry(s.id).or_insert(i);
+                    }
+                }
+                if !is_ref && reverse_strand_of_reference(&steps, &ref_idx) {
+                    agg.observe_walk(steps.iter().rev().copied());
+                } else {
+                    agg.observe_walk(steps.iter().copied());
+                }
+                raw.push((is_ref, steps, gfa::walk_weight(line)));
+            }
+            _ => {}
+        }
+    }
+    agg.observe_links(&graph);
+    let ref_steps: Vec<Step> = raw.iter().find(|w| w.0).map(|w| w.1.clone()).unwrap_or_default();
+    let plan = plan_collapse(&graph, &agg, &ref_steps, threshold.min(crate::reduce::STAGE1_MAX));
+    plan.apply_to_graph(&mut graph);
+    let mut sites = crate::alleles::plan_sites(&graph, &ref_steps);
+    let mut s1: Vec<Vec<Step>> = Vec::new();
+    for (is_ref, steps, weight) in &raw {
+        let mut out = Vec::new();
+        plan.reroute(steps.iter().copied(), &mut out);
+        sites.observe(&out, *weight, *is_ref);
+        s1.push(out);
+    }
+    sites.cluster(&graph, threshold);
+    sites.apply_to_graph(&mut graph);
+    let walks = raw
+        .into_iter()
+        .zip(s1)
+        .map(|((is_ref, steps, _), s1)| {
+            let mut fin = Vec::new();
+            sites.reroute(&s1, &mut fin);
+            (is_ref, steps, s1, fin)
+        })
+        .collect();
+    let pair = |a: u64, b: u64| if a <= b { (a, b) } else { (b, a) };
+    Traced {
+        walks,
+        nodes: graph.segments.iter().map(|s| s.id).collect(),
+        links: graph.links.iter().map(|l| pair(l.from, l.to)).collect(),
+    }
+}
+
+#[test]
+fn every_haplotype_stays_a_path_moved_only_by_small_variants() {
+    for name in all_fixtures() {
+        check_haplotypes(name, &fixture(name), &[50, 500, 1000]);
+    }
+}
+
+/// The same checks on any GFA with walks: `EXTRA_GFA=a.gfa:b.gfa cargo test
+/// --release extra_loci -- --ignored`.
+#[test]
+#[ignore]
+fn extra_loci() {
+    for path in std::env::var("EXTRA_GFA").unwrap_or_default().split(':').filter(|p| !p.is_empty()) {
+        check_haplotypes(path, &fs::read_to_string(path).unwrap(), &[50, 100, 500, 1000, 5000]);
+    }
+}
+
+fn check_haplotypes(name: &str, text: &str, thresholds: &[usize]) {
+    {
+        let text = text;
+        for &threshold in thresholds {
+            let t = trace(text, threshold);
+            let lens: std::collections::HashMap<u64, usize> = text
+                .lines()
+                .filter_map(|l| crate::gfa::parse_segment(l.as_bytes()))
+                .map(|s| (s.id, s.seq.len()))
+                .collect();
+            for (k, (is_ref, raw, s1, fin)) in t.walks.iter().enumerate() {
+                let at = format!("{} t={} walk {}", name, threshold, k);
+                if *is_ref {
+                    assert!(raw == fin, "{}: the reference moved", at);
+                }
+                for s in fin {
+                    assert!(t.nodes.contains(&s.id), "{}: steps on removed node {}", at, s.id);
+                }
+                for w in fin.windows(2) {
+                    let p = if w[0].id <= w[1].id { (w[0].id, w[1].id) } else { (w[1].id, w[0].id) };
+                    assert!(t.links.contains(&p), "{}: no link {:?}", at, p);
+                }
+                // Same terminals: a walk still starts and ends where it did.
+                assert_eq!(s1.first().map(|s| s.id), fin.first().map(|s| s.id), "{}: start moved", at);
+                assert_eq!(s1.last().map(|s| s.id), fin.last().map(|s| s.id), "{}: end moved", at);
+                let moved = crate::alleles::largest_variant(raw, fin, |id| lens[&id]);
+                let stage1 = crate::alleles::largest_variant(raw, s1, |id| lens[&id]);
+                assert!(moved < threshold, "{}: moved by a {} bp variant ({} bp in stage 1)", at, moved, stage1);
+            }
+            // No link is drawn that the haplotypes stopped using: a link no walk
+            // takes afterwards was one no walk took before either.
+            let pair = |a: u64, b: u64| if a <= b { (a, b) } else { (b, a) };
+            let used = |pick: fn(&(bool, Vec<Step>, Vec<Step>, Vec<Step>)) -> &Vec<Step>| -> HashSet<(u64, u64)> {
+                t.walks.iter().flat_map(|w| pick(w).windows(2).map(|p| pair(p[0].id, p[1].id)).collect::<Vec<_>>()).collect()
+            };
+            let (before, after) = (used(|w| &w.1), used(|w| &w.3));
+            for l in &t.links {
+                assert!(after.contains(l) || !before.contains(l), "{} t={}: link {:?} kept but abandoned", name, threshold, l);
+            }
+            eprintln!("{} t={}: {} nodes, {} links", name, threshold, t.nodes.len(), t.links.len());
         }
     }
 }

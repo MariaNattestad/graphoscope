@@ -111,7 +111,16 @@ export interface ReducedStats {
 	 * haplotypes.
 	 */
 	walkRecords: number;
+	/** Stage 2 of Simplify: sites with more than one allele, distinct alleles, and the representatives kept. */
+	alleleSites?: number;
+	alleles?: number;
+	allelesShown?: number;
 	totalSequenceBp: number;
+	/** How the query cut the window: widened to whole top-level snarls, or the
+	 * plain window when that came to more than the reducer's node budget. */
+	window?: 'snarls' | 'plain';
+	/** On a plain fallback, the node count of the widened window it ruled out. */
+	windowBudgetNodes?: number;
 }
 
 export interface Gfa {
@@ -235,7 +244,12 @@ export function parseGfa(text: string): Gfa {
 					nonRefWalks: intTag(f, 'NW') ?? 0,
 					samples: intTag(f, 'NS') ?? 0,
 					walkRecords: intTag(f, 'WR') ?? 0,
-					totalSequenceBp: intTag(f, 'TS') ?? 0
+					totalSequenceBp: intTag(f, 'TS') ?? 0,
+					alleleSites: intTag(f, 'AS'),
+					alleles: intTag(f, 'AL'),
+					allelesShown: intTag(f, 'AK'),
+					window: stringTag(f, 'QW') as 'snarls' | 'plain' | undefined,
+					windowBudgetNodes: intTag(f, 'QB')
 				};
 				break;
 			}
@@ -382,66 +396,4 @@ export function gfaStats(gfa: Gfa, referenceSample?: string): GfaStats {
 		walkRecords: gfa.reduced ? gfa.reduced.walkRecords : null,
 		referencePathBp: ref ? ref.end - ref.start : null
 	};
-}
-
-/**
- * Write a `Gfa` back out as GFA 1.1 text — the inverse of {@link parseGfa}, for
- * graphs the viewer derives itself (e.g. a fold) and offers as a download. Tags
- * the parser reads are written back (`WC`/`WS`/`WE`/`MB`, rGFA `SN`/`SO`/`SR`,
- * read depth); computed (`synthetic`) backbones aren't in any file, so they are
- * left out. The reduced `X` stats line is written only when `reduced` is set.
- */
-export function writeGfa(gfa: Gfa): string {
-	const lines: string[] = [...gfa.headers];
-	const r = gfa.reduced;
-	if (r) {
-		lines.push(
-			[
-				'X',
-				`SB:i:${r.segmentsBefore}`,
-				`SA:i:${r.segmentsAfter}`,
-				`LB:i:${r.linksBefore}`,
-				`LA:i:${r.linksAfter}`,
-				`ST:i:${r.sites}`,
-				`NR:i:${r.nodesRemoved}`,
-				`SN:i:${r.snpCount}`,
-				`BR:i:${r.basesRemoved}`,
-				`UM:i:${r.unchopMerges}`,
-				`TW:i:${r.totalWalks}`,
-				`NW:i:${r.nonRefWalks}`,
-				`NS:i:${r.samples}`,
-				`WR:i:${r.walkRecords}`,
-				`TS:i:${r.totalSequenceBp}`
-			].join('\t')
-		);
-	}
-	for (const s of gfa.segments.values()) {
-		const f = ['S', s.id, s.seq || '*'];
-		if (!s.seq) f.push(`LN:i:${s.length}`);
-		if (s.coverage !== undefined) f.push(`WC:i:${s.coverage}`);
-		if (s.walkStarts !== undefined) f.push(`WS:i:${s.walkStarts}`);
-		if (s.walkEnds !== undefined) f.push(`WE:i:${s.walkEnds}`);
-		if (s.members?.length) f.push(`MB:Z:${s.members.join(',')}`);
-		if (s.depth !== undefined) f.push(s.depthUnit === 'x' ? `dp:f:${s.depth}` : `RC:i:${s.depth}`);
-		if (s.stableName !== undefined) f.push(`SN:Z:${s.stableName}`);
-		if (s.stableOffset !== undefined) f.push(`SO:i:${s.stableOffset}`);
-		if (s.rank !== undefined) f.push(`SR:i:${s.rank}`);
-		lines.push(f.join('\t'));
-	}
-	for (const l of gfa.links) {
-		const f = ['L', l.from, l.fromOrient, l.to, l.toOrient, '0M'];
-		if (l.coverage !== undefined) f.push(`WC:i:${l.coverage}`);
-		lines.push(f.join('\t'));
-	}
-	for (const w of gfa.walks) {
-		if (w.kind === 'synthetic') continue;
-		if (w.kind === 'P') {
-			lines.push(['P', w.sample, w.steps.map((s) => s.id + s.orient).join(',') || '*', '*'].join('\t'));
-			continue;
-		}
-		const path = w.steps.map((s) => (s.orient === '+' ? '>' : '<') + s.id).join('');
-		const tags = Object.entries(w.tags).map(([k, v]) => `${k}:${/^-?\d+$/.test(v) ? 'i' : 'Z'}:${v}`);
-		lines.push(['W', w.sample, String(w.hapIndex), w.seqId, String(w.start), String(w.end), path, ...tags].join('\t'));
-	}
-	return lines.join('\n') + '\n';
 }

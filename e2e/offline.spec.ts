@@ -93,25 +93,18 @@ test.describe('/gfa viewer', () => {
 });
 
 test.describe('/playground', () => {
-	test('query.wasm reduces every fixture, matching the pinned expectations', async ({ page }) => {
+	test('query.wasm reduces every synthetic fixture, matching the pinned expectations', async ({ page }) => {
 		await page.goto('/playground');
-		const select = page.locator('select').first();
-		await expect(select.locator('option').first()).toBeAttached();
-		const options = await select.locator('option').evaluateAll((els) =>
-			els.map((e) => ({
-				value: (e as HTMLOptionElement).value,
-				group: e.parentElement!.getAttribute('label')
-			}))
-		);
-		expect(options.length).toBeGreaterThan(0);
-		for (const { value, group } of options) {
-			await select.selectOption(value);
-			await expect(page.getByText(/segments/).first()).toBeVisible();
-			await expect(page.getByText('reducing…')).toHaveCount(0);
-			if (group === 'synthetic') {
-				await expect(page.locator('.pass'), `${value} matches its expectation`).toBeVisible();
-				await expect(page.locator('.fail')).toHaveCount(0);
-			}
+		// Each row only reduces once it scrolls near the viewport.
+		const rows = page.locator('section.example:not(.real)');
+		await expect(rows.first()).toBeAttached();
+		const ids = await rows.evaluateAll((els) => els.map((e) => e.id));
+		expect(ids.length).toBeGreaterThan(0);
+		for (const id of ids) {
+			const row = page.locator(`section#${id}`);
+			await row.scrollIntoViewIfNeeded();
+			await expect(row.locator('.pass'), `${id} matches its expectation`).toBeVisible({ timeout: 30_000 });
+			await expect(row.locator('.fail')).toHaveCount(0);
 		}
 		await waitForLayout(page);
 	});

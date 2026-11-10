@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { parseGfa } from '../gfa';
+import { parseGfa, type Gfa } from '../gfa';
 import { computeBubbles } from './bubbles';
+import smn1 from './fixtures/smn1.gfa?raw';
+import chr20 from './fixtures/chr20_200kb.gfa?raw';
 
 // Build a small reduced GFA by hand: a reference path 1→2→3 (100 bp each), a
 // diamond bubble between 1 and 2 (two alternate alleles that share an exit node),
@@ -99,5 +101,59 @@ describe('computeBubbles', () => {
 		const comp = m.bubbles.find((b) => !b.isSkip)!;
 		expect([...comp.nodeIds]).toEqual(['10']);
 		expect(comp.coverage).toBe(1); // only sampleC traverses node 10
+	});
+
+	// The diamond again, with the same edges spelled the other way round — `a+ → b+`
+	// as `b- → a-` — the way a file is free to write them (and Minigraph-Cactus
+	// output often does).
+	const flip = (o: '+' | '-') => (o === '+' ? '-' : '+');
+	const respelled = (g: Gfa): Gfa => ({
+		...g,
+		links: g.links.map((l) => ({
+			...l,
+			from: l.to,
+			fromOrient: flip(l.toOrient),
+			to: l.from,
+			toOrient: flip(l.fromOrient)
+		}))
+	});
+
+	it('reads the same path lengths however the links are spelled', () => {
+		const g = parseGfa(REDUCED);
+		const one = respelled(g);
+		const mixed = { ...g, links: g.links.map((l, i) => (i % 2 ? one.links[i] : l)) };
+		for (const v of [one, mixed]) {
+			const comp = computeBubbles(v, 'REF')!.bubbles.find((b) => !b.isSkip)!;
+			expect([comp.shortest, comp.longest]).toEqual([50, 70]);
+		}
+	});
+
+	it("brackets every real haplotype's path through a bubble on real loci", () => {
+		for (const text of [smn1, chr20]) {
+			const g = parseGfa(text);
+			const ref = new Set(g.walks.find((w) => w.sample === 'GRCh38')!.steps.map((s) => s.id));
+			const bubbleOf = new Map<string, { shortest: number; longest: number }>();
+			for (const b of computeBubbles(g, 'GRCh38')!.bubbles) for (const id of b.nodeIds) bubbleOf.set(id, b);
+			for (const w of g.walks) {
+				// Each stretch off the reference between two reference steps, within one bubble.
+				let open = false;
+				let alt = 0;
+				let bubble: { shortest: number; longest: number } | undefined;
+				for (const s of w.steps) {
+					if (ref.has(s.id)) {
+						if (open && bubble && alt > 0) {
+							expect(alt).toBeGreaterThanOrEqual(bubble.shortest);
+							expect(alt).toBeLessThanOrEqual(bubble.longest);
+						}
+						open = true;
+						alt = 0;
+						bubble = undefined;
+					} else {
+						alt += g.segments.get(s.id)!.length;
+						bubble = bubbleOf.get(s.id);
+					}
+				}
+			}
+		}
 	});
 });

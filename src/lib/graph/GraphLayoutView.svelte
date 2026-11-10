@@ -8,6 +8,7 @@
 	// so this component just lays out and draws whatever graph it's given.
 	import { onDestroy, untrack } from 'svelte';
 	import { gfaStats, type Gfa } from '../gfa';
+	import { SITES_DEFAULT, SITES_STEPS } from '../gbzClient';
 	import { limits } from '../limits.svelte';
 	import { gfaToGraph } from './gfaToGraph';
 	import type { GfaGraph } from './types';
@@ -25,7 +26,7 @@
 	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
-	import { foldGfa, niceBp, referenceBp, zoomThreshold } from './fold';
+	import { looseEnds } from './exitCues';
 	import { DEFAULT_ASSEMBLY, LENGTH_MAPS, type AssemblyOptions } from './assemblyLayout';
 	import type { AssemblyStyle } from './GraphCanvas.svelte';
 	import {
@@ -49,13 +50,16 @@
 		discoLoading = false,
 		onRequestDiscoGraph,
 		discoWalksGfa = null,
+		bare = false,
+		sitesThreshold = SITES_DEFAULT,
+		sitesLoading = false,
+		onSitesThreshold,
 		showingAllNodes = false,
 		allNodesCount = 0,
 		allNodesTooMany = false,
 		onToggleSimplify,
 		onRequestMoreContext,
 		context,
-		initialFold = true,
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
@@ -121,6 +125,13 @@
 		 * disco animates over the *displayed* graph, mapping these walks onto it, so
 		 * this never has to be the graph on screen. */
 		discoWalksGfa?: Gfa | null;
+		/** Just the graph canvas: no options panel and no legend footer. */
+		bare?: boolean;
+		/** Simplify's allele threshold, and whether the parent is re-querying at a new one. */
+		sitesThreshold?: number;
+		sitesLoading?: boolean;
+		/** Ask the parent for Simplify at another threshold (it re-runs the query). */
+		onSitesThreshold?: (t: number) => void;
 		/** Whether the full (unsimplified) graph is the one currently displayed. */
 		showingAllNodes?: boolean;
 		/** Node count the unsimplified graph would have (for the Simplify switch label). */
@@ -141,72 +152,30 @@
 		/** Current subgraph context radius (bp). When a re-query of the same locus comes
 		 * back with a larger value, the newly-pulled-in nodes are glowed until dismissed. */
 		context?: number;
-		/** Open with Simplify on Fold (the default). The playground turns it off so its
-		 * panes show the graphs it hands in as they are. */
-		initialFold?: boolean;
 	} = $props();
 
-	// --- Simplification: sites / fold / off -------------------------------------
-	// Three ways to look at the locus. "Sites" is the graph the wasm query already
-	// simplified (small sites popped, chains unchopped); "Off" is the full graph the
-	// parent swaps in; "Fold" runs the allele-level fold (fold.ts) here, so every
-	// page that embeds this view gets it. Fold groups segments into alleles by the
-	// haplotype walk that contributed them, so it reads the full graph when the
-	// parent can supply it and falls back to the graph on screen otherwise.
-	let foldOn = $state(untrack(() => initialFold));
-	let foldSetting = $state<'auto' | number>('auto');
-	let stageWidth = $state(0);
-	const FOLD_STEPS = [10, 50, 100, 500, 1000, 5000, 10000];
-	// Fold switches to the full graph only when it asked for it (on its own for a
-	// light locus, or from the "fold the full graph" link). The full graph also
-	// loads for the MSA and the haplotype tools; picking it up then would re-run the
-	// layout and throw away the user's view.
-	let foldFullFor = $state.raw<Gfa | null>(null);
-	const foldSource = $derived(discoWalksGfa && foldFullFor === inputGfa ? discoWalksGfa : inputGfa);
-	const foldFromFull = $derived(foldSource !== inputGfa || !inputGfa.reduced);
-	function foldFullGraph() {
-		foldFullFor = inputGfa;
-		if (!discoWalksGfa && discoAvailable && !discoLoading) onRequestDiscoGraph?.();
-	}
-	// Auto: hide what would be under ~10 px when the whole locus is fit to the view.
-	const foldAuto = $derived(
-		niceBp(zoomThreshold(referenceBp(foldSource, referenceSample) / Math.max(300, stageWidth || 1000)))
-	);
-	const foldThreshold = $derived(foldSetting === 'auto' ? foldAuto : foldSetting);
-	const foldResult = $derived(
-		foldOn ? foldGfa(foldSource, foldThreshold, { referenceSample }) : null
-	);
 	// --- Assembly graph mode: each part of it on its own switch ----------------
 	// Parts 2–5 change the layout (so they re-run it); Part 6 is drawing only.
 	let assemblyParts = $state<AssemblyOptions>({ ...DEFAULT_ASSEMBLY });
 	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true, labels: true });
 
-	/** The graph this view lays out and inspects: the input, or its fold. */
-	const gfa = $derived(foldResult?.applied ? foldResult.gfa : inputGfa);
-	// The hosted locus browser can swap between the simplified and full graph;
-	// a plain GFA (the /gfa page, the playground) is shown as loaded or folded.
+	// --- Simplification: sites / off -------------------------------------------
+	// "On" is the graph the wasm query already simplified (see
+	// crates/reduce/src/alleles.rs); "Off" is the full graph the parent swaps in.
+	// A plain GFA (the /gfa page, the playground) is shown as loaded.
+	/** The graph this view lays out and inspects. */
+	const gfa = $derived(inputGfa);
 	const hasSitesMode = $derived(!!inputGfa.reduced || showingAllNodes);
-	const simplifyMode = $derived(foldOn ? 'fold' : hasSitesMode && !showingAllNodes ? 'sites' : 'off');
+	const simplifyMode = $derived(hasSitesMode && !showingAllNodes ? 'sites' : 'off');
+	// Strands that still leave the window after the query fetched what bubbles it
+	// could whole: the ones the exit cues mark.
+	const openEnds = $derived(inputGfa.reduced?.window ? looseEnds(inputGfa, referenceSample).length : 0);
 
-	function setSimplify(mode: 'sites' | 'fold' | 'off') {
+	function setSimplify(mode: 'sites' | 'off') {
 		if (mode === simplifyMode) return;
 		trackEvent('widget_interact', { widget: 'graph_layout', action: `simplify_${mode}` });
-		foldOn = mode === 'fold';
-		// Fold reads the full graph from `discoWalksGfa`, so the parent can go back
-		// to its lighter simplified graph underneath.
-		if (mode === 'off' ? !showingAllNodes && hasSitesMode : showingAllNodes) onToggleSimplify?.();
-		if (mode === 'fold' && fullGraphAuto) foldFullGraph();
+		onToggleSimplify?.();
 	}
-
-	// Fold is the default, so it fetches the full graph on its own only when that's
-	// cheap (the same 'auto' tier the haplotype list loads by itself); otherwise it
-	// folds the simplified graph and offers the full one behind a click.
-	const fullGraphAuto = $derived(limits.walkLoadTier(inputGfa.reduced) === 'auto');
-	$effect(() => {
-		if (!foldOn || !fullGraphAuto || !discoAvailable) return;
-		if (untrack(() => foldFullFor) === inputGfa) return; // once per graph
-		untrack(() => foldFullGraph());
-	});
 
 	// --- context-increase glow -------------------------------------------------
 	// When the user re-queries the SAME locus with a larger context (from the query
@@ -402,7 +371,7 @@
 	let msaHeight = $state(360);
 	// The MSA view is base-level, so it always reads the full graph (every walk,
 	// every small variant), loaded in the background, while the graph above keeps
-	// showing whatever it shows (folded, sites or full). It shows either a fixed
+	// showing whatever it shows (sites or full). It shows either a fixed
 	// stretch of reference (what was in view when it was opened, if that was a few kb
 	// or less) or a window that follows the selected node.
 	const msaGfa = $derived(discoWalksGfa ?? (inputGfa.reduced ? null : inputGfa));
@@ -570,21 +539,10 @@
 	}
 	let selectedExit = $state<SelectedExit | null>(null);
 
-	// Switching the fold on or off keeps the selection when its node survives, and
-	// clears it when the node was folded away.
-	$effect(() => {
-		const g = gfa;
-		untrack(() => {
-			if (selected && !g.segments.has(selected)) selected = null;
-		});
-	});
-
 	$effect(() => {
 		inputGfa;
-		// Depend on the graph the parent hands in ALONE — not on `gfa`, which also
-		// changes when only the fold does (that keeps the panel and selection; see the
-		// effect below). The body reads and writes lots of other state; untrack keeps
-		// the graph swap the only trigger.
+		// The body reads and writes lots of other state; untrack keeps the graph swap
+		// the only trigger.
 		untrack(() => {
 			selected = null;
 			// A new graph is a new locus or a different simplification the parent swapped
@@ -1592,6 +1550,7 @@
 
 <div class="wrap">
 	<div class="body">
+		{#if !bare}
 		<aside class="sidebar">
 			<!-- Query report: progressive while a query/layout runs, then a one-liner. -->
 			<QueryReport
@@ -1630,31 +1589,22 @@
 				</div>
 			{/if}
 			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
-			     most-reached-for actions, share one box. Simplify offers Sites / Fold / Off
-			     on the hosted locus browser (Sites and Off swap the parent's reduced and
-			     full graphs), and Fold / Off on a plain GFA. -->
+			     most-reached-for actions, share one box. Simplify offers On / Off on the
+			     hosted locus browser (they swap the parent's reduced and full graphs); a
+			     plain GFA is shown as loaded. -->
 			<section class="group primary">
 				<div class="simplify">
 					<span class="group-title">Simplify</span>
+					{#if hasSitesMode}
 					<div class="family-toggle" role="group" aria-label="Simplification">
-						<button
-							type="button"
-							class:active={simplifyMode === 'fold'}
-							aria-pressed={simplifyMode === 'fold'}
-							onclick={() => setSimplify('fold')}
-							title="Fold whole alleles smaller than the threshold into the reference, keeping only the shortest route from each big one back to it"
-							>Fold</button
-						>
-						{#if hasSitesMode}
 							<button
 								type="button"
 								class:active={simplifyMode === 'sites'}
 								aria-pressed={simplifyMode === 'sites'}
 								onclick={() => setSimplify('sites')}
-								title="Collapse small variant sites and merge unbranched runs (the query's own simplification)"
-								>Sites</button
+								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
+								>On</button
 							>
-						{/if}
 						<button
 							type="button"
 							class:active={simplifyMode === 'off'}
@@ -1666,34 +1616,44 @@
 								: 'Show every node in the graph'}>Off</button
 						>
 					</div>
+					{/if}
 					<span class="switch-sub">
-						{#if simplifyMode === 'fold' && foldResult}
-							{#if !foldResult.applied}
-								no reference to fold toward — shown as is
-							{:else}
-								{foldResult.stats.segmentsBefore.toLocaleString()} → {foldResult.stats.segmentsAfter.toLocaleString()}
-								nodes · {foldResult.stats.keptAlleles} allele{foldResult.stats.keptAlleles === 1 ? '' : 's'} kept
-								{#if discoLoading && !discoWalksGfa}· loading full graph…{:else if !foldFromFull}· from the simplified graph{#if discoAvailable}
-										· <button type="button" class="link-btn" onclick={foldFullGraph}
-											>fold the full graph</button
-										>{/if}{/if}
-							{/if}
-						{:else if simplifyMode === 'sites'}
-							{#if discoLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
-								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes · small variant sites collapsed{:else}small
-								variant sites collapsed{/if}
+						{#if simplifyMode === 'sites'}
+							{#if discoLoading || sitesLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
+								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes{#if inputGfa.reduced.alleles != null}
+									· {inputGfa.reduced.allelesShown?.toLocaleString()} of {inputGfa.reduced.alleles.toLocaleString()} alleles shown{:else}
+									· small variant sites collapsed{/if}{:else}small variant sites collapsed{/if}
 						{:else if showingAllNodes}
 							all {allNodesCount.toLocaleString()} nodes shown
 						{:else}
 							every node, as loaded
 						{/if}
 					</span>
-					{#if simplifyMode === 'fold'}
-						<label class="fold-threshold">
-							alleles under
-							<select bind:value={foldSetting}>
-								<option value="auto">auto ({foldAuto.toLocaleString()} bp)</option>
-								{#each FOLD_STEPS as t (t)}
+					{#if simplifyMode === 'sites' && inputGfa.reduced?.window}
+						<span
+							class="switch-sub"
+							title="A haplotype that leaves the window inside a bubble would be cut there and left as a loose end. The query fetches each bubble it touches whole, unless that comes to too many nodes."
+						>
+							{#if openEnds === 0}
+								no strand leaves the window
+							{:else if inputGfa.reduced.window === 'snarls'}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window through bubbles wider than it
+							{:else if inputGfa.reduced.windowBudgetNodes}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window: its bubbles whole would be {inputGfa.reduced.windowBudgetNodes.toLocaleString()} nodes
+							{:else}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window
+							{/if}
+						</span>
+					{/if}
+					{#if simplifyMode === 'sites' && onSitesThreshold}
+						<label class="sites-threshold">
+							variants under
+							<select
+								value={sitesThreshold}
+								disabled={sitesLoading}
+								onchange={(e) => onSitesThreshold?.(Number(e.currentTarget.value))}
+							>
+								{#each SITES_STEPS as t (t)}
 									<option value={t}>{t.toLocaleString()} bp</option>
 								{/each}
 							</select>
@@ -1966,10 +1926,10 @@
 							/>
 							{#if modeCfg.assembly}
 								<div class="assembly-parts">
-									{#if simplifyMode !== 'fold'}
+									{#if simplifyMode !== 'sites' && hasSitesMode}
 										<p class="assembly-hint">
 											Reads best with small variants folded away.
-											<button type="button" class="link-btn" onclick={() => setSimplify('fold')}>Turn on Fold</button>
+											<button type="button" class="link-btn" onclick={() => setSimplify('sites')}>Turn on Simplify</button>
 										</p>
 									{/if}
 									<span class="parts-title">Layout</span>
@@ -2088,6 +2048,7 @@
 			</section>
 			</div>
 		</aside>
+		{/if}
 
 	<div class="stage-col">
 			{#if contextGlowMsg}
@@ -2101,7 +2062,7 @@
 					<button class="cgm-dismiss" onclick={dismissContextGlow} aria-label="Dismiss">Dismiss</button>
 				</div>
 			{/if}
-			<div class="stage" class:msa-open={msaOpen} bind:clientWidth={stageWidth}>
+			<div class="stage" class:msa-open={msaOpen}>
 				{#if displayLayout}
 					<GraphCanvas
 						layout={displayLayout}
@@ -2602,6 +2563,7 @@
 						{/if}
 					</div>
 				{/if}
+		{#if !bare}
 		<div class="foot">
 			<span class="muted"
 				>plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms{referenceFree ? '' : ' · add ⌥/alt to zoom height'}</span
@@ -2631,6 +2593,7 @@
 				<span class="legend-cap">{colorModeInfo.caption}{colorModeInfo.kind === 'heatmap' ? ' →' : ''}</span>
 			</label>
 		</div>
+		{/if}
 	</div>
 	</div>
 </div>
@@ -2963,14 +2926,14 @@
 		flex-direction: column;
 		gap: 0.3rem;
 	}
-	.fold-threshold {
+	.sites-threshold {
 		display: flex;
 		align-items: center;
 		gap: 0.4rem;
 		font-size: 0.74rem;
 		color: #6b7280;
 	}
-	.fold-threshold select {
+	.sites-threshold select {
 		font: inherit;
 		padding: 0.15rem 0.3rem;
 		border: 1px solid #cbd0d8;

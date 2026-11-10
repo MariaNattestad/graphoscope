@@ -26,7 +26,7 @@ pub struct Link {
     pub to_rev: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Step {
     pub id: NodeId,
     pub rev: bool,
@@ -242,6 +242,12 @@ pub struct ReduceStats {
     pub snp_count: usize,
     pub bases_removed: usize,
     pub unchop_merges: usize,
+    /// Stage 2: sites with more than one allele, distinct alleles across all
+    /// sites, the representatives kept, and the nodes that left with the rest.
+    pub allele_sites: usize,
+    pub alleles: usize,
+    pub alleles_shown: usize,
+    pub allele_nodes_removed: usize,
     /// Haplotypes traversing the locus, summing the `WT` weights of the `W`
     /// records (or counting records when GBZ-base emitted each haplotype
     /// separately). This is the number to show a user: "how many haplotypes".
@@ -257,6 +263,13 @@ pub struct ReduceStats {
     /// `total_walks`; it is a graph-structure diagnostic, not a haplotype count.
     pub walk_records: usize,
     pub total_sequence_bp: usize,
+    /// How the database query cut the window, when there was one (main.rs):
+    /// `snarls` when it was widened to whole top-level snarls, or `plain` when
+    /// that came to more nodes than the budget and it fell back to the window
+    /// as asked. Written as `QW`, with the widened attempt's node count as `QB`
+    /// on a fallback.
+    pub window: Option<String>,
+    pub window_budget_nodes: Option<usize>,
 }
 
 /// A segment in the reduced output.
@@ -327,9 +340,9 @@ pub fn write_reduced<W: Write>(
         writeln!(out, "H\tVN:Z:1.1\tRS:Z:{}", reference_samples.join(" "))?;
     }
 
-    writeln!(
+    write!(
         out,
-        "X\tSB:i:{}\tSA:i:{}\tLB:i:{}\tLA:i:{}\tST:i:{}\tNR:i:{}\tSN:i:{}\tBR:i:{}\tUM:i:{}\tTW:i:{}\tNW:i:{}\tNS:i:{}\tWR:i:{}\tTS:i:{}",
+        "X\tSB:i:{}\tSA:i:{}\tLB:i:{}\tLA:i:{}\tST:i:{}\tNR:i:{}\tSN:i:{}\tBR:i:{}\tUM:i:{}\tTW:i:{}\tNW:i:{}\tNS:i:{}\tWR:i:{}\tTS:i:{}\tAS:i:{}\tAL:i:{}\tAK:i:{}\tAN:i:{}",
         stats.segments_before,
         stats.segments_after,
         stats.links_before,
@@ -344,7 +357,18 @@ pub fn write_reduced<W: Write>(
         stats.samples,
         stats.walk_records,
         stats.total_sequence_bp,
+        stats.allele_sites,
+        stats.alleles,
+        stats.alleles_shown,
+        stats.allele_nodes_removed,
     )?;
+    if let Some(window) = &stats.window {
+        write!(out, "\tQW:Z:{}", window)?;
+        if let Some(n) = stats.window_budget_nodes {
+            write!(out, "\tQB:i:{}", n)?;
+        }
+    }
+    out.write_all(b"\n")?;
 
     for (i, seg) in segments.iter().enumerate() {
         out.write_all(b"S\t")?;

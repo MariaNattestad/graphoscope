@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { GbzClient, parseLocus, DEFAULT_CONTEXT, type QuerySource } from '$lib/gbzClient';
+	import { onMount, untrack } from 'svelte';
+	import { GbzClient, parseLocus, DEFAULT_CONTEXT, SITES_DEFAULT, type QuerySource } from '$lib/gbzClient';
 	import { parseGfa, gfaStats, type Gfa } from '$lib/gfa';
 	import RawDataView from '$lib/RawDataView.svelte';
 	import AppBar from '$lib/AppBar.svelte';
@@ -84,6 +84,11 @@
 	// blocking the main thread ~1s when re-laying-out the full graph. Raw keeps it
 	// as plain objects: fast to read and to structured-clone across the worker.
 	let gfa = $state.raw<Gfa | null>(null);
+	// Simplify at a threshold other than the query's default: the same query re-run
+	// with `--max-variant`, kept beside `gfa` so going back to the default is free.
+	let sitesThreshold = $state(SITES_DEFAULT);
+	let sitesGfa = $state.raw<Gfa | null>(null);
+	let sitesLoading = $state(false);
 	let rawGfa = $state<string>('');
 	// Set only if the reduced GFA somehow still exceeds MAX_GFA_BYTES.
 	let oversized = $state<{ bytes: number } | null>(null);
@@ -231,10 +236,9 @@
 			// The wasm query (crates/reduce) simplifies and walk-counts before it
 			// ever returns, so the browser receives a graph sized by topology, not by
 			// haplotype count. This is what keeps a large/repetitive locus from
-			// blowing up the tab. The collapse threshold is the reducer's default;
-			// it isn't exposed as a control because changing it re-runs the query
-			// and then re-runs the layout, which is a long stall for a knob most
-			// people don't need. Anyone who wants the uncollapsed graph can
+			// blowing up the tab. The query runs at the reducer's default threshold;
+			// Simplify's "variants under" control re-runs it at another one
+			// (setSitesThreshold). Anyone who wants the uncollapsed graph can
 			// download it instead (downloadRaw below).
 		} catch (e) {
 			// parseLocus's own message already gives a coordinate example; just add
@@ -350,7 +354,41 @@
 		unsimplifiedNodes > 0 && unsimplifiedTier === 'risky' && limits.lowMemory
 	);
 	/** What the layout is actually drawing. */
-	const displayGfa = $derived(showUnsimplified && unsimplified ? unsimplified : gfa);
+	const displayGfa = $derived(
+		showUnsimplified && unsimplified ? unsimplified : sitesThreshold !== SITES_DEFAULT && sitesGfa ? sitesGfa : gfa
+	);
+
+	// Re-runs the query at another Simplify threshold. Only the newest request may
+	// write its result, so changing the threshold twice quickly can't land the
+	// older one last.
+	let sitesRequest = 0;
+	async function setSitesThreshold(t: number) {
+		sitesThreshold = t;
+		const id = ++sitesRequest;
+		if (t === SITES_DEFAULT || !client) {
+			sitesGfa = null;
+			sitesLoading = false;
+			return;
+		}
+		sitesLoading = true;
+		try {
+			const locus = parseLocus(locusText, graph.referenceSample);
+			locus.sample = graph.referenceSample;
+			locus.context = contextBp;
+			locus.maxVariant = t;
+			const result = await client.query({ kind: 'url', url: graph.dbUrl }, locus);
+			if (id !== sitesRequest) return;
+			if (!result.ok) {
+				error = `${result.error}\n${result.stderr ?? ''}`.trim();
+				return;
+			}
+			sitesGfa = parseGfa(result.gfa ?? '');
+		} catch (e) {
+			if (id === sitesRequest) error = e instanceof Error ? e.message : String(e);
+		} finally {
+			if (id === sitesRequest) sitesLoading = false;
+		}
+	}
 
 	// One in-browser cache of the full (unsimplified) subgraph for the current
 	// locus, shared by everything that needs it — the "show all nodes" toggle,
@@ -447,6 +485,10 @@
 		unsimplifiedGfaText = null;
 		unsimplified = null;
 		showUnsimplified = false;
+		untrack(() => {
+			sitesGfa = null;
+			if (sitesThreshold !== SITES_DEFAULT) setSitesThreshold(sitesThreshold);
+		});
 	});
 
 	// Hands the user the unsimplified subgraph — every haplotype walk — as a file.
@@ -637,6 +679,9 @@
 							discoLoading={loadingUnsimplified}
 							onRequestDiscoGraph={requestDiscoGraph}
 							discoWalksGfa={unsimplified}
+							{sitesThreshold}
+							{sitesLoading}
+							onSitesThreshold={setSitesThreshold}
 							showingAllNodes={showUnsimplified}
 							allNodesCount={unsimplifiedNodes}
 							allNodesTooMany={unsimplifiedNodes > 0 && !canShowUnsimplified}
@@ -653,7 +698,6 @@
 						<RawDataView
 							{gfa}
 							rawText={rawGfa}
-							referenceSample={graph.referenceSample}
 							{downloadRaw}
 							{downloadingRaw}
 							allWalksGfa={unsimplified}

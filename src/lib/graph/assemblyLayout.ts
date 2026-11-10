@@ -1,7 +1,7 @@
 // The "Assembly graph" layout: a force-directed drawing that reads like a classic
 // assembly-graph view (a reference backbone with each variant a visible bubble or
-// loop), rather than a genome browser. Pair it with Fold (fold.ts) so the graph is
-// down to variants big enough to see.
+// loop), rather than a genome browser. Pair it with Simplify so the graph is down to
+// variants big enough to see.
 //
 // Each step below can be switched off on its own (AssemblyOptions), so its effect
 // can be compared with and without:

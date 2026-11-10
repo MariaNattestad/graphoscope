@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseGfa } from '../gfa';
 import { gfaToGraph } from './gfaToGraph';
-import { foldGfa } from './fold';
 import { buildAssemblyLayout, collapseChains, makeLengthMap } from './assemblyLayout';
 import { buildAndRunLayout } from './forceLayout';
 import { findExitEnds } from './exitCues';
@@ -111,14 +110,15 @@ describe('buildAssemblyLayout', () => {
 	});
 
 	it('is deterministic', () => {
-		const g = foldGfa(parseGfa(c4a), 10, { referenceSample: 'GRCh38' }).gfa;
-		const graph = gfaToGraph(g, { referenceSample: 'GRCh38' }).graph;
-		const a = buildAndRunLayout(graph, { mode: 'assembly', referenceSample: 'GRCh38' });
-		const b = buildAndRunLayout(graph, { mode: 'assembly', referenceSample: 'GRCh38' });
+		const graph = gfaToGraph(parseGfa(c4a), { referenceSample: 'GRCh38' }).graph;
+		// The whole unsimplified locus, so keep the run short (as the test below does).
+		const opts = { mode: 'assembly', referenceSample: 'GRCh38', iterations: 30 } as const;
+		const a = buildAndRunLayout(graph, opts);
+		const b = buildAndRunLayout(graph, opts);
 		expect([...a.nodesById.values()].map((n) => [n.x, n.y])).toEqual([...b.nodesById.values()].map((n) => [n.x, n.y]));
 	});
 
-	it('lays out a real unfolded locus with every part on and off', () => {
+	it('lays out a real unsimplified locus with every part on and off', () => {
 		const graph = gfaToGraph(parseGfa(smn1), { referenceSample: 'GRCh38' }).graph;
 		for (const parts of [{}, { collapseChains: false, routeDeletions: false, anchorReference: false, lengthMap: 'proportional' as const }]) {
 			const layout = buildAndRunLayout(graph, { mode: 'assembly', referenceSample: 'GRCh38', assembly: parts, iterations: 30 });

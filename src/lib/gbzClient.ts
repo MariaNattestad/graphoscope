@@ -18,6 +18,12 @@ const WASM_URL = `${base}/query.wasm`;
  * app and the /api endpoint agree on what "no context param" means. */
 export const DEFAULT_CONTEXT = 10000;
 
+/** The reducer's own Simplify threshold (crates/reduce DEFAULT_MAX_VARIANT): what a
+ * query collapses at unless asked otherwise. */
+export const SITES_DEFAULT = 50;
+/** Thresholds offered for Simplify; anything but the default re-runs the query. */
+export const SITES_STEPS = [50, 100, 250, 500, 1000, 2500, 5000];
+
 export interface LocusQuery {
 	sample: string; // e.g. "GRCh38"
 	contig: string; // e.g. "chr6"

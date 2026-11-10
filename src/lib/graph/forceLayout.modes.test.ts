@@ -72,7 +72,7 @@ describe('layout modes', () => {
 	it('lay reference-free modes out differently from classic', () => {
 		// Use a fixture with real bubble structure so the modes have something to
 		// disagree about.
-		const fixture = ALL_FIXTURES.find((f) => f.id === 'multiallelic') ?? ALL_FIXTURES[0];
+		const fixture = ALL_FIXTURES.find((f) => f.id === 'mnp') ?? ALL_FIXTURES[0];
 		const classic = extentOf(fixture.gfaText, fixture.referenceSample, 'classic');
 		for (const mode of LAYOUT_MODES.filter((m) => m.family === 'free')) {
 			const e = extentOf(fixture.gfaText, fixture.referenceSample, mode.id);
@@ -88,7 +88,7 @@ describe('layout modes', () => {
 
 	it('prints an extent table for eyeballing', () => {
 		const rows: string[] = [];
-		const picks = ['multiallelic', 'nested', 'c4a', 'smn1'].filter((id) =>
+		const picks = ['mnp', 'nested', 'c4a', 'smn1'].filter((id) =>
 			ALL_FIXTURES.some((f) => f.id === id)
 		);
 		for (const id of picks) {

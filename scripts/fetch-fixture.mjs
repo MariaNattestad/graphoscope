@@ -7,7 +7,7 @@
 // synchronous, so the read cannot be async).
 //
 // Usage:
-//   node scripts/fetch-fixture.mjs GENE [--ref grch38|chm13] [--out FILE] [--raw]
+//   node scripts/fetch-fixture.mjs GENE [--ref grch38|chm13] [--out FILE] [--raw] [--snarls contained|none]
 //
 // Without --raw it writes the reduced GFA; with it, the unsimplified subgraph
 // (which is what the playground's "original" side wants to show).
@@ -159,7 +159,7 @@ const flag = (name, def) => {
 const refKey = flag('ref', 'grch38');
 const raw = argv.includes('--raw');
 if (!gene) {
-	console.error('Usage: node scripts/fetch-fixture.mjs GENE [--ref grch38|chm13] [--out FILE] [--raw]');
+	console.error('Usage: node scripts/fetch-fixture.mjs GENE [--ref grch38|chm13] [--out FILE] [--raw] [--snarls contained|none]');
 	process.exit(1);
 }
 const db = DBS[refKey];
@@ -190,6 +190,8 @@ const args = [
 	'--interval',
 	`${start}..${end}`,
 	...(raw ? ['--raw'] : []),
+	...(flag('snarls') ? ['--snarls', flag('snarls')] : []),
+	...(flag('snarl-budget') ? ['--snarl-budget', flag('snarl-budget')] : []),
 	'/data/graph.db'
 ];
 const wasiInstance = new WASI(

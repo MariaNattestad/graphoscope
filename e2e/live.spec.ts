@@ -23,19 +23,15 @@ for (const ref of ['grch38', 'chm13']) {
 		await exerciseGraphView(page);
 
 		// Simplify: Off loads the full graph (every haplotype walk) and shows every
-		// node; Sites returns to the query's reduced graph; Fold folds small alleles.
+		// node; Simplify returns to the query's reduced graph.
 		const simplify = page.getByRole('group', { name: 'Simplification' });
 		await simplify.getByRole('button', { name: 'Off' }).click();
 		await expect(page.getByText(/all [\d,]+ nodes shown/)).toBeVisible({ timeout: 120_000 });
 		await waitForLayout(page, 180_000);
 
-		await simplify.getByRole('button', { name: 'Sites' }).click();
-		await expect(simplify.getByRole('button', { name: 'Sites' })).toHaveAttribute('aria-pressed', 'true');
-		await expect(page.getByText(/small variant sites collapsed/)).toBeVisible();
-		await waitForLayout(page, 180_000);
-
-		await simplify.getByRole('button', { name: 'Fold' }).click();
-		await expect(page.getByText(/alleles? kept/)).toBeVisible();
+		await simplify.getByRole('button', { name: 'On', exact: true }).click();
+		await expect(simplify.getByRole('button', { name: 'On', exact: true })).toHaveAttribute('aria-pressed', 'true');
+		await expect(page.getByText(/alleles shown/)).toBeVisible();
 		await waitForLayout(page, 180_000);
 	});
 }

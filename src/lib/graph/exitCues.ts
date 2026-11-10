@@ -5,6 +5,7 @@
 // the segments that have one so the inspector can say a bubble/walk leaves the
 // locus.
 
+import type { Gfa } from '../gfa';
 import type { LayoutResult } from './forceLayout';
 
 export interface ExitEnd {
@@ -29,4 +30,24 @@ export function findExitEnds(layout: Pick<LayoutResult, 'chains' | 'structuralLi
 			out.push({ segId: chain.segId, nodeId: ids[ids.length - 1] });
 	}
 	return out;
+}
+
+/** The same loose ends read straight off a GFA, before any layout: every
+ * non-reference segment with a side no link attaches to. In a subgraph cut from
+ * a larger graph each one is where a haplotype leaves the window (or, rarely,
+ * where its path really ends). */
+export function looseEnds(gfa: Gfa, referenceSample?: string): string[] {
+	const ref = gfa.walks.find((w) => w.sample === referenceSample) ?? gfa.walks[0];
+	const onRef = new Set(ref?.steps.map((s) => s.id));
+	const sides = new Map<string, Set<'L' | 'R'>>();
+	const touch = (id: string, side: 'L' | 'R') => {
+		const set = sides.get(id);
+		if (set) set.add(side);
+		else sides.set(id, new Set([side]));
+	};
+	for (const l of gfa.links) {
+		touch(l.from, l.fromOrient === '+' ? 'R' : 'L');
+		touch(l.to, l.toOrient === '+' ? 'L' : 'R');
+	}
+	return [...gfa.segments.keys()].filter((id) => !onRef.has(id) && (sides.get(id)?.size ?? 0) < 2);
 }
