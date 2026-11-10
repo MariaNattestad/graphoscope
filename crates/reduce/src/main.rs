@@ -40,13 +40,17 @@ use std::ops::Range;
 use std::process;
 
 use gbz::FullPathName;
-use gbz_base::{GBZBase, GraphInterface, Subgraph, SubgraphQuery};
+use gbz_base::{GBZBase, GraphInterface, SnarlOutput, Subgraph, SubgraphQuery};
 use getopts::Options;
 
 // The Sites threshold: alleles that differ by no variant this large or larger
 // fold together (see alleles.rs). Matches SITES_DEFAULT in src/lib/gbzClient.ts.
 const DEFAULT_MAX_VARIANT: usize = 50;
 const DEFAULT_CONTEXT: usize = 100;
+// A window is widened to whole top-level snarls unless that comes to more nodes
+// than this, when it falls back to the window as asked: SMN1's segmental
+// duplication, say, is one snarl 1.8 Mb wide.
+const DEFAULT_SNARL_BUDGET: usize = 30_000;
 
 fn main() {
     if let Err(e) = run() {
@@ -69,6 +73,7 @@ fn run() -> Result<(), String> {
         reduce::reduce(
             |w: &mut dyn Write| w.write_all(text.as_bytes()),
             config.max_variant,
+            None,
             &mut out,
         )
         .map_err(|e| e.to_string())?;
@@ -78,8 +83,7 @@ fn run() -> Result<(), String> {
     // Indexed retrieval (GBZ-base).
     let database = GBZBase::open(&config.filename)?;
     let mut graph_if = GraphInterface::new(&database)?;
-    let mut subgraph = Subgraph::new();
-    subgraph.from_db(&mut graph_if, &config.query)?;
+    let (subgraph, window) = extract(&mut graph_if, &config)?;
 
     // `--raw` short-circuits everything below: emit the subgraph exactly as
     // GBZ-base extracted it, every haplotype walk included. This is what the
@@ -94,14 +98,53 @@ fn run() -> Result<(), String> {
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());
-    reduce::reduce(|mut w: &mut dyn Write| subgraph.write_gfa(&mut w, false), config.max_variant, &mut out)
-        .map_err(|e| e.to_string())?;
+    reduce::reduce(
+        |mut w: &mut dyn Write| subgraph.write_gfa(&mut w, false),
+        config.max_variant,
+        Some(window),
+        &mut out,
+    )
+    .map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())
+}
+
+/// The window as asked, widened to whole top-level snarls when `--snarls` asks
+/// and the result stays within the budget. A haplotype that leaves a plain
+/// window inside a snarl is cut there, and Sites keeps that cut as a loose end;
+/// a whole snarl closes it. Returns which window it used, and on a fallback the
+/// node count that ruled the widened one out.
+fn extract(
+    graph: &mut GraphInterface,
+    config: &Config,
+) -> Result<(Subgraph, (&'static str, Option<usize>)), String> {
+    let plain = |graph: &mut GraphInterface| -> Result<Subgraph, String> {
+        let mut subgraph = Subgraph::new();
+        subgraph.from_db(graph, &config.query)?;
+        Ok(subgraph)
+    };
+    if config.snarls == SnarlOutput::None {
+        return Ok((plain(graph)?, ("plain", None)));
+    }
+    let mut widened = Subgraph::new();
+    match widened.from_db(graph, &config.query.clone().with_snarls(config.snarls)) {
+        Ok(()) if widened.nodes() <= config.snarl_budget => Ok((widened, ("snarls", None))),
+        Ok(()) => {
+            let nodes = widened.nodes();
+            drop(widened);
+            Ok((plain(graph)?, ("plain", Some(nodes))))
+        }
+        Err(e) => {
+            eprintln!("Warning: whole-snarl query failed ({}); using the plain window", e);
+            Ok((plain(graph)?, ("plain", None)))
+        }
+    }
 }
 
 struct Config {
     filename: String,
     query: SubgraphQuery,
+    snarls: SnarlOutput,
+    snarl_budget: usize,
     max_variant: usize,
     /// Emit the unsimplified subgraph (all walks) instead of the reduced GFA.
     raw: bool,
@@ -127,6 +170,18 @@ impl Config {
             "INT",
         );
         opts.optflag("", "raw", "emit the unsimplified subgraph, with every haplotype walk");
+        opts.optopt(
+            "",
+            "snarls",
+            "widen the window to whole top-level snarls: contained (default) or none",
+            "STR",
+        );
+        opts.optopt(
+            "",
+            "snarl-budget",
+            &format!("fall back to the plain window past this many nodes (default {})", DEFAULT_SNARL_BUDGET),
+            "INT",
+        );
         opts.optopt("", "gfa", "reduce this GFA file instead of querying a database", "FILE");
         let matches = opts.parse(&args[1..]).map_err(|x| x.to_string())?;
 
@@ -151,6 +206,8 @@ impl Config {
             return Ok(Config {
                 filename: String::new(),
                 query: SubgraphQuery::path_interval(&FullPathName::reference("", ""), 0..0),
+                snarls: SnarlOutput::None,
+                snarl_budget: DEFAULT_SNARL_BUDGET,
                 max_variant: max_variant_of(&matches)?,
                 raw: false,
                 gfa_input: Some(gfa),
@@ -176,10 +233,28 @@ impl Config {
         };
         let max_variant = max_variant_of(&matches)?;
 
+        let snarls = match matches.opt_str("snarls").as_deref() {
+            None | Some("contained") => SnarlOutput::Contained,
+            Some("none") => SnarlOutput::None,
+            Some(other) => return Err(format!("Unknown --snarls {} (contained or none)", other)),
+        };
+        let snarl_budget = match matches.opt_str("snarl-budget") {
+            Some(s) => s.parse().map_err(|e| format!("Failed to parse --snarl-budget: {}", e))?,
+            None => DEFAULT_SNARL_BUDGET,
+        };
+
         let path_name = FullPathName::reference(&sample, &contig);
         let query = SubgraphQuery::path_interval(&path_name, interval).with_context(context);
 
-        Ok(Config { filename, query, max_variant, raw: matches.opt_present("raw"), gfa_input: None })
+        Ok(Config {
+            filename,
+            query,
+            snarls,
+            snarl_budget,
+            max_variant,
+            raw: matches.opt_present("raw"),
+            gfa_input: None,
+        })
     }
 }
 

@@ -114,7 +114,7 @@ fn fixture(name: &str) -> String {
 
 fn run_reduce(text: &str, max_variant: usize) -> String {
     let mut out: Vec<u8> = Vec::new();
-    reduce(|w: &mut dyn std::io::Write| w.write_all(text.as_bytes()), max_variant, &mut out)
+    reduce(|w: &mut dyn std::io::Write| w.write_all(text.as_bytes()), max_variant, None, &mut out)
         .expect("reduce failed");
     String::from_utf8(out).expect("output is utf-8")
 }

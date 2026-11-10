@@ -26,6 +26,7 @@
 	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
 	import { computeBubbles } from './bubbles';
+	import { looseEnds } from './exitCues';
 	import { DEFAULT_ASSEMBLY, LENGTH_MAPS, type AssemblyOptions } from './assemblyLayout';
 	import type { AssemblyStyle } from './GraphCanvas.svelte';
 	import {
@@ -166,6 +167,9 @@
 	const gfa = $derived(inputGfa);
 	const hasSitesMode = $derived(!!inputGfa.reduced || showingAllNodes);
 	const simplifyMode = $derived(hasSitesMode && !showingAllNodes ? 'sites' : 'off');
+	// Strands that still leave the window after the query fetched what bubbles it
+	// could whole: the ones the exit cues mark.
+	const openEnds = $derived(inputGfa.reduced?.window ? looseEnds(inputGfa, referenceSample).length : 0);
 
 	function setSimplify(mode: 'sites' | 'off') {
 		if (mode === simplifyMode) return;
@@ -1625,6 +1629,22 @@
 							every node, as loaded
 						{/if}
 					</span>
+					{#if simplifyMode === 'sites' && inputGfa.reduced?.window}
+						<span
+							class="switch-sub"
+							title="A haplotype that leaves the window inside a bubble would be cut there and left as a loose end. The query fetches each bubble it touches whole, unless that comes to too many nodes."
+						>
+							{#if openEnds === 0}
+								no strand leaves the window
+							{:else if inputGfa.reduced.window === 'snarls'}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window through bubbles wider than it
+							{:else if inputGfa.reduced.windowBudgetNodes}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window: its bubbles whole would be {inputGfa.reduced.windowBudgetNodes.toLocaleString()} nodes
+							{:else}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window
+							{/if}
+						</span>
+					{/if}
 					{#if simplifyMode === 'sites' && onSitesThreshold}
 						<label class="sites-threshold">
 							variants under

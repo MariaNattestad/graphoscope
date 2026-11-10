@@ -116,6 +116,11 @@ export interface ReducedStats {
 	alleles?: number;
 	allelesShown?: number;
 	totalSequenceBp: number;
+	/** How the query cut the window: widened to whole top-level snarls, or the
+	 * plain window when that came to more than the reducer's node budget. */
+	window?: 'snarls' | 'plain';
+	/** On a plain fallback, the node count of the widened window it ruled out. */
+	windowBudgetNodes?: number;
 }
 
 export interface Gfa {
@@ -242,7 +247,9 @@ export function parseGfa(text: string): Gfa {
 					totalSequenceBp: intTag(f, 'TS') ?? 0,
 					alleleSites: intTag(f, 'AS'),
 					alleles: intTag(f, 'AL'),
-					allelesShown: intTag(f, 'AK')
+					allelesShown: intTag(f, 'AK'),
+					window: stringTag(f, 'QW') as 'snarls' | 'plain' | undefined,
+					windowBudgetNodes: intTag(f, 'QB')
 				};
 				break;
 			}

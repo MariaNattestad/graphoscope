@@ -42,7 +42,12 @@ pub(crate) fn reverse_strand_of_reference(steps: &[Step], ref_idx: &HashMap<Node
 
 /// Runs both simplification stages and the walk aggregation, writing the
 /// reduced GFA to `out`.
-pub fn reduce<S>(serialize: S, max_variant: usize, out: &mut impl Write) -> io::Result<()>
+pub fn reduce<S>(
+    serialize: S,
+    max_variant: usize,
+    window: Option<(&str, Option<usize>)>,
+    out: &mut impl Write,
+) -> io::Result<()>
 where
     S: Fn(&mut dyn Write) -> io::Result<()>,
 {
@@ -215,6 +220,8 @@ where
         samples: samples.len(),
         walk_records,
         total_sequence_bp: unchop.segments.iter().map(|s| s.length).sum(),
+        window: window.map(|(kind, _)| kind.to_string()),
+        window_budget_nodes: window.and_then(|(_, n)| n),
     };
 
     gfa::write_reduced(
