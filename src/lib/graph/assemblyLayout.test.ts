@@ -111,8 +111,10 @@ describe('buildAssemblyLayout', () => {
 
 	it('is deterministic', () => {
 		const graph = gfaToGraph(parseGfa(c4a), { referenceSample: 'GRCh38' }).graph;
-		const a = buildAndRunLayout(graph, { mode: 'assembly', referenceSample: 'GRCh38' });
-		const b = buildAndRunLayout(graph, { mode: 'assembly', referenceSample: 'GRCh38' });
+		// The whole unsimplified locus, so keep the run short (as the test below does).
+		const opts = { mode: 'assembly', referenceSample: 'GRCh38', iterations: 30 } as const;
+		const a = buildAndRunLayout(graph, opts);
+		const b = buildAndRunLayout(graph, opts);
 		expect([...a.nodesById.values()].map((n) => [n.x, n.y])).toEqual([...b.nodesById.values()].map((n) => [n.x, n.y]));
 	});
 
