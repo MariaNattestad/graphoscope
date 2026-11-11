@@ -118,11 +118,14 @@ class Limits {
 	}
 
 	/** Classify how the full-walk graph load should be offered for a locus,
-	 *  from the reduced graph's own stats (known before anything is fetched). */
+	 *  from the reduced graph's own stats (known before anything is fetched).
+	 *  Only walk records make it risky: the walks are parsed and mapped onto the
+	 *  simplified graph, never drawn node by node, so maxUnsimplifiedNodes (the cap
+	 *  on drawing every node) doesn't apply here. */
 	walkLoadTier(reduced: ReducedStats | null | undefined): WalkLoadTier {
 		const nodes = reduced?.segmentsBefore ?? 0;
 		const records = reduced?.walkRecords ?? reduced?.totalWalks ?? 0;
-		if (records > this.walkLoadMemoryRiskRecords || nodes > this.maxUnsimplifiedNodes) return 'risky';
+		if (records > this.walkLoadMemoryRiskRecords) return 'risky';
 		if (nodes <= this.autoLoadMaxNodes && records <= this.autoLoadMaxWalkRecords) return 'auto';
 		return 'manual';
 	}

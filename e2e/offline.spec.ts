@@ -133,7 +133,7 @@ test.describe('links for agents', () => {
 		expect(new URL(page.url()).searchParams.get('theme')).toBe('light');
 		expect(new URL(page.url()).searchParams.get('mark')).toBe('chr2:238,000,000-238,001,000,test');
 
-		await page.getByRole('button', { name: 'View', exact: true }).click();
+		await page.getByRole('tablist', { name: 'Sidebar' }).getByRole('tab', { name: 'Settings' }).click();
 		const download = page.waitForEvent('download');
 		await page.getByRole('button', { name: /Export PNG/ }).click();
 		const png = readFileSync((await (await download).path())!);

@@ -2,8 +2,8 @@
 	// The layout-mode list in the options panel: every mode of the current family
 	// as a row with a thumbnail sketch of what it draws, its name and its
 	// description, so the choice can be made before trying each one. The list
-	// scrolls when it outgrows the panel and behaves as a radio group (arrow keys
-	// move the selection).
+	// shrinks to the height the panel leaves it and scrolls, and behaves as a
+	// radio group (arrow keys move the selection).
 	import type { LayoutMode, LayoutModeConfig } from './layoutModes';
 
 	let {
@@ -118,7 +118,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		max-height: 300px;
+		/* Takes the height its parent leaves it (see .mode-picker), down to about
+		   one row, and scrolls. */
+		flex: 1 1 auto;
+		min-height: 64px;
 		overflow-y: auto;
 		padding: 2px;
 		margin: -2px;

@@ -175,7 +175,7 @@
 	// --- Assembly graph mode: each part of it on its own switch ----------------
 	// Parts 2–5 change the layout (so they re-run it); Part 6 is drawing only.
 	let assemblyParts = $state<AssemblyOptions>({ ...DEFAULT_ASSEMBLY });
-	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true, labels: true });
+	let assemblyStyle = $state<AssemblyStyle>({ shape: true, rainbow: true, carriage: true });
 
 	// --- Simplification: sites / off -------------------------------------------
 	// "On" is the graph the wasm query already simplified (see
@@ -331,14 +331,21 @@
 	// The skip-edge bubble under the pointer (reported by the canvas).
 	let hoveredSkip = $state<string | null>(null);
 
-	// The two most-used controls (Simplify + disco) stay pinned; everything else
-	// lives behind these sidebar tabs so the panel stays short as options grow.
-	let ctlTab = $state<'layout' | 'view'>('layout');
+	// The sidebar's two top-level tabs: Inspect (Simplify, the node inspector,
+	// haplotypes) and Settings (layout and view options). Settings sits beside the
+	// graph rather than over it, so a change can be watched as it lands.
+	let sideTab = $state<'inspect' | 'settings'>('inspect');
+
+	// Label the longest nodes on screen with their length (e.g. "6 kb").
+	let showLengthLabels = $state(true);
 
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
 	let lightMode = $state(untrack(() => initialView.theme) === 'light');
 	let canvasApi = $state<CanvasApi | null>(null);
+	// Whether the canvas view has been panned/zoomed off the fitted locus, which
+	// brings the reset-view button in the footer forward (and puts `range=` in links).
+	let viewMoved = $state(false);
 
 	// What each node's fill encodes. Defaults to walk coverage (the original heatmap),
 	// except on a graph with no real walks/paths — there every node's coverage is 0, so
@@ -1046,6 +1053,9 @@
 	// parent to load it once (the same fetch disco uses); on a graph that already
 	// carries walks it's ready immediately.
 	const walkModeNeedsLoad = $derived(hoverMode === 'walk' && !walksGfa);
+	// The walk count under the Node inspector's Walks mode: the walks the Haplotypes
+	// panel lists once loaded, else how many the full graph holds.
+	const inspectorWalkCount = $derived(namedWalks.length || fullGraphWalks);
 	$effect(() => {
 		if (
 			hoverMode === 'walk' &&
@@ -1467,7 +1477,6 @@
 	// they're applied once, to the first graph that has settled (no query or Simplify
 	// re-run in flight, genes in, layout built for it). After that every change is
 	// reported back as URL parameters, so the address bar reproduces the view.
-	let viewMoved = $state(false);
 	let initialApplied = $state(false);
 	let pinsApplied = $state(untrack(() => !initialView.pin?.length));
 	let viewWarnings: string[] = [];
@@ -1762,6 +1771,21 @@
 				{walkNoun}
 			/>
 
+			<div class="side-tabs" role="tablist" aria-label="Sidebar">
+				<button
+					role="tab"
+					aria-selected={sideTab === 'inspect'}
+					class:active={sideTab === 'inspect'}
+					onclick={() => (sideTab = 'inspect')}>Inspect</button
+				>
+				<button
+					role="tab"
+					aria-selected={sideTab === 'settings'}
+					class:active={sideTab === 'settings'}
+					onclick={() => (sideTab = 'settings')}>Settings</button
+				>
+			</div>
+
 			<div class="ctl-wrap" class:dimmed={reportBusy}>
 			<!-- Live slowness tip: appears only after a layout that actually ran long,
 			     pointing at the cheapest lever available. Dismissible; one per graph. -->
@@ -1786,87 +1810,7 @@
 					</div>
 				</div>
 			{/if}
-			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
-			     most-reached-for actions, share one box. Simplify offers On / Off on the
-			     hosted locus browser (they swap the parent's reduced and full graphs); a
-			     plain GFA is shown as loaded. -->
-			<section class="group primary">
-				<div class="simplify">
-					<span class="group-title">Simplify</span>
-					{#if hasSitesMode}
-					<div class="family-toggle" role="group" aria-label="Simplification">
-							<button
-								type="button"
-								class:active={simplifyMode === 'sites'}
-								aria-pressed={simplifyMode === 'sites'}
-								onclick={() => setSimplify('sites')}
-								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
-								>On</button
-							>
-						<button
-							type="button"
-							class:active={simplifyMode === 'off'}
-							aria-pressed={simplifyMode === 'off'}
-							disabled={hasSitesMode && !discoAvailable && !showingAllNodes}
-							onclick={() => setSimplify('off')}
-							title={hasSitesMode && !discoAvailable && !showingAllNodes
-								? `${allNodesCount.toLocaleString()} nodes — ${limits.lowMemory ? 'too much memory to show in full on this device' : 'too slow to render in full'}`
-								: 'Show every node in the graph'}>Off</button
-						>
-					</div>
-					{/if}
-					<span class="switch-sub">
-						{#if simplifyMode === 'sites'}
-							{#if discoLoading || sitesLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
-								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes{#if inputGfa.reduced.alleles != null}
-									· {inputGfa.reduced.allelesShown?.toLocaleString()} of {inputGfa.reduced.alleles.toLocaleString()} alleles shown{:else}
-									· small variant sites collapsed{/if}{:else}small variant sites collapsed{/if}
-						{:else if showingAllNodes}
-							all {allNodesCount.toLocaleString()} nodes shown
-						{:else}
-							every node, as loaded
-						{/if}
-					</span>
-					{#if simplifyMode === 'sites' && inputGfa.reduced?.window}
-						<span
-							class="switch-sub"
-							title="A haplotype that leaves the window inside a bubble would be cut there and left as a loose end. The query fetches each bubble it touches whole, unless that comes to too many nodes."
-						>
-							{#if openEnds === 0}
-								no strand leaves the window
-							{:else if inputGfa.reduced.window === 'snarls'}
-								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window through bubbles wider than it
-							{:else if inputGfa.reduced.windowBudgetNodes}
-								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window: its bubbles whole would be {inputGfa.reduced.windowBudgetNodes.toLocaleString()} nodes
-							{:else}
-								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window
-							{/if}
-						</span>
-					{/if}
-					{#if simplifyMode === 'sites' && onSitesThreshold}
-						<label class="sites-threshold">
-							variants under
-							<select
-								value={sitesThreshold}
-								disabled={sitesLoading}
-								onchange={(e) => onSitesThreshold?.(Number(e.currentTarget.value))}
-							>
-								{#each SITES_STEPS as t (t)}
-									<option value={t}>{t.toLocaleString()} bp</option>
-								{/each}
-							</select>
-						</label>
-					{/if}
-					{#if hasSitesMode && !discoAvailable && !showingAllNodes && allNodesTooMany}
-						<span class="switch-sub note"
-							>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
-								? 'too much memory to show in full on this device'
-								: 'too slow to render in full'}</span
-						>
-					{/if}
-				</div>
-			</section>
-
+			{#if sideTab === 'inspect'}
 			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
 			     over the graph, so they read as opt-in and warn on a large locus. -->
@@ -1907,9 +1851,13 @@
 				{#if hoverMode === 'none'}
 					<span class="switch-sub">no inspector on click · MSA still switches</span>
 				{:else if hoverMode === 'info'}
-					<span class="switch-sub">tooltip only · click to inspect</span>
+					<span class="switch-sub">{adapted.keptSegments.toLocaleString()} node{adapted.keptSegments === 1 ? '' : 's'}</span>
 				{:else if hoverMode === 'bubble'}
-					<span class="switch-sub">hover a node to light up its whole bubble</span>
+					{#if bubbleModel}
+						<span class="switch-sub"
+							>{bubbleModel.bubbles.length.toLocaleString()} bubble{bubbleModel.bubbles.length === 1 ? '' : 's'}</span
+						>
+					{/if}
 					{#if hoverModeHeavy}
 						<span class="switch-sub note"
 							>{adapted.keptSegments.toLocaleString()} nodes — cataloguing bubbles may take a moment.</span
@@ -1931,7 +1879,7 @@
 								the full-walk graph{:else}no walk data available for this graph{/if}</span
 						>
 					{:else}
-						<span class="switch-sub">hover a node to trace its walks</span>
+						<span class="switch-sub">{inspectorWalkCount.toLocaleString()} {inspectorWalkCount === 1 ? panelNoun.slice(0, -1) : panelNoun}</span>
 					{/if}
 					{#if hoverModeHeavy}
 						<span class="switch-sub note"
@@ -1940,6 +1888,14 @@
 						>
 					{/if}
 				{/if}
+				<label class="switch" title="Label the longest nodes on screen with their length; zoom in to label the next-longest. In the assembly view, deletion arcs get what they skip.">
+					<input type="checkbox" bind:checked={showLengthLabels} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Length labels</span>
+						<span class="switch-sub">longest nodes, e.g. 6 kb</span>
+					</span>
+				</label>
 			</section>
 
 			<!-- Haplotypes: the disco-walks spotlight and the per-walk list live in one
@@ -2092,13 +2048,90 @@
 				</section>
 			{/if}
 
-			<!-- Secondary controls, grouped into tabs so the panel doesn't grow forever. -->
-			<nav class="ctl-tabs">
-				<button class:active={ctlTab === 'layout'} onclick={() => (ctlTab = 'layout')}>Layout</button>
-				<button class:active={ctlTab === 'view'} onclick={() => (ctlTab = 'view')}>View</button>
-			</nav>
-			<section class="group ctl-panel">
-				{#if ctlTab === 'layout'}
+			{:else}
+			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
+			     most-reached-for actions, share one box. Simplify offers On / Off on the
+			     hosted locus browser (they swap the parent's reduced and full graphs); a
+			     plain GFA is shown as loaded. -->
+			<section class="group primary">
+				<div class="simplify">
+					<span class="group-title">Simplify</span>
+					{#if hasSitesMode}
+					<div class="family-toggle" role="group" aria-label="Simplification">
+							<button
+								type="button"
+								class:active={simplifyMode === 'sites'}
+								aria-pressed={simplifyMode === 'sites'}
+								onclick={() => setSimplify('sites')}
+								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
+								>On</button
+							>
+						<button
+							type="button"
+							class:active={simplifyMode === 'off'}
+							aria-pressed={simplifyMode === 'off'}
+							disabled={hasSitesMode && allNodesTooMany && !showingAllNodes}
+							onclick={() => setSimplify('off')}
+							title={hasSitesMode && allNodesTooMany && !showingAllNodes
+								? `${allNodesCount.toLocaleString()} nodes — ${limits.lowMemory ? 'too much memory to show in full on this device' : 'too slow to render in full'}`
+								: 'Show every node in the graph'}>Off</button
+						>
+					</div>
+					{/if}
+					<span class="switch-sub">
+						{#if simplifyMode === 'sites'}
+							{#if discoLoading || sitesLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
+								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes{#if inputGfa.reduced.alleles != null}
+									· {inputGfa.reduced.allelesShown?.toLocaleString()} of {inputGfa.reduced.alleles.toLocaleString()} alleles shown{:else}
+									· small variant sites collapsed{/if}{:else}small variant sites collapsed{/if}
+						{:else if showingAllNodes}
+							all {allNodesCount.toLocaleString()} nodes shown
+						{:else}
+							every node, as loaded
+						{/if}
+					</span>
+					{#if simplifyMode === 'sites' && inputGfa.reduced?.window}
+						<span
+							class="switch-sub"
+							title="A haplotype that leaves the window inside a bubble would be cut there and left as a loose end. The query fetches each bubble it touches whole, unless that comes to too many nodes."
+						>
+							{#if openEnds === 0}
+								no strand leaves the window
+							{:else if inputGfa.reduced.window === 'snarls'}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window through bubbles wider than it
+							{:else if inputGfa.reduced.windowBudgetNodes}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window: its bubbles whole would be {inputGfa.reduced.windowBudgetNodes.toLocaleString()} nodes
+							{:else}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window
+							{/if}
+						</span>
+					{/if}
+					{#if simplifyMode === 'sites' && onSitesThreshold}
+						<label class="sites-threshold">
+							variants under
+							<select
+								value={sitesThreshold}
+								disabled={sitesLoading}
+								onchange={(e) => onSitesThreshold?.(Number(e.currentTarget.value))}
+							>
+								{#each SITES_STEPS as t (t)}
+									<option value={t}>{t.toLocaleString()} bp</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
+					{#if hasSitesMode && allNodesTooMany && !showingAllNodes}
+						<span class="switch-sub note"
+							>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
+								? 'too much memory to show in full on this device'
+								: 'too slow to render in full'}</span
+						>
+					{/if}
+				</div>
+			</section>
+
+			<section class="group ctl-panel layout-panel">
+				<span class="group-title">Layout</span>
 						<div class="mode-picker">
 							<div class="family-toggle" role="group" aria-label="Layout family">
 								<button
@@ -2158,9 +2191,6 @@
 									<label title="Width follows how many haplotypes pass through the node">
 										<input type="checkbox" bind:checked={assemblyStyle.carriage} /> Width by carriage
 									</label>
-									<label title="Label merged runs and large alleles with their length, and deletion arcs with what they skip">
-										<input type="checkbox" bind:checked={assemblyStyle.labels} /> Length labels
-									</label>
 								</div>
 							{/if}
 							<!-- Backbone picker / note: only meaningful for a reference-anchored
@@ -2207,7 +2237,9 @@
 							</span>
 						</label>
 						{/if}
-					{:else if ctlTab === 'view'}
+			</section>
+			<section class="group ctl-panel">
+				<span class="group-title">View</span>
 						{#if !referenceFree}
 							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
 								<input type="checkbox" bind:checked={showGeneTrack} />
@@ -2249,8 +2281,8 @@
 						>
 							{linkCopied ? '✓ Copied' : '🔗 Copy link to this view'}
 						</button>
-					{/if}
 			</section>
+			{/if}
 			</div>
 		</aside>
 		{/if}
@@ -2272,6 +2304,7 @@
 					<GraphCanvas
 						layout={displayLayout}
 						assemblyStyle={modeCfg.assembly ? assemblyStyle : null}
+						lengthLabels={showLengthLabels}
 						refCoords={referenceFree ? undefined : refCoords}
 						genes={referenceFree ? [] : genes}
 						showGenes={showGeneTrack && !referenceFree}
@@ -2297,8 +2330,9 @@
 						{glowGreenSegments}
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
-						onViewRange={(r) => (viewRange = r)}
+						showResetButton={bare}
 						onViewMoved={(m) => (viewMoved = m)}
+						onViewRange={(r) => (viewRange = r)}
 						marks={initialView.marks}
 						onSelectSegment={(id) => {
 							selected = id;
@@ -2346,6 +2380,12 @@
 					<!-- Provisional preview up (the reference axis + tracks are already drawn) or
 					     an in-place recompute: keep the canvas visible and just badge it, rather
 					     than blanking it behind the overlay above. -->
+				{:else if sitesLoading}
+					<!-- A new Simplify threshold re-runs the whole query (seconds on a big
+					     locus like LPA); the old graph stays up until the new one lands. -->
+					<div class="busy-badge">
+						<span class="spinner"></span> re-querying with variants under {sitesThreshold.toLocaleString()} bp…
+					</div>
 				{:else if computing && usingProvisional}
 					<div class="busy-badge">
 						<span class="spinner"></span> laying out the graph…
@@ -2772,6 +2812,26 @@
 				{/if}
 		{#if !bare}
 		<div class="foot">
+			<!-- Reset view lives here, not over the canvas, so a screenshot of the
+			     graph has nothing drawn on it. -->
+			<button
+				class="reset-view"
+				class:armed={viewMoved}
+				onclick={() => canvasApi?.resetView()}
+				title="Reset the view to the whole locus"
+				aria-label="Reset the view to the whole locus"
+			>
+				<svg viewBox="0 0 16 16" aria-hidden="true">
+					<path
+						d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.5"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					/>
+				</svg>
+			</button>
 			<span class="muted"
 				>plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms{referenceFree ? '' : ' · add ⌥/alt to zoom height'}</span
 			>
@@ -2823,6 +2883,32 @@
 	}
 	.foot .spacer {
 		flex: 1;
+	}
+	.foot .reset-view {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border-radius: 5px;
+		border: 1px solid #d3d6dd;
+		background: #fff;
+		color: #9aa0aa;
+		cursor: pointer;
+	}
+	/* Once the view has moved there is somewhere to go back to. */
+	.foot .reset-view.armed {
+		color: #2563eb;
+		border-color: #93b4f5;
+	}
+	.foot .reset-view:hover {
+		color: #1d4ed8;
+		border-color: #2563eb;
+	}
+	.foot .reset-view svg {
+		width: 13px;
+		height: 13px;
 	}
 
 	/* Body: a controls sidebar beside the canvas. Grows to fill the wrap so the
@@ -2902,6 +2988,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		flex: 1 1 auto;
+		min-height: 0;
 		transition: opacity 0.15s ease;
 	}
 	.ctl-wrap.dimmed {
@@ -2963,8 +3051,8 @@
 		gap: 0.5rem;
 	}
 
-	/* Sidebar control tabs (Layout / Nodes / View). */
-	.ctl-tabs {
+	/* The sidebar's top-level tabs (Inspect / Settings). */
+	.side-tabs {
 		display: flex;
 		gap: 2px;
 		background: #eef0f4;
@@ -2972,7 +3060,7 @@
 		border-radius: 8px;
 		padding: 2px;
 	}
-	.ctl-tabs button {
+	.side-tabs button {
 		flex: 1;
 		font: inherit;
 		font-size: 0.72rem;
@@ -2984,10 +3072,10 @@
 		padding: 0.3rem 0.2rem;
 		border-radius: 6px;
 	}
-	.ctl-tabs button:hover {
+	.side-tabs button:hover {
 		color: #333;
 	}
-	.ctl-tabs button.active {
+	.side-tabs button.active {
 		background: #fff;
 		color: #2563eb;
 		box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1);
@@ -3077,10 +3165,22 @@
 	}
 
 	/* Layout-mode picker — the primary layout control. */
+	/* Settings fits the column: Simplify and View keep their height, and Layout
+	   takes what is left, its mode list shrinking (and scrolling) down to about one
+	   row. Past that floor the Layout section scrolls (e.g. the assembly options),
+	   and in a really short column the whole sidebar does; nothing overlaps. */
+	.layout-panel {
+		flex: 1 1 auto;
+		min-height: 210px;
+		overflow-y: auto;
+	}
 	.mode-picker {
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		flex: 1 1 auto;
+		/* the family toggle plus one row of the mode list */
+		min-height: 124px;
 	}
 	/* Segmented control that splits the two layout families apart. */
 	.assembly-parts {
@@ -3277,8 +3377,12 @@
 	}
 
 	/* Named-haplotype panel (the /gfa page). */
+	/* The haplotype list takes whatever height the column has left, and scrolls
+	   inside itself; past a minimum the whole sidebar scrolls instead. */
 	.haplo {
 		gap: 0.4rem;
+		flex: 1 1 auto;
+		min-height: 220px;
 	}
 	.haplo-head {
 		display: flex;
@@ -3306,7 +3410,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		max-height: 150px;
+		flex: 1 1 0;
+		min-height: 80px;
 		overflow-y: auto;
 	}
 	.haplo-row {

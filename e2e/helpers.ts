@@ -78,6 +78,9 @@ export async function exerciseGraphView(page: Page) {
 	}
 	await modes.getByRole('radio', { name: 'Info' }).click();
 
+	// The layout picker lives on the sidebar's Settings tab.
+	const tabs = page.getByRole('tablist', { name: 'Sidebar' });
+	await tabs.getByRole('tab', { name: 'Settings' }).click();
 	const family = page.getByRole('group', { name: 'Layout family' });
 	if (await family.isVisible()) {
 		await family.getByRole('button', { name: 'Reference-free' }).click();
@@ -86,6 +89,7 @@ export async function exerciseGraphView(page: Page) {
 		await family.getByRole('button', { name: 'Reference-based' }).click();
 		await waitForLayout(page);
 	}
+	await tabs.getByRole('tab', { name: 'Inspect' }).click();
 
 	// The MSA opens from the node inspector, once the sweep's click selected a node.
 	const msa = page.getByRole('button', { name: /Show MSA/ });

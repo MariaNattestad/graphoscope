@@ -23,7 +23,9 @@ for (const ref of ['grch38', 'chm13']) {
 		await exerciseGraphView(page);
 
 		// Simplify: Off loads the full graph (every haplotype walk) and shows every
-		// node; Simplify returns to the query's reduced graph.
+		// node; Simplify returns to the query's reduced graph. It lives on the
+		// sidebar's Settings tab.
+		await page.getByRole('tablist', { name: 'Sidebar' }).getByRole('tab', { name: 'Settings' }).click();
 		const simplify = page.getByRole('group', { name: 'Simplification' });
 		await simplify.getByRole('button', { name: 'Off' }).click();
 		await expect(page.getByText(/all [\d,]+ nodes shown/)).toBeVisible({ timeout: 120_000 });
