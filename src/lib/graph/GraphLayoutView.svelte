@@ -326,7 +326,11 @@
 	let canvasApi = $state<{
 		exportImage: (filename: string) => void;
 		colorForSegment: (segId: string) => string;
+		resetView: () => void;
 	} | null>(null);
+	// Whether the canvas view has been panned/zoomed off the fitted locus, which
+	// brings the reset-view button in the footer forward.
+	let viewMoved = $state(false);
 
 	// What each node's fill encodes. Defaults to walk coverage (the original heatmap),
 	// except on a graph with no real walks/paths — there every node's coverage is 0, so
@@ -1033,6 +1037,9 @@
 	// parent to load it once (the same fetch disco uses); on a graph that already
 	// carries walks it's ready immediately.
 	const walkModeNeedsLoad = $derived(hoverMode === 'walk' && !walksGfa);
+	// The walk count under the Node inspector's Walks mode: the walks the Haplotypes
+	// panel lists once loaded, else how many the full graph holds.
+	const inspectorWalkCount = $derived(namedWalks.length || fullGraphWalks);
 	$effect(() => {
 		if (
 			hoverMode === 'walk' &&
@@ -1660,9 +1667,13 @@
 				{#if hoverMode === 'none'}
 					<span class="switch-sub">no inspector on click · MSA still switches</span>
 				{:else if hoverMode === 'info'}
-					<span class="switch-sub">tooltip only · click to inspect</span>
+					<span class="switch-sub">{adapted.keptSegments.toLocaleString()} node{adapted.keptSegments === 1 ? '' : 's'}</span>
 				{:else if hoverMode === 'bubble'}
-					<span class="switch-sub">hover a node to light up its whole bubble</span>
+					{#if bubbleModel}
+						<span class="switch-sub"
+							>{bubbleModel.bubbles.length.toLocaleString()} bubble{bubbleModel.bubbles.length === 1 ? '' : 's'}</span
+						>
+					{/if}
 					{#if hoverModeHeavy}
 						<span class="switch-sub note"
 							>{adapted.keptSegments.toLocaleString()} nodes — cataloguing bubbles may take a moment.</span
@@ -1684,7 +1695,7 @@
 								the full-walk graph{:else}no walk data available for this graph{/if}</span
 						>
 					{:else}
-						<span class="switch-sub">hover a node to trace its walks</span>
+						<span class="switch-sub">{inspectorWalkCount.toLocaleString()} {inspectorWalkCount === 1 ? panelNoun.slice(0, -1) : panelNoun}</span>
 					{/if}
 					{#if hoverModeHeavy}
 						<span class="switch-sub note"
@@ -1875,9 +1886,9 @@
 							type="button"
 							class:active={simplifyMode === 'off'}
 							aria-pressed={simplifyMode === 'off'}
-							disabled={hasSitesMode && !discoAvailable && !showingAllNodes}
+							disabled={hasSitesMode && allNodesTooMany && !showingAllNodes}
 							onclick={() => setSimplify('off')}
-							title={hasSitesMode && !discoAvailable && !showingAllNodes
+							title={hasSitesMode && allNodesTooMany && !showingAllNodes
 								? `${allNodesCount.toLocaleString()} nodes — ${limits.lowMemory ? 'too much memory to show in full on this device' : 'too slow to render in full'}`
 								: 'Show every node in the graph'}>Off</button
 						>
@@ -1925,7 +1936,7 @@
 							</select>
 						</label>
 					{/if}
-					{#if hasSitesMode && !discoAvailable && !showingAllNodes && allNodesTooMany}
+					{#if hasSitesMode && allNodesTooMany && !showingAllNodes}
 						<span class="switch-sub note"
 							>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
 								? 'too much memory to show in full on this device'
@@ -1935,7 +1946,7 @@
 				</div>
 			</section>
 
-			<section class="group ctl-panel">
+			<section class="group ctl-panel layout-panel">
 				<span class="group-title">Layout</span>
 						<div class="mode-picker">
 							<div class="family-toggle" role="group" aria-label="Layout family">
@@ -2128,6 +2139,8 @@
 						{glowGreenSegments}
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
+						showResetButton={bare}
+						onViewMoved={(m) => (viewMoved = m)}
 						onViewRange={(r) => (viewRange = r)}
 						onSelectSegment={(id) => {
 							selected = id;
@@ -2175,6 +2188,12 @@
 					<!-- Provisional preview up (the reference axis + tracks are already drawn) or
 					     an in-place recompute: keep the canvas visible and just badge it, rather
 					     than blanking it behind the overlay above. -->
+				{:else if sitesLoading}
+					<!-- A new Simplify threshold re-runs the whole query (seconds on a big
+					     locus like LPA); the old graph stays up until the new one lands. -->
+					<div class="busy-badge">
+						<span class="spinner"></span> re-querying with variants under {sitesThreshold.toLocaleString()} bp…
+					</div>
 				{:else if computing && usingProvisional}
 					<div class="busy-badge">
 						<span class="spinner"></span> laying out the graph…
@@ -2601,6 +2620,26 @@
 				{/if}
 		{#if !bare}
 		<div class="foot">
+			<!-- Reset view lives here, not over the canvas, so a screenshot of the
+			     graph has nothing drawn on it. -->
+			<button
+				class="reset-view"
+				class:armed={viewMoved}
+				onclick={() => canvasApi?.resetView()}
+				title="Reset the view to the whole locus"
+				aria-label="Reset the view to the whole locus"
+			>
+				<svg viewBox="0 0 16 16" aria-hidden="true">
+					<path
+						d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="1.5"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					/>
+				</svg>
+			</button>
 			<span class="muted"
 				>plain scroll pans · ⌘/ctrl-scroll (or pinch) zooms{referenceFree ? '' : ' · add ⌥/alt to zoom height'}</span
 			>
@@ -2652,6 +2691,32 @@
 	}
 	.foot .spacer {
 		flex: 1;
+	}
+	.foot .reset-view {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border-radius: 5px;
+		border: 1px solid #d3d6dd;
+		background: #fff;
+		color: #9aa0aa;
+		cursor: pointer;
+	}
+	/* Once the view has moved there is somewhere to go back to. */
+	.foot .reset-view.armed {
+		color: #2563eb;
+		border-color: #93b4f5;
+	}
+	.foot .reset-view:hover {
+		color: #1d4ed8;
+		border-color: #2563eb;
+	}
+	.foot .reset-view svg {
+		width: 13px;
+		height: 13px;
 	}
 
 	/* Body: a controls sidebar beside the canvas. Grows to fill the wrap so the
@@ -2908,10 +2973,22 @@
 	}
 
 	/* Layout-mode picker — the primary layout control. */
+	/* Settings fits the column: Simplify and View keep their height, and Layout
+	   takes what is left, its mode list shrinking (and scrolling) down to about one
+	   row. Past that floor the Layout section scrolls (e.g. the assembly options),
+	   and in a really short column the whole sidebar does; nothing overlaps. */
+	.layout-panel {
+		flex: 1 1 auto;
+		min-height: 210px;
+		overflow-y: auto;
+	}
 	.mode-picker {
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		flex: 1 1 auto;
+		/* the family toggle plus one row of the mode list */
+		min-height: 124px;
 	}
 	/* Segmented control that splits the two layout families apart. */
 	.assembly-parts {

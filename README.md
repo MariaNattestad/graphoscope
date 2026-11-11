@@ -24,7 +24,7 @@ Both are read directly from the public `human-pangenomics` S3 bucket (see
   extraction, then simplifies the subgraph and aggregates its haplotype walks
   before emitting GFA. It runs in a Web Worker.
 - **Context window.** The extracted subgraph is the requested locus plus a
-  **context** margin (GBZ-base's `--context`, default **10,000 bp**): how far past
+  **context** margin (GBZ-base's `--context`, default **1,000 bp**): how far past
   the locus the graph is followed before haplotypes are cut off at the boundary.
   A haplotype that continues beyond it has its walk chopped there — the "off-locus
   exit" dangles you see in the graph view. It's adjustable in the UI (the
@@ -169,7 +169,7 @@ A query is a shareable link. These params drive the app:
 - `locus` — a gene symbol (`SMN1`) **or** coordinates in the graph's reference
   system (`contig:start-end`, e.g. `chr5:70925029-70953942`)
 - `context` — optional subgraph context margin in bp (see [How it works](#how-it-works));
-  default `10000`, omitted from the URL when it's the default
+  default `1000`, omitted from the URL when it's the default
 
 ```
 # GRCh38-based graph, by gene symbol
@@ -190,7 +190,7 @@ copy.
 
 For agents and scripts, `/api` runs the same query and returns **graph-complexity
 stats as JSON** instead of the visualizations. It takes the same params as the app
-(`ref`, `locus`, and optional `context`; default `10000`) and echoes the effective
+(`ref`, `locus`, and optional `context`; default `1000`) and echoes the effective
 `context` back in the response:
 
 ```
@@ -205,7 +205,7 @@ https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=5
   "query": { "graph": "grch38", "referenceSample": "GRCh38",
              "input": "SMN1", "gene": "SMN1",
              "contig": "chr5", "start": 70925029, "end": 70953942, "span": 28913,
-             "context": 10000 },
+             "context": 1000 },
   "complexity": {
     "nodes": 151, "nodesBeforeSimplification": 1400,
     "links": 221, "linksBeforeSimplification": 1975,

@@ -105,6 +105,8 @@
 		glowGreenSegments = null,
 		onReady,
 		onViewRange,
+		showResetButton = true,
+		onViewMoved,
 		nodeTooltip
 	}: {
 		layout: LayoutResult;
@@ -194,7 +196,13 @@
 		onReady?: (api: {
 			exportImage: (filename: string) => void;
 			colorForSegment: (segId: string) => string;
+			resetView: () => void;
 		}) => void;
+		/** Draw the reset-view button over the canvas's corner. Off when the parent
+		 * puts its own outside the canvas, so screenshots of the canvas stay clean. */
+		showResetButton?: boolean;
+		/** Whether the view has been panned or zoomed away from the fitted locus. */
+		onViewMoved?: (moved: boolean) => void;
 	} = $props();
 
 	const theme = $derived(lightMode ? lightTheme : darkTheme);
@@ -1791,8 +1799,17 @@
 
 	$effect(() => {
 		// Hand the parent the export API once the canvas exists.
-		if (canvasEl) onReady?.({ exportImage, colorForSegment: colorForChain });
+		if (canvasEl) onReady?.({ exportImage, colorForSegment: colorForChain, resetView });
 	});
+
+	$effect(() => {
+		onViewMoved?.(viewMoved);
+	});
+
+	function resetView() {
+		fitToView();
+		trackEvent('widget_interact', { widget: 'graph_layout', action: 'reset_view' });
+	}
 
 	$effect(() => {
 		// Verify the reference-coordinate assumptions once per layout/coords change,
@@ -2022,14 +2039,12 @@
 	<canvas bind:this={canvasEl}></canvas>
 	<!-- Reset to the whole locus: the one gesture back when panning and zooming have
 	     left the view somewhere unhelpful. Kept faint until the view has been moved. -->
+	{#if showResetButton}
 	<button
 		class="reset-view"
 		class:light={lightMode}
 		class:armed={viewMoved}
-		onclick={() => {
-			fitToView();
-			trackEvent('widget_interact', { widget: 'graph_layout', action: 'reset_view' });
-		}}
+		onclick={resetView}
 		title="Reset the view to the whole locus"
 		aria-label="Reset the view to the whole locus"
 	>
@@ -2044,6 +2059,7 @@
 			/>
 		</svg>
 	</button>
+	{/if}
 	{#if hoverLabel}
 		<div
 			class="tooltip"

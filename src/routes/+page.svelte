@@ -342,17 +342,21 @@
 	/** Nodes the unsimplified graph would have, known from the reduced X line. */
 	const unsimplifiedNodes = $derived(gfa?.reduced?.segmentsBefore ?? 0);
 	const unsimplifiedTier = $derived(limits.walkLoadTier(gfa?.reduced));
-	// Refuse the full graph when it's 'risky' — too many nodes to lay out (desktop:
-	// too slow) or too many walk-records to hold (mobile: an OOM risk). The tier folds
-	// in both caps at their device-scaled values, so this one check covers "too slow
-	// on desktop" and "would crash a phone" alike; the message names which.
-	const canShowUnsimplified = $derived(unsimplifiedNodes > 0 && unsimplifiedTier !== 'risky');
+	// Refuse to draw the full graph when it has too many nodes to lay out, or too
+	// many walk records to hold (an OOM risk); the message names which.
+	const canShowUnsimplified = $derived(
+		unsimplifiedNodes > 0 && unsimplifiedNodes <= limits.maxUnsimplifiedNodes && unsimplifiedTier !== 'risky'
+	);
 	// Risky *and* memory-constrained: parsing every walk would likely crash the tab,
 	// so the Raw-data Walks tab shows an info note instead of a load button (same
 	// call the Haplotypes box makes).
 	const unsimplifiedBlocked = $derived(
 		unsimplifiedNodes > 0 && unsimplifiedTier === 'risky' && limits.lowMemory
 	);
+	// Loading the walks (haplotypes, disco-walks, walk hover, the Raw-data Walks tab)
+	// parses the full graph but draws only the simplified one, so only the memory
+	// risk blocks it, not the node count.
+	const walksAvailable = $derived(unsimplifiedNodes > 0 && !unsimplifiedBlocked);
 	/** What the layout is actually drawing. */
 	const displayGfa = $derived(
 		showUnsimplified && unsimplified ? unsimplified : sitesThreshold !== SITES_DEFAULT && sitesGfa ? sitesGfa : gfa
@@ -675,7 +679,7 @@
 							gfa={displayGfa}
 							referenceSample={graph.referenceSample}
 							refKey={graph.refKey}
-							discoAvailable={canShowUnsimplified}
+							discoAvailable={walksAvailable}
 							discoLoading={loadingUnsimplified}
 							onRequestDiscoGraph={requestDiscoGraph}
 							discoWalksGfa={unsimplified}
@@ -702,7 +706,7 @@
 							{downloadingRaw}
 							allWalksGfa={unsimplified}
 							loadingAllWalks={loadingUnsimplified}
-							canLoadAllWalks={canShowUnsimplified}
+							canLoadAllWalks={walksAvailable}
 							allWalksBlocked={unsimplifiedBlocked}
 							onLoadAllWalks={ensureUnsimplifiedParsed}
 						/>
