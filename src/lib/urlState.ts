@@ -75,6 +75,12 @@ export const PARAMS: ParamDoc[] = [
 	},
 	{ name: 'genes', pages: ['locus', 'gfa'], values: '1 | 0', description: 'Draw the gene track. Default 1.' },
 	{
+		name: 'labels',
+		pages: ['locus', 'gfa'],
+		values: '1 | 100 | 1kb | 10kb | none',
+		description: 'Label nodes at least this long with their length. Default 100.'
+	},
+	{
 		name: 'exits',
 		pages: ['locus'],
 		values: '1 | 0',
@@ -164,6 +170,27 @@ export function parseLayoutMode(text: string): LayoutMode | null {
 	return mode?.id ?? null;
 }
 
+/** The length-label slider's stops: label nodes at least this many bp long, or
+ * (null) none at all. */
+export const LENGTH_LABEL_STEPS: (number | null)[] = [1, 100, 1000, 10000, null];
+export const LENGTH_LABEL_DEFAULT = 100;
+
+/** `labels=` value → a slider stop, or undefined when it isn't one. Takes bp
+ * counts with an optional bp/kb suffix, and none/off/0 for no labels. */
+export function parseLengthLabels(text: string): number | null | undefined {
+	const t = text.trim().toLowerCase().replace(/,/g, '');
+	if (t === 'none' || t === 'off' || t === '0') return null;
+	const m = /^(\d+(?:\.\d+)?)\s*(bp|kb)?$/.exec(t);
+	if (!m) return undefined;
+	const bp = Number(m[1]) * (m[2] === 'kb' ? 1000 : 1);
+	return LENGTH_LABEL_STEPS.includes(bp) ? bp : undefined;
+}
+
+export function formatLengthLabels(min: number | null): string {
+	if (min == null) return 'none';
+	return min >= 1000 ? `${min / 1000}kb` : String(min);
+}
+
 function parseColor(text: string): ColorMode | null {
 	const t = text.trim().toLowerCase();
 	const mode = COLOR_MODES.find((m) => m.mode.toLowerCase() === t || m.label.toLowerCase() === t);
@@ -184,6 +211,8 @@ export interface GraphViewParams {
 	color?: ColorMode;
 	genes?: boolean;
 	exits?: boolean;
+	/** Minimum node length that gets a length label; null = no labels. */
+	labels?: number | null;
 	range?: GenomicRange;
 	select?: string;
 	pin?: string[];
@@ -257,6 +286,11 @@ export function parseParams(p: URLSearchParams, page: ParamPage): ParsedParams {
 		if (b == null) bad(name, v, '1 or 0');
 		else if (name === 'chrome') out.chrome = b;
 		else graph[name] = b;
+	}
+	if ((v = one('labels'))) {
+		const min = parseLengthLabels(v);
+		if (min === undefined) bad('labels', v, doc('labels'));
+		else graph.labels = min;
 	}
 	if ((v = one('range'))) {
 		const r = parseRange(v);

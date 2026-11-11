@@ -41,6 +41,7 @@ Layouts are deterministic: the same graph, settings and window size always draw 
 - `theme`: `dark` (default) | `light`. Light is for figures.
 - `color`: what node colour encodes: `coverage` (walks through the node; default), `bubbleSize`, `bubble`, `node`, `length`.
 - `genes`: `1` | `0`. Draw the gene track. Default `1`.
+- `labels`: `1` | `100` | `1kb` | `10kb` | `none`. Label nodes at least this long with their length (the sidebar's Length labels slider). Where labels would overlap, the longer node wins; zoom in with `range` to see more. Default `100`.
 - `exits`: `1` | `0`. Locus browser only: cues on haplotypes cut off at the window edge. Default `1`.
 - `range`: `contig:start-end`. Zoom to this stretch of reference after layout.
 - `select`: a node id. Select it and open its inspector.

@@ -4,9 +4,11 @@ import path from 'node:path';
 import {
 	PARAMS,
 	applyPatch,
+	formatLengthLabels,
 	formatMark,
 	formatQuery,
 	parseLayoutMode,
+	parseLengthLabels,
 	parseMark,
 	parseParams,
 	parseRange
@@ -67,10 +69,28 @@ describe('parseLayoutMode', () => {
 	});
 });
 
+describe('parseLengthLabels', () => {
+	it('reads every slider stop, in bp or kb', () => {
+		expect(['1', '100', '1kb', '10kb', 'none'].map(parseLengthLabels)).toEqual([1, 100, 1000, 10000, null]);
+		expect(parseLengthLabels('1000')).toBe(1000);
+		expect(parseLengthLabels('10,000 bp')).toBe(10000);
+		expect(parseLengthLabels('off')).toBeNull();
+	});
+
+	it('rejects lengths between the stops', () => {
+		expect(parseLengthLabels('500')).toBeUndefined();
+		expect(parseLengthLabels('big')).toBeUndefined();
+	});
+
+	it('round-trips through formatLengthLabels', () => {
+		for (const v of [1, 100, 1000, 10000, null]) expect(parseLengthLabels(formatLengthLabels(v))).toBe(v);
+	});
+});
+
 describe('parseParams', () => {
 	it('parses a full figure link', () => {
 		const { graph, page, warnings } = parse(
-			'ref=grch38&locus=CD58&layout=strands&theme=light&color=length&genes=0&exits=0&range=chr1:1-2000' +
+			'ref=grch38&locus=CD58&layout=strands&theme=light&color=length&genes=0&labels=none&exits=0&range=chr1:1-2000' +
 				'&select=42&pin=HG002&pin=HG00438%231&msa=1&mark=chr1:100-200,Alu&mark=chr1:300-400' +
 				'&simplify=250&view=data&chrome=0&size=1600x900'
 		);
@@ -80,6 +100,7 @@ describe('parseParams', () => {
 			theme: 'light',
 			color: 'length',
 			genes: false,
+			labels: null,
 			exits: false,
 			range: { contig: 'chr1', start: 1, end: 2000 },
 			select: '42',
@@ -102,9 +123,11 @@ describe('parseParams', () => {
 	});
 
 	it('warns about unknown parameters and bad values instead of dropping them silently', () => {
-		const { graph, warnings } = parse('layuot=fm3&layout=strandz&theme=blue&genes=maybe&size=10x10&mark=nope');
+		const { graph, warnings } = parse('layuot=fm3&layout=strandz&theme=blue&genes=maybe&size=10x10&mark=nope&labels=500');
 		expect(graph.layout).toBeUndefined();
-		expect(warnings).toHaveLength(6);
+		expect(graph.labels).toBeUndefined();
+		expect(warnings).toHaveLength(7);
+		expect(warnings.join('\n')).toMatch(/labels=500/);
 		expect(warnings[0]).toMatch(/unknown parameter "layuot"/);
 		expect(warnings.join('\n')).toMatch(/layout=strandz/);
 		expect(warnings.join('\n')).toMatch(/theme=blue/);

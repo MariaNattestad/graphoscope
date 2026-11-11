@@ -117,7 +117,7 @@ test.describe('/playground', () => {
 test.describe('links for agents', () => {
 	test('a link sets the view and reports done', async ({ page }) => {
 		await page.goto(
-			'/gfa?example=mlph&theme=light&layout=strands&mark=chr2:238,000,000-238,001,000,test&pin=HG00438%231&bogus=1'
+			'/gfa?example=mlph&theme=light&layout=strands&labels=none&mark=chr2:238,000,000-238,001,000,test&pin=HG00438%231&bogus=1'
 		);
 		await waitForDone(page);
 		const state = await page.evaluate(() => {
@@ -132,6 +132,12 @@ test.describe('links for agents', () => {
 		await expect.poll(() => new URL(page.url()).searchParams.getAll('pin')).toEqual(['HG00438#1']);
 		expect(new URL(page.url()).searchParams.get('theme')).toBe('light');
 		expect(new URL(page.url()).searchParams.get('mark')).toBe('chr2:238,000,000-238,001,000,test');
+		expect(new URL(page.url()).searchParams.get('labels')).toBe('none');
+		// The Length labels slider shows the linked stop, and moving it rewrites the link.
+		const slider = page.getByRole('slider');
+		await expect(slider).toHaveAttribute('aria-valuetext', 'none');
+		await slider.fill('2');
+		await expect.poll(() => new URL(page.url()).searchParams.get('labels')).toBe('1kb');
 
 		await page.getByRole('tablist', { name: 'Sidebar' }).getByRole('tab', { name: 'Settings' }).click();
 		const download = page.waitForEvent('download');

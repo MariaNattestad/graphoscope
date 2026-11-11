@@ -186,7 +186,7 @@ Opening the app writes the current `ref`/`locus` (and `context`, when non-defaul
 back into the address bar, so whatever you're looking at is always a link you can
 copy.
 
-The view is in the link too: `layout`, `theme`, `color`, `genes`, `exits`,
+The view is in the link too: `layout`, `theme`, `color`, `genes`, `labels`, `exits`,
 `simplify`, `view`, `range` (zoom), `select`, `pin`, `msa`, `mark`, `chrome` and
 `size`. The address bar is rewritten as you change the view, the **Copy link**
 button copies it, and exported PNGs embed it as a `Source` text chunk. The full

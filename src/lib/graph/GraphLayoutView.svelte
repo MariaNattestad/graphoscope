@@ -41,7 +41,14 @@
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
-	import { formatRange, type GraphViewParams, type ParamPatch } from '../urlState';
+	import {
+		LENGTH_LABEL_DEFAULT,
+		LENGTH_LABEL_STEPS,
+		formatLengthLabels,
+		formatRange,
+		type GraphViewParams,
+		type ParamPatch
+	} from '../urlState';
 
 	let {
 		gfa: inputGfa,
@@ -336,8 +343,14 @@
 	// graph rather than over it, so a change can be watched as it lands.
 	let sideTab = $state<'inspect' | 'settings'>('inspect');
 
-	// Label the longest nodes on screen with their length (e.g. "6 kb").
-	let showLengthLabels = $state(true);
+	// Label nodes on screen with their length (e.g. "6 kb"): those at least the
+	// slider's length, from 1 bp (everything) through 10 kb, or none.
+	// (labels=none arrives as null, so only undefined means "not in the link".)
+	let lengthLabelStep = $state(
+		LENGTH_LABEL_STEPS.indexOf(untrack(() => (initialView.labels === undefined ? LENGTH_LABEL_DEFAULT : initialView.labels)))
+	);
+	const lengthLabelMinBp = $derived(LENGTH_LABEL_STEPS[lengthLabelStep] ?? null);
+	const fmtStep = (bp: number | null) => (bp == null ? 'none' : bp >= 1000 ? `${bp / 1000} kb` : `${bp} bp`);
 
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
@@ -1582,6 +1595,7 @@
 			theme: lightMode ? 'light' : null,
 			color: colorMode === defaultColorMode ? null : colorMode,
 			genes: showGeneTrack ? null : '0',
+			labels: lengthLabelMinBp === LENGTH_LABEL_DEFAULT ? null : formatLengthLabels(lengthLabelMinBp),
 			msa: msaOpen ? '1' : null,
 			select: selected,
 			pin: pinsApplied ? (pinnedKeys.length ? pinnedKeys.map(pinName) : null) : (initialView.pin ?? null),
@@ -1888,12 +1902,26 @@
 						>
 					{/if}
 				{/if}
-				<label class="switch" title="Label the longest nodes on screen with their length; zoom in to label the next-longest. In the assembly view, deletion arcs get what they skip.">
-					<input type="checkbox" bind:checked={showLengthLabels} />
-					<span class="track"><span class="thumb"></span></span>
-					<span class="switch-text">
+				<label
+					class="length-labels"
+					title="Label every node on screen at least this long with its length. Where labels would overlap the longer node wins; zoom in to make room. In the assembly view, deletion arcs get what they skip."
+				>
+					<span class="length-labels-head">
 						<span class="switch-label">Length labels</span>
-						<span class="switch-sub">longest nodes, e.g. 6 kb</span>
+						<span class="length-labels-value"
+							>{lengthLabelMinBp == null ? 'none' : `nodes ≥ ${fmtStep(lengthLabelMinBp)}`}</span
+						>
+					</span>
+					<input
+						type="range"
+						min="0"
+						max={LENGTH_LABEL_STEPS.length - 1}
+						step="1"
+						bind:value={lengthLabelStep}
+						aria-valuetext={lengthLabelMinBp == null ? 'none' : `nodes at least ${fmtStep(lengthLabelMinBp)}`}
+					/>
+					<span class="length-labels-ticks" aria-hidden="true">
+						{#each LENGTH_LABEL_STEPS as bp (bp)}<span>{fmtStep(bp)}</span>{/each}
 					</span>
 				</label>
 			</section>
@@ -2304,7 +2332,7 @@
 					<GraphCanvas
 						layout={displayLayout}
 						assemblyStyle={modeCfg.assembly ? assemblyStyle : null}
-						lengthLabels={showLengthLabels}
+						{lengthLabelMinBp}
 						refCoords={referenceFree ? undefined : refCoords}
 						genes={referenceFree ? [] : genes}
 						showGenes={showGeneTrack && !referenceFree}
@@ -3157,6 +3185,35 @@
 	}
 	.switch-sub.note {
 		color: #b45309;
+	}
+
+	/* Length-label slider: five stops, ticks named under the track. */
+	.length-labels {
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+		margin-top: 0.15rem;
+	}
+	.length-labels-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+	}
+	.length-labels-value {
+		color: #2563eb;
+		font-size: 0.72rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.length-labels input {
+		width: 100%;
+		margin: 0;
+		accent-color: #2563eb;
+	}
+	.length-labels-ticks {
+		display: flex;
+		justify-content: space-between;
+		color: #9aa0aa;
+		font-size: 0.65rem;
 	}
 	/* A disabled switch (a reference-anchored knob while a free mode is active). */
 	.switch:has(input:disabled) {
