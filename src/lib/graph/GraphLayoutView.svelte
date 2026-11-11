@@ -780,13 +780,21 @@
 	const hoverWalk = $derived(hoverKey ? (namedWalks.find((w) => w.key === hoverKey) ?? null) : null);
 
 	// A stable colour per haplotype, keyed to its position in the list so a given
-	// haplotype keeps its colour whether hovered, pinned, or cycled. Hues stay out of
-	// the red–orange–yellow band the strands themselves are coloured in, so a trace
-	// never blends into the graph; every sixth walk is white (ink in light mode).
+	// haplotype keeps its colour whether hovered, pinned, or cycled. A fixed cycle of
+	// six, all clear of the red–orange–yellow band the strands are coloured in and of
+	// the near-white backbone, ordered so neighbours in the list never share a hue.
+	// Lightness is tuned per colour so blue and violet don't read dimmer than green.
+	const WALK_COLORS: readonly { dark: string; light: string }[] = [
+		{ dark: '#4ade80', light: '#16a34a' }, // green
+		{ dark: '#b794ff', light: '#7c3aed' }, // violet
+		{ dark: '#38bdf8', light: '#0284c7' }, // sky
+		{ dark: '#f07ae0', light: '#c026d3' }, // magenta
+		{ dark: '#2dd4bf', light: '#0d9488' }, // teal
+		{ dark: '#7f9cff', light: '#2563eb' } // blue
+	];
 	function colorForSeed(seed: number): string {
-		if (seed % 6 === 5) return lightMode ? '#1f2430' : '#ffffff';
-		const hue = 100 + ((seed * 47) % 230);
-		return `hsl(${hue}, 95%, ${lightMode ? 45 : 62}%)`;
+		const c = WALK_COLORS[seed % WALK_COLORS.length];
+		return lightMode ? c.light : c.dark;
 	}
 	function colorForKey(key: string): string {
 		const i = namedWalks.findIndex((w) => w.key === key);
