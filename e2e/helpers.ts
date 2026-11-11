@@ -47,6 +47,12 @@ export async function waitForLayout(page: Page, timeout = 90_000) {
 	});
 }
 
+/** Wait for the page's own ready signal: html[data-status] reaches done or error
+ * (see src/lib/agentStatus.ts). */
+export async function waitForDone(page: Page, timeout = 120_000) {
+	await page.waitForSelector('html[data-status="done"], html[data-status="error"]', { timeout });
+}
+
 /** Sweep the pointer across the graph canvas and click its middle, so hover hit
  * testing, tooltips and the inspector all run against the current layout. */
 async function sweepCanvas(page: Page) {

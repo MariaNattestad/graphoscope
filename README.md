@@ -186,6 +186,39 @@ Opening the app writes the current `ref`/`locus` (and `context`, when non-defaul
 back into the address bar, so whatever you're looking at is always a link you can
 copy.
 
+The view is in the link too: `layout`, `theme`, `color`, `genes`, `labels`, `exits`,
+`simplify`, `view`, `range` (zoom), `select`, `pin`, `msa`, `mark`, `chrome` and
+`size`. The address bar is rewritten as you change the view, the **Copy link**
+button copies it, and exported PNGs embed it as a `Source` text chunk. The full
+reference, written for AI agents, is [`static/llms.txt`](static/llms.txt) (served at
+`/llms.txt`); the parameters themselves are defined in `src/lib/urlState.ts`.
+
+```
+# a figure: a labelled region, light background, no UI, fixed size
+https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&mark=chr5:70,940,000-70,941,000,region%20of%20interest&theme=light&chrome=0&size=1600x900
+
+# a bundled GFA with two haplotypes traced
+https://marianattestad.github.io/graphoscope/gfa?example=mlph&pin=HG00438%231&pin=HG00621
+```
+
+Unknown parameters and values that don't parse are listed in a banner on the
+page rather than dropped silently.
+
+### Knowing when a page is ready
+
+Don't wait a fixed time before a screenshot. The locus browser and `/gfa` set
+`<html data-status>` through `loading` → `querying` → `layout` → `drawing` →
+`done` (or `error`), mirror it at the end of the tab title, and expose
+`window.graphoscope` (`status`, `error`, `warnings`, `query`, `complexity`,
+`layoutMs`, and a `ready` promise). `done` means the layout, gene track and marks
+are drawn and nothing is animating. Layouts are deterministic, so the same link at
+the same `size` gives the same pixels.
+
+```js
+await page.goto(url);
+await page.waitForSelector('html[data-status="done"], html[data-status="error"]');
+```
+
 ### Machine-readable endpoint: `/api`
 
 For agents and scripts, `/api` runs the same query and returns **graph-complexity
@@ -235,6 +268,28 @@ Playwright, or an agent's browser tool):
 An error returns `{ "ok": false, "error": "…", "query": { … } }` with the same
 `data-status="error"` signal. The response shape is defined in
 `src/lib/apiReport.ts`.
+
+### Keeping the AI-facing docs in sync
+
+Agents learn the app from `static/llms.txt`, `/api`'s help and this README, not
+from the UI. So a UI change that adds, renames or removes a setting, layout,
+colour mode, example or loading step is incomplete until it is reflected in
+these places:
+
+| What changed | Update |
+| --- | --- |
+| A view setting (new control, renamed option, new default) | `PARAMS` and the parser in `src/lib/urlState.ts`; seed it from `initialView` and report it in the `onParams` effect in `src/lib/graph/GraphLayoutView.svelte`, so a link sets it and the address bar follows it |
+| A layout or colour mode added, renamed or removed | `src/lib/graph/layoutModes.ts` / `colors.ts`, plus any alias in `parseLayoutMode` (`urlState.ts`) |
+| A `/gfa` example | give it an `id` in `EXAMPLES` (`src/routes/gfa/+page.svelte`) |
+| Any of the above | `static/llms.txt` (the parameter reference and its examples) and the [Query by URL](#query-by-url-and-for-ai-agents) section above |
+| A new async step before the picture is final (a fetch, a second layout pass, an animation) | keep `done` after it: `onRenderState` in `GraphLayoutView.svelte`, `isSettled()` in `GraphCanvas.svelte`, and the `setAgentStatus` calls in `src/routes/+page.svelte` and `src/routes/gfa/+page.svelte` (`src/lib/agentStatus.ts` defines the states) |
+| `/api` params or response shape | `API_PARAMS` and `help()` in `src/routes/api/+page.svelte`, `src/lib/apiReport.ts`, and the JSON example above |
+| A new page | `initAgentStatus` in its `onMount`, a `pages` entry for its params in `urlState.ts`, and a line in `llms.txt`'s page list |
+
+`src/lib/urlState.test.ts` fails when `llms.txt` is missing a parameter, layout id,
+colour mode or `/gfa` example id, and the "links for agents" tests in
+`e2e/offline.spec.ts` check that a link reaches `done` with its settings applied.
+Prose, defaults and examples aren't checked, so read the `llms.txt` lines you touch.
 
 ## Data hosting
 
