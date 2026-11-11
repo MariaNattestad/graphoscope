@@ -1608,87 +1608,6 @@
 				</div>
 			{/if}
 			{#if sideTab === 'inspect'}
-			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
-			     most-reached-for actions, share one box. Simplify offers On / Off on the
-			     hosted locus browser (they swap the parent's reduced and full graphs); a
-			     plain GFA is shown as loaded. -->
-			<section class="group primary">
-				<div class="simplify">
-					<span class="group-title">Simplify</span>
-					{#if hasSitesMode}
-					<div class="family-toggle" role="group" aria-label="Simplification">
-							<button
-								type="button"
-								class:active={simplifyMode === 'sites'}
-								aria-pressed={simplifyMode === 'sites'}
-								onclick={() => setSimplify('sites')}
-								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
-								>On</button
-							>
-						<button
-							type="button"
-							class:active={simplifyMode === 'off'}
-							aria-pressed={simplifyMode === 'off'}
-							disabled={hasSitesMode && !discoAvailable && !showingAllNodes}
-							onclick={() => setSimplify('off')}
-							title={hasSitesMode && !discoAvailable && !showingAllNodes
-								? `${allNodesCount.toLocaleString()} nodes — ${limits.lowMemory ? 'too much memory to show in full on this device' : 'too slow to render in full'}`
-								: 'Show every node in the graph'}>Off</button
-						>
-					</div>
-					{/if}
-					<span class="switch-sub">
-						{#if simplifyMode === 'sites'}
-							{#if discoLoading || sitesLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
-								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes{#if inputGfa.reduced.alleles != null}
-									· {inputGfa.reduced.allelesShown?.toLocaleString()} of {inputGfa.reduced.alleles.toLocaleString()} alleles shown{:else}
-									· small variant sites collapsed{/if}{:else}small variant sites collapsed{/if}
-						{:else if showingAllNodes}
-							all {allNodesCount.toLocaleString()} nodes shown
-						{:else}
-							every node, as loaded
-						{/if}
-					</span>
-					{#if simplifyMode === 'sites' && inputGfa.reduced?.window}
-						<span
-							class="switch-sub"
-							title="A haplotype that leaves the window inside a bubble would be cut there and left as a loose end. The query fetches each bubble it touches whole, unless that comes to too many nodes."
-						>
-							{#if openEnds === 0}
-								no strand leaves the window
-							{:else if inputGfa.reduced.window === 'snarls'}
-								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window through bubbles wider than it
-							{:else if inputGfa.reduced.windowBudgetNodes}
-								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window: its bubbles whole would be {inputGfa.reduced.windowBudgetNodes.toLocaleString()} nodes
-							{:else}
-								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window
-							{/if}
-						</span>
-					{/if}
-					{#if simplifyMode === 'sites' && onSitesThreshold}
-						<label class="sites-threshold">
-							variants under
-							<select
-								value={sitesThreshold}
-								disabled={sitesLoading}
-								onchange={(e) => onSitesThreshold?.(Number(e.currentTarget.value))}
-							>
-								{#each SITES_STEPS as t (t)}
-									<option value={t}>{t.toLocaleString()} bp</option>
-								{/each}
-							</select>
-						</label>
-					{/if}
-					{#if hasSitesMode && !discoAvailable && !showingAllNodes && allNodesTooMany}
-						<span class="switch-sub note"
-							>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
-								? 'too much memory to show in full on this device'
-								: 'too slow to render in full'}</span
-						>
-					{/if}
-				</div>
-			</section>
-
 			<!-- Hover mode: what pointing at a node does, over and above the tooltip.
 			     Info (default) keeps hover cheap; Bubbles and Walks each build an index
 			     over the graph, so they read as opt-in and warn on a large locus. -->
@@ -1762,6 +1681,14 @@
 						>
 					{/if}
 				{/if}
+				<label class="switch" title="Label the longest nodes on screen with their length; zoom in to label the next-longest. In the assembly view, deletion arcs get what they skip.">
+					<input type="checkbox" bind:checked={showLengthLabels} />
+					<span class="track"><span class="thumb"></span></span>
+					<span class="switch-text">
+						<span class="switch-label">Length labels</span>
+						<span class="switch-sub">longest nodes, e.g. 6 kb</span>
+					</span>
+				</label>
 			</section>
 
 			<!-- Haplotypes: the disco-walks spotlight and the per-walk list live in one
@@ -1915,6 +1842,87 @@
 			{/if}
 
 			{:else}
+			<!-- Pinned primary controls: Simplify and the Load MSA button, the two
+			     most-reached-for actions, share one box. Simplify offers On / Off on the
+			     hosted locus browser (they swap the parent's reduced and full graphs); a
+			     plain GFA is shown as loaded. -->
+			<section class="group primary">
+				<div class="simplify">
+					<span class="group-title">Simplify</span>
+					{#if hasSitesMode}
+					<div class="family-toggle" role="group" aria-label="Simplification">
+							<button
+								type="button"
+								class:active={simplifyMode === 'sites'}
+								aria-pressed={simplifyMode === 'sites'}
+								onclick={() => setSimplify('sites')}
+								title="At each variant site, fold every haplotype's allele into the nearest kept allele that differs from it by no variant over the threshold (the query's own simplification)"
+								>On</button
+							>
+						<button
+							type="button"
+							class:active={simplifyMode === 'off'}
+							aria-pressed={simplifyMode === 'off'}
+							disabled={hasSitesMode && !discoAvailable && !showingAllNodes}
+							onclick={() => setSimplify('off')}
+							title={hasSitesMode && !discoAvailable && !showingAllNodes
+								? `${allNodesCount.toLocaleString()} nodes — ${limits.lowMemory ? 'too much memory to show in full on this device' : 'too slow to render in full'}`
+								: 'Show every node in the graph'}>Off</button
+						>
+					</div>
+					{/if}
+					<span class="switch-sub">
+						{#if simplifyMode === 'sites'}
+							{#if discoLoading || sitesLoading}loading…{:else if inputGfa.reduced}{inputGfa.reduced.segmentsBefore.toLocaleString()}
+								→ {inputGfa.reduced.segmentsAfter.toLocaleString()} nodes{#if inputGfa.reduced.alleles != null}
+									· {inputGfa.reduced.allelesShown?.toLocaleString()} of {inputGfa.reduced.alleles.toLocaleString()} alleles shown{:else}
+									· small variant sites collapsed{/if}{:else}small variant sites collapsed{/if}
+						{:else if showingAllNodes}
+							all {allNodesCount.toLocaleString()} nodes shown
+						{:else}
+							every node, as loaded
+						{/if}
+					</span>
+					{#if simplifyMode === 'sites' && inputGfa.reduced?.window}
+						<span
+							class="switch-sub"
+							title="A haplotype that leaves the window inside a bubble would be cut there and left as a loose end. The query fetches each bubble it touches whole, unless that comes to too many nodes."
+						>
+							{#if openEnds === 0}
+								no strand leaves the window
+							{:else if inputGfa.reduced.window === 'snarls'}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window through bubbles wider than it
+							{:else if inputGfa.reduced.windowBudgetNodes}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window: its bubbles whole would be {inputGfa.reduced.windowBudgetNodes.toLocaleString()} nodes
+							{:else}
+								{openEnds} strand{openEnds === 1 ? '' : 's'} leave the window
+							{/if}
+						</span>
+					{/if}
+					{#if simplifyMode === 'sites' && onSitesThreshold}
+						<label class="sites-threshold">
+							variants under
+							<select
+								value={sitesThreshold}
+								disabled={sitesLoading}
+								onchange={(e) => onSitesThreshold?.(Number(e.currentTarget.value))}
+							>
+								{#each SITES_STEPS as t (t)}
+									<option value={t}>{t.toLocaleString()} bp</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
+					{#if hasSitesMode && !discoAvailable && !showingAllNodes && allNodesTooMany}
+						<span class="switch-sub note"
+							>{allNodesCount.toLocaleString()} nodes — {limits.lowMemory
+								? 'too much memory to show in full on this device'
+								: 'too slow to render in full'}</span
+						>
+					{/if}
+				</div>
+			</section>
+
 			<section class="group ctl-panel">
 				<span class="group-title">Layout</span>
 						<div class="mode-picker">
@@ -2025,14 +2033,6 @@
 			</section>
 			<section class="group ctl-panel">
 				<span class="group-title">View</span>
-						<label class="switch" title="Label the longest nodes on screen with their length; zoom in to label the next-longest. In the assembly view, deletion arcs get what they skip.">
-							<input type="checkbox" bind:checked={showLengthLabels} />
-							<span class="track"><span class="thumb"></span></span>
-							<span class="switch-text">
-								<span class="switch-label">Length labels</span>
-								<span class="switch-sub">longest nodes, e.g. 6 kb</span>
-							</span>
-						</label>
 						{#if !referenceFree}
 							<label class="switch" title="Draw the gene track (exons, strand, UTRs) below the reference axis.">
 								<input type="checkbox" bind:checked={showGeneTrack} />
@@ -2719,6 +2719,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.5rem;
+		flex: 1 1 auto;
+		min-height: 0;
 		transition: opacity 0.15s ease;
 	}
 	.ctl-wrap.dimmed {
@@ -3094,8 +3096,12 @@
 	}
 
 	/* Named-haplotype panel (the /gfa page). */
+	/* The haplotype list takes whatever height the column has left, and scrolls
+	   inside itself; past a minimum the whole sidebar scrolls instead. */
 	.haplo {
 		gap: 0.4rem;
+		flex: 1 1 auto;
+		min-height: 220px;
 	}
 	.haplo-head {
 		display: flex;
@@ -3123,7 +3129,8 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		max-height: 150px;
+		flex: 1 1 0;
+		min-height: 80px;
 		overflow-y: auto;
 	}
 	.haplo-row {
