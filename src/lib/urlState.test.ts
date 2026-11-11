@@ -12,6 +12,7 @@ import {
 	parseRange
 } from './urlState';
 import { LAYOUT_MODES } from './graph/layoutModes';
+import { COLOR_MODES } from './graph/colors';
 
 const parse = (qs: string, page: 'locus' | 'gfa' = 'locus') => parseParams(new URLSearchParams(qs), page);
 
@@ -148,5 +149,15 @@ describe('llms.txt', () => {
 		const text = fs.readFileSync(path.resolve(__dirname, '../../static/llms.txt'), 'utf8');
 		for (const p of PARAMS) expect(text, `llms.txt is missing ${p.name}`).toContain(`\`${p.name}\``);
 		for (const m of LAYOUT_MODES) expect(text, `llms.txt is missing layout ${m.id}`).toContain(`\`${m.id}\``);
+		for (const m of COLOR_MODES) expect(text, `llms.txt is missing color ${m.mode}`).toContain(`\`${m.mode}\``);
+	});
+
+	it('documents every /gfa example id', () => {
+		const text = fs.readFileSync(path.resolve(__dirname, '../../static/llms.txt'), 'utf8');
+		const gfaPage = fs.readFileSync(path.resolve(__dirname, '../routes/gfa/+page.svelte'), 'utf8');
+		const examples = gfaPage.slice(gfaPage.indexOf('const EXAMPLES'));
+		const ids = [...examples.matchAll(/^\s*id: '([\w-]+)'/gm)].map((m) => m[1]);
+		expect(ids.length).toBeGreaterThan(0);
+		for (const id of ids) expect(text, `llms.txt is missing example ${id}`).toContain(`\`${id}\``);
 	});
 });
