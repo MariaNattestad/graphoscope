@@ -109,4 +109,17 @@ export interface ApiError {
 	/** Present when the caller's params were the problem (bad locus, unknown
 	 * graph), versus an internal/query failure. */
 	query?: Partial<QueryContext>;
+	/** How to call the endpoint, included when the locus was missing — so a bare
+	 * /api answers "what can I ask?" instead of only failing. */
+	help?: ApiHelp;
+}
+
+export interface ApiHelp {
+	usage: string;
+	params: { name: string; values: string; description: string }[];
+	examples: string[];
+	/** Where the visual version of the same query lives. */
+	app: string;
+	/** The full parameter reference, for the app and /api alike. */
+	reference: string;
 }

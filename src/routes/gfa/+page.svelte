@@ -19,6 +19,18 @@
 	import AssemblyReport from './AssemblyReport.svelte';
 	import AppBar from '$lib/AppBar.svelte';
 	import { base } from '$app/paths';
+	import { onMount } from 'svelte';
+	import ParamWarnings from '$lib/ParamWarnings.svelte';
+	import { initAgentStatus, setAgentStatus, setAgentWarnings } from '$lib/agentStatus';
+	import { graphComplexity } from '$lib/apiReport';
+	import {
+		parseParams,
+		applyPatch,
+		formatQuery,
+		type GraphViewParams,
+		type PageParams,
+		type ParamPatch
+	} from '$lib/urlState';
 
 	// The label given to the synthetic longest-path backbone we compute for a graph
 	// that carries no reference of its own. Kept distinct from anything a real file
@@ -110,10 +122,12 @@
 	async function loadText(text: string, name: string) {
 		error = null;
 		loading = true;
+		setAgentStatus('querying', { query: { file: name }, complexity: null, layoutMs: null });
 		try {
 			const parsed = parseGfa(text);
 			if (parsed.segments.size === 0) {
 				error = 'No segments (S lines) found — is this a GFA file?';
+				setAgentStatus('error', { error });
 				return;
 			}
 			const hasW = parsed.walks.some((w) => w.kind === 'W' || w.kind === undefined);
@@ -154,8 +168,10 @@
 			}
 			fileName = name;
 			pickerOpen = false; // a graph is up — dismiss the picker
+			setAgentStatus('layout', { complexity: { ...graphComplexity(gfa!, referenceSample || undefined) } });
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+			setAgentStatus('error', { error });
 		} finally {
 			loading = false;
 		}
@@ -164,6 +180,7 @@
 	async function loadFile(file: File) {
 		const text = await file.text();
 		await loadText(text, file.name);
+		syncSource({ example: null, url: null });
 	}
 
 	function onPick(e: Event) {
@@ -184,6 +201,8 @@
 	// well-known tools (odgi, gfatools, Bandage) so they don't bloat the app bundle.
 	// raw.githubusercontent.com sends permissive CORS, so a client-side fetch works.
 	interface Example {
+		/** Short name for `?example=` links. */
+		id: string;
 		label: string;
 		/** Short badge for what kind of graph it is. */
 		kind: string;
@@ -195,30 +214,35 @@
 	const RAW = 'https://raw.githubusercontent.com';
 	const EXAMPLES: Example[] = [
 		{
+			id: 'mlph',
 			label: 'MLPH pangenome',
 			kind: 'W-line walks',
 			name: 'MLPH.chm13.subset.gfa',
 			src: { bundle: 'MLPH.chm13.subset.gfa' }
 		},
 		{
+			id: 'drb1',
 			label: 'HLA-DRB1',
 			kind: 'P-line paths',
 			name: 'DRB1-3123.gfa',
 			src: { url: `${RAW}/pangenome/odgi/master/test/DRB1-3123.gfa` }
 		},
 		{
+			id: 'mt',
 			label: 'Human/orang MT',
 			kind: 'rGFA, no paths',
 			name: 'MT.gfa',
 			src: { url: `${RAW}/lh3/gfatools/master/test/MT.gfa` }
 		},
 		{
+			id: 'plasmids',
 			label: 'Bacterial plasmids',
 			kind: 'assembly graph',
 			name: 'test_plasmids.gfa',
 			src: { url: `${RAW}/rrwick/Bandage/main/tests/test_plasmids.gfa` }
 		},
 		{
+			id: 'tiny',
 			label: 'Tiny path graph',
 			kind: 'minimal',
 			name: 't.gfa',
@@ -234,13 +258,90 @@
 			const res = await fetch(url);
 			if (!res.ok) throw new Error(`Failed to load example (${res.status})`);
 			await loadText(await res.text(), ex.name);
+			syncSource({ example: ex.id, url: null });
 		} catch (e) {
 			error =
 				(e instanceof Error ? e.message : String(e)) +
 				('url' in ex.src ? ' — this example is fetched from GitHub; check your connection.' : '');
+			setAgentStatus('error', { error });
 			loading = false;
 		}
 	}
+
+	// A GFA from a link (`?url=`). Fetched by the browser, so the host must send
+	// CORS headers (GitHub raw, S3 and Zenodo do).
+	async function loadUrl(url: string) {
+		error = null;
+		loading = true;
+		try {
+			const res = await fetch(url);
+			if (!res.ok) throw new Error(`Failed to load ${url} (${res.status})`);
+			const name = decodeURIComponent(new URL(url).pathname.split('/').pop() || 'graph.gfa');
+			await loadText(await res.text(), name);
+		} catch (e) {
+			error = `${e instanceof Error ? e.message : String(e)} — the server must allow cross-origin requests (CORS).`;
+			setAgentStatus('error', { error });
+			loading = false;
+		}
+	}
+
+	// ---- Shareable URL (see $lib/urlState for the parameters) ----------------------
+	let graphView = $state<GraphViewParams>({ marks: [] });
+	let pageParams = $state<PageParams>({ chrome: true });
+	let urlWarnings = $state<string[]>([]);
+	let viewWarnings = $state<string[]>([]);
+	const warnings = $derived([...urlWarnings, ...viewWarnings]);
+	$effect(() => setAgentWarnings(warnings));
+
+	function replaceUrl(p: URLSearchParams) {
+		window.history.replaceState(window.history.state, '', `${window.location.pathname}?${formatQuery(p)}`);
+	}
+	/** Which graph is open, when it came from somewhere a link can name. A dropped
+	 * file can't be linked to, so it clears both. */
+	function syncSource(src: { example: string | null; url: string | null }) {
+		replaceUrl(applyPatch(new URLSearchParams(window.location.search), src));
+	}
+	let pendingPatch: ParamPatch = {};
+	let patchTimer: ReturnType<typeof setTimeout> | null = null;
+	function onGraphParams(patch: ParamPatch) {
+		pendingPatch = { ...pendingPatch, ...patch };
+		if (patchTimer) return;
+		patchTimer = setTimeout(() => {
+			patchTimer = null;
+			replaceUrl(applyPatch(new URLSearchParams(window.location.search), pendingPatch));
+			pendingPatch = {};
+		}, 250);
+	}
+	function onRenderState(stage: 'querying' | 'layout' | 'drawing' | 'done', info: { layoutMs: number }) {
+		if (loading || error) return;
+		setAgentStatus(stage, { layoutMs: info.layoutMs });
+	}
+
+	onMount(() => {
+		initAgentStatus(pageTitle('Graphoscope · GFA viewer'));
+		const p = new URLSearchParams(window.location.search);
+		const parsed = parseParams(p, 'gfa');
+		graphView = parsed.graph;
+		pageParams = parsed.page;
+		const problems = [...parsed.warnings];
+		const exampleId = p.get('example')?.trim().toLowerCase();
+		const url = p.get('url')?.trim();
+		// A linked graph is on its way: don't open the file picker over it.
+		if (exampleId || url) pickerOpen = false;
+		if (exampleId) {
+			const ex = EXAMPLES.find((e) => e.id === exampleId || e.name.toLowerCase() === exampleId);
+			if (ex) loadExample(ex);
+			else problems.push(`Ignored example=${exampleId}: expected one of ${EXAMPLES.map((e) => e.id).join(', ')}.`);
+		} else if (url) {
+			if (/^https?:\/\//i.test(url)) loadUrl(url);
+			else problems.push(`Ignored url=${url}: expected an http(s) URL.`);
+		}
+		urlWarnings = problems;
+		if (!gfa && !loading)
+			setAgentStatus('error', {
+				error: `No graph loaded. Pass example=<${EXAMPLES.map((e) => e.id).join('|')}> or url=<GFA URL>.`
+			});
+	});
 
 </script>
 
@@ -248,7 +349,11 @@
 	<title>{pageTitle('Graphoscope · GFA viewer')}</title>
 </svelte:head>
 
-<div class="app">
+<div
+	class="app"
+	style={pageParams.size ? `width:${pageParams.size.width}px;height:${pageParams.size.height}px` : undefined}
+>
+	{#if pageParams.chrome}
 	<AppBar tagline="Drop in any .gfa — with or without a reference path">
 		{#snippet children()}
 			<!-- File pill, mirroring the locus browser's query pill: it names the current
@@ -320,6 +425,7 @@
 			</div>
 		{/snippet}
 	</AppBar>
+	{/if}
 
 	{#if pickerOpen}
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -329,6 +435,7 @@
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
 	{/if}
+	<ParamWarnings {warnings} />
 
 	<div class="workspace">
 		{#if gfa && stats}
@@ -336,7 +443,7 @@
 				<!-- The node/link/bp counts that used to sit in a bar here now live in the
 				     info box inside GraphLayoutView (shared with the locus browser), and the
 				     backbone picker moved into that view’s reference-based layout options. -->
-				{#if assembly && gfa}
+				{#if assembly && gfa && pageParams.chrome}
 					<AssemblyReport {assembly} {gfa} />
 				{/if}
 				<div class="tabbody">
@@ -350,6 +457,11 @@
 						{backboneOptions}
 						{backboneNote}
 						hasTraversals={hasReference}
+						bare={!pageParams.chrome}
+						initialView={graphView}
+						onParams={onGraphParams}
+						{onRenderState}
+						onWarnings={(w) => (viewWarnings = w)}
 					/>
 				</div>
 			</section>

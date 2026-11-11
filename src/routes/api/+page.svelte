@@ -23,6 +23,29 @@
 	import { graphById, MAX_GFA_BYTES } from '$lib/graphs';
 	import { graphComplexity, type ApiReport, type ApiError } from '$lib/apiReport';
 	import { pageTitle } from '$lib/pageTitle';
+	import { base } from '$app/paths';
+	import { type ApiHelp } from '$lib/apiReport';
+	import { formatQuery } from '$lib/urlState';
+
+	// The parameters /api itself reads (the view settings in $lib/urlState are the
+	// app's; /api doesn't draw anything).
+	const API_PARAMS = [
+		{ name: 'ref', values: 'grch38 | chm13', description: 'Which HPRC graph to query. Default grch38.' },
+		{ name: 'locus', values: 'gene symbol or contig:start-end', description: 'What to query. `gene` is an alias.' },
+		{ name: 'context', values: 'bp', description: `How far past the locus haplotypes are followed. Default ${DEFAULT_CONTEXT}.` }
+	];
+
+	function help(): ApiHelp {
+		const origin = `${window.location.origin}${base}`;
+		return {
+			usage:
+				'Open /api?ref=…&locus=…, wait for <main data-status> to be "done" or "error", then read #result or window.graphoscopeResult.',
+			params: API_PARAMS,
+			examples: [`${origin}/api?ref=grch38&locus=SMN1`, `${origin}/api?ref=chm13&locus=chr1:116,500,000-116,540,000`],
+			app: `${origin}/?ref=grch38&locus=SMN1`,
+			reference: `${origin}/llms.txt`
+		};
+	}
 
 	type Status = 'loading' | 'done' | 'error';
 	let status = $state<Status>('loading');
@@ -71,7 +94,8 @@
 			publish({
 				ok: false,
 				error: 'Missing locus. Pass ?locus=<gene symbol or contig:start-end>, e.g. locus=SMN1.',
-				query: { graph: graph.id, referenceSample: graph.referenceSample, context }
+				query: { graph: graph.id, referenceSample: graph.referenceSample, context },
+				help: help()
 			} satisfies ApiError);
 			return;
 		}
@@ -174,7 +198,11 @@
 		}
 	}
 
+	// The same query, drawn: /api's parameters carry straight over to the app.
+	let appLink = $state('');
 	onMount(() => {
+		const p = new URLSearchParams(window.location.search);
+		if (p.get('locus') || p.get('gene')) appLink = `${base}/?${formatQuery(p)}`;
 		runApiQuery();
 	});
 </script>
@@ -191,7 +219,10 @@
 		symbol or <code>contig:start-end</code>), and optional <code>context</code> (subgraph margin
 		in bp, default {DEFAULT_CONTEXT}). Wait for <code>data-status="done"</code> on
 		<code>&lt;main&gt;</code>, then read <code>#result</code> or
-		<code>window.graphoscopeResult</code>.
+		<code>window.graphoscopeResult</code>. With no <code>locus</code> the JSON lists the parameters.
+		The app takes the same parameters plus view settings (layout, theme, marks, zoom, …); see
+		<a href="{base}/llms.txt">llms.txt</a>.
+		{#if appLink}<a href={appLink}>Open this query in the app →</a>{/if}
 	</p>
 	{#if status === 'loading'}
 		<p class="status">Running query…</p>

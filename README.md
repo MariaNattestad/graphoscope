@@ -186,6 +186,39 @@ Opening the app writes the current `ref`/`locus` (and `context`, when non-defaul
 back into the address bar, so whatever you're looking at is always a link you can
 copy.
 
+The view is in the link too: `layout`, `theme`, `color`, `genes`, `exits`,
+`simplify`, `view`, `range` (zoom), `select`, `pin`, `msa`, `mark`, `chrome` and
+`size`. The address bar is rewritten as you change the view, the **Copy link**
+button copies it, and exported PNGs embed it as a `Source` text chunk. The full
+reference, written for AI agents, is [`static/llms.txt`](static/llms.txt) (served at
+`/llms.txt`); the parameters themselves are defined in `src/lib/urlState.ts`.
+
+```
+# a figure: a labelled region, light background, no UI, fixed size
+https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&mark=chr5:70,940,000-70,941,000,region%20of%20interest&theme=light&chrome=0&size=1600x900
+
+# a bundled GFA with two haplotypes traced
+https://marianattestad.github.io/graphoscope/gfa?example=mlph&pin=HG00438%231&pin=HG00621
+```
+
+Unknown parameters and values that don't parse are listed in a banner on the
+page rather than dropped silently.
+
+### Knowing when a page is ready
+
+Don't wait a fixed time before a screenshot. The locus browser and `/gfa` set
+`<html data-status>` through `loading` → `querying` → `layout` → `drawing` →
+`done` (or `error`), mirror it at the end of the tab title, and expose
+`window.graphoscope` (`status`, `error`, `warnings`, `query`, `complexity`,
+`layoutMs`, and a `ready` promise). `done` means the layout, gene track and marks
+are drawn and nothing is animating. Layouts are deterministic, so the same link at
+the same `size` gives the same pixels.
+
+```js
+await page.goto(url);
+await page.waitForSelector('html[data-status="done"], html[data-status="error"]');
+```
+
 ### Machine-readable endpoint: `/api`
 
 For agents and scripts, `/api` runs the same query and returns **graph-complexity

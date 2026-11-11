@@ -14,6 +14,8 @@
 	} from './colors';
 	import type { Transcript } from '../geneTrack';
 	import { trackEvent } from '../analytics';
+	import { pngWithText } from '../pngText';
+	import type { Mark, GenomicRange } from '../urlState';
 
 	interface RefCoord {
 		contig: string;
@@ -55,6 +57,19 @@
 	}
 
 	// A clicked gene-track feature (an exon), surfaced to the inspector.
+	/** What the canvas hands its parent once mounted. */
+	export interface CanvasApi {
+		/** Download the current view as a PNG, with `meta` embedded as text chunks. */
+		exportImage: (filename: string, meta?: Record<string, string>) => void;
+		colorForSegment: (segId: string) => string;
+		/** Zoom so this stretch of reference fills the width. False when it can't
+		 * (no reference axis, or the range isn't on it). */
+		zoomToRange: (range: GenomicRange) => boolean;
+		/** True when nothing is animating or waiting to re-fit, so what's on the
+		 * canvas is what will stay there. */
+		isSettled: () => boolean;
+	}
+
 	export interface SelectedFeature {
 		symbol: string;
 		name: string;
@@ -104,8 +119,10 @@
 		flashNonce = 0,
 		glowSegments = null,
 		glowGreenSegments = null,
+		marks = [],
 		onReady,
 		onViewRange,
+		onViewMoved,
 		nodeTooltip
 	}: {
 		layout: LayoutResult;
@@ -189,10 +206,11 @@
 		/** The stretch of reference in view (reference-based layouts only), reported
 		 * as the user pans and zooms; null when there's no reference axis. */
 		onViewRange?: (range: { contig: string; start: number; end: number } | null) => void;
-		onReady?: (api: {
-			exportImage: (filename: string) => void;
-			colorForSegment: (segId: string) => string;
-		}) => void;
+		/** Whether the view has been panned or zoomed away from the whole-locus fit. */
+		onViewMoved?: (moved: boolean) => void;
+		/** Stretches of reference to highlight with a labelled band (`mark=` links). */
+		marks?: Mark[];
+		onReady?: (api: CanvasApi) => void;
 	} = $props();
 
 	const theme = $derived(lightMode ? lightTheme : darkTheme);
@@ -300,18 +318,51 @@
 	// Render the current view to a PNG at a higher pixel ratio (for figures), then
 	// restore the on-screen render. Both draws are synchronous, so the user never
 	// sees the high-res frame — the browser only paints the restored one.
-	function exportImage(filename: string) {
+	function exportImage(filename: string, meta: Record<string, string> = {}) {
 		if (!canvasEl) return;
 		exportScale = 4;
 		draw();
-		const url = canvasEl.toDataURL('image/png');
+		const dataUrl = canvasEl.toDataURL('image/png');
 		exportScale = null;
 		draw();
+		// The PNG carries the link that reproduces it (see pngText.ts).
+		const bin = atob(dataUrl.slice(dataUrl.indexOf(',') + 1));
+		const png = pngWithText(Uint8Array.from(bin, (c) => c.charCodeAt(0)), meta);
+		const url = URL.createObjectURL(new Blob([png as BlobPart], { type: 'image/png' }));
 		const a = document.createElement('a');
 		a.href = url;
 		a.download = filename;
 		a.click();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
 		trackEvent('widget_interact', { widget: 'graph_layout', action: 'export_png' });
+	}
+
+	function zoomToRange(range: GenomicRange): boolean {
+		if (!canvasEl || uniformZoom) return false;
+		const anchors = buildRefAnchors();
+		if (anchors.length === 0 || anchors[0].coord.contig !== range.contig) return false;
+		const first = anchors[0].coord.start;
+		const last = anchors[anchors.length - 1].coord.end;
+		const start = Math.max(first, range.start);
+		const end = Math.min(last, range.end);
+		if (!(end > start)) return false;
+		// Screen x under the current transform → world x, then the transform that
+		// puts [start, end] across the full width.
+		const toWorld = (sx: number) => (sx - transform.x) / transform.k;
+		const w0 = toWorld(genomicToScreenX(start, anchors));
+		const w1 = toWorld(genomicToScreenX(end, anchors));
+		const width = canvasEl.clientWidth || 1;
+		const k = Math.min(40, Math.max(0.02, width / Math.max(1e-9, w1 - w0)));
+		const next = zoomIdentity.translate(width / 2 - ((w0 + w1) / 2) * k, 0).scale(k);
+		prevK = k;
+		prevY = 0;
+		select(canvasEl).call(zoomBehavior.transform, next);
+		fitVerticalToWindow(false);
+		return true;
+	}
+
+	function isSettled(): boolean {
+		return !yFitTimer && !refitPending && flashRaf === 0 && performance.now() >= yAnimEnd;
 	}
 
 	// EXPERIMENT: zoom is horizontal-only. A pangenome bubble is wide and thin —
@@ -344,6 +395,10 @@
 	let fittedWindow: [number, number] = [0, 0];
 	let yFitTimer: ReturnType<typeof setTimeout> | null = null;
 	let yAnim = 0;
+	/** When the running vertical ease finishes (performance.now() time), for isSettled. */
+	let yAnimEnd = 0;
+	/** A resize re-fit is waiting on its debounce. */
+	let refitPending = false;
 	/** Tallest a single lane row may be drawn by the auto-fit, in CSS px, so a lone
 	 * low bubble doesn't swell into a giant bar. */
 	const MAX_ROW_PX = 120;
@@ -607,6 +662,7 @@
 		}
 		const from = { scale: baseScaleY, pan: panY };
 		const start = performance.now();
+		yAnimEnd = start + 240;
 		const step = (now: number) => {
 			const t = Math.min(1, (now - start) / 220);
 			const e = 1 - (1 - t) ** 3;
@@ -681,6 +737,8 @@
 		ctx.clearRect(0, 0, width, height);
 		ctx.fillStyle = theme.background;
 		ctx.fillRect(0, 0, width, height);
+		const markAnchors = marks.length > 0 && !uniformZoom ? buildRefAnchors() : [];
+		drawMarkBands(ctx, markAnchors, width, height);
 
 		// Points are projected to screen coordinates individually rather than by
 		// setting a canvas transform, because the transform is now anisotropic:
@@ -891,6 +949,7 @@
 		// coordinates — reapply the DPR scale so they still land in the right spot.
 		ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		drawRefCoordLabels(ctx, width, height);
+		drawMarkLabels(ctx, markAnchors, width);
 		reportViewRange(width);
 		drawGeneTrack(ctx, width, height);
 		drawFlash(ctx);
@@ -1121,6 +1180,92 @@
 		}
 	}
 
+	// ---- Marks: labelled stretches of reference (`mark=` in the URL) -------------
+	// A translucent band through the whole graph height behind the strands (so the
+	// bubbles over that stretch read as inside it), and on top, a solid bar on the
+	// axis plus a label pill. A mark off screen gets an arrow at that edge instead,
+	// so it never silently vanishes. Amber in both themes: distinct from every node
+	// ramp and from the white disco/flash highlights.
+	const MARK_FILL = 'rgba(245, 158, 11, 0.16)';
+	const MARK_EDGE = 'rgba(245, 158, 11, 0.75)';
+	const MARK_SOLID = '#f59e0b';
+	const MARK_TEXT = '#3b2503';
+
+	/** Screen extent of each mark on this contig (at least 3 px wide). */
+	function markSpans(anchors: RefAnchor[]): { mark: Mark; x0: number; x1: number }[] {
+		if (anchors.length === 0) return [];
+		const contig = anchors[0].coord.contig;
+		return marks
+			.filter((m) => m.contig === contig)
+			.map((mark) => {
+				let x0 = genomicToScreenX(mark.start, anchors);
+				let x1 = genomicToScreenX(mark.end, anchors);
+				if (x1 - x0 < 3) {
+					const c = (x0 + x1) / 2;
+					x0 = c - 1.5;
+					x1 = c + 1.5;
+				}
+				return { mark, x0, x1 };
+			});
+	}
+
+	function drawMarkBands(ctx: CanvasRenderingContext2D, anchors: RefAnchor[], width: number, height: number) {
+		const bottom = height - geneBand;
+		ctx.save();
+		for (const { x0, x1 } of markSpans(anchors)) {
+			if (x1 < 0 || x0 > width) continue;
+			ctx.fillStyle = MARK_FILL;
+			ctx.fillRect(x0, 0, x1 - x0, bottom);
+			ctx.strokeStyle = MARK_EDGE;
+			ctx.lineWidth = 1;
+			ctx.setLineDash([4, 4]);
+			ctx.beginPath();
+			ctx.moveTo(x0, 0);
+			ctx.lineTo(x0, bottom);
+			ctx.moveTo(x1, 0);
+			ctx.lineTo(x1, bottom);
+			ctx.stroke();
+		}
+		ctx.restore();
+	}
+
+	function drawMarkLabels(ctx: CanvasRenderingContext2D, anchors: RefAnchor[], width: number) {
+		const spans = markSpans(anchors);
+		if (spans.length === 0) return;
+		ctx.save();
+		ctx.font = '600 11px ui-sans-serif, system-ui, sans-serif';
+		ctx.textBaseline = 'middle';
+		// Label pills stack into rows from the top so neighbouring marks don't overlap.
+		const rowsRight: number[] = [];
+		const ROW_H = 20;
+		const TOP = 8;
+		for (const { mark, x0, x1 } of spans) {
+			const off = x1 < 0 ? 'left' : x0 > width ? 'right' : null;
+			const text = off === 'left' ? `◀ ${mark.label}` : off === 'right' ? `${mark.label} ▶` : mark.label;
+			const w = ctx.measureText(text).width + 12;
+			const cx = off === 'left' ? 6 + w / 2 : off === 'right' ? width - 6 - w / 2 : (x0 + x1) / 2;
+			const left = Math.max(4, Math.min(width - 4 - w, cx - w / 2));
+			let row = rowsRight.findIndex((r) => r + 6 <= left);
+			if (row < 0) row = rowsRight.length;
+			rowsRight[row] = left + w;
+			const y = TOP + row * ROW_H;
+			ctx.fillStyle = MARK_SOLID;
+			ctx.beginPath();
+			ctx.roundRect(left, y, w, 16, 4);
+			ctx.fill();
+			ctx.fillStyle = MARK_TEXT;
+			ctx.textAlign = 'left';
+			ctx.fillText(text, left + 6, y + 8.5);
+			if (off) continue;
+			// The bar on the axis: on the reference line under the mark's start.
+			const a = anchors.find((an) => an.coord.end >= mark.start) ?? anchors[anchors.length - 1];
+			const ay = toScreenY(a.y);
+			ctx.fillStyle = MARK_SOLID;
+			ctx.fillRect(Math.max(0, x0), ay - 3, Math.min(width, x1) - Math.max(0, x0), 6);
+		}
+		ctx.restore();
+	}
+
 	function drawRefCoordLabels(ctx: CanvasRenderingContext2D, width: number, height: number) {
 		const anchors = buildRefAnchors();
 		if (anchors.length === 0) return;
@@ -1175,6 +1320,13 @@
 			}
 		}
 		if (endVisible) drawTick(endX, toScreenY(last.y), endText, 'right');
+		// Zoomed inside one long reference node, no node boundary is on screen and the
+		// axis would carry no coordinates at all: label the view's two edges instead.
+		if (lastLabelRight === -Infinity && !endVisible) {
+			const ay = toScreenY(anchors[0].y);
+			drawTick(4, ay, fmt(Math.round(screenToGenomic(0, anchors))), 'left');
+			drawTick(width - 4, ay, fmt(Math.round(screenToGenomic(width, anchors))), 'right');
+		}
 		// Contig label, once, at the far left.
 		ctx.textAlign = 'left';
 		ctx.fillStyle = theme.contigLabel;
@@ -1734,6 +1886,7 @@
 		// changes, or the theme flips. Untracked so draw()'s internal reads don't make
 		// this effect depend on hover/transform state.
 		discoPaths;
+		marks;
 		discoActive;
 		highlightSegments;
 		skipBubbles;
@@ -1781,8 +1934,12 @@
 	});
 
 	$effect(() => {
+		onViewMoved?.(viewMoved);
+	});
+
+	$effect(() => {
 		// Hand the parent the export API once the canvas exists.
-		if (canvasEl) onReady?.({ exportImage, colorForSegment: colorForChain });
+		if (canvasEl) onReady?.({ exportImage, colorForSegment: colorForChain, zoomToRange, isSettled });
 	});
 
 	$effect(() => {
@@ -1985,8 +2142,10 @@
 				// the user set is preserved rather than reset to fit-all.
 				if (refitTimer) clearTimeout(refitTimer);
 				const widthChanged = wChanged;
+				refitPending = true;
 				refitTimer = setTimeout(() => {
 					refitTimer = null;
+					refitPending = false;
 					if (widthChanged) fitToView();
 					else refitVertical();
 				}, 150);

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import type { Page } from '@playwright/test';
-import { test, expect, exerciseGraphView, waitForLayout } from './helpers';
+import { test, expect, exerciseGraphView, waitForLayout, waitForDone } from './helpers';
+import { readPngText } from '../src/lib/pngText';
 
 // Offline smoke tests: nothing here leaves localhost (the locus browser's live
 // queries are in live.spec.ts), so a failure means the app broke, not the network.
@@ -107,5 +108,45 @@ test.describe('/playground', () => {
 			await expect(row.locator('.fail')).toHaveCount(0);
 		}
 		await waitForLayout(page);
+	});
+});
+
+// The contract an AI agent (or any script) relies on: a link sets the whole view,
+// html[data-status] says when it's safe to screenshot, problems with the link are
+// reported, and an exported PNG names the link that made it.
+test.describe('links for agents', () => {
+	test('a link sets the view and reports done', async ({ page }) => {
+		await page.goto(
+			'/gfa?example=mlph&theme=light&layout=strands&mark=chr2:238,000,000-238,001,000,test&pin=HG00438%231&bogus=1'
+		);
+		await waitForDone(page);
+		const state = await page.evaluate(() => {
+			const g = (window as unknown as { graphoscope: { status: string; warnings: string[] } }).graphoscope;
+			return { status: g.status, warnings: g.warnings };
+		});
+		expect(state.status).toBe('done');
+		expect(state.warnings).toEqual(['Ignored unknown parameter "bogus". See llms.txt for the list.']);
+		await expect(page.getByTestId('param-warnings')).toContainText('bogus');
+		await expect(page).toHaveTitle(/· done$/);
+		// The address bar keeps every setting (layout is the default, so it's dropped).
+		await expect.poll(() => new URL(page.url()).searchParams.getAll('pin')).toEqual(['HG00438#1']);
+		expect(new URL(page.url()).searchParams.get('theme')).toBe('light');
+		expect(new URL(page.url()).searchParams.get('mark')).toBe('chr2:238,000,000-238,001,000,test');
+
+		await page.getByRole('button', { name: 'View', exact: true }).click();
+		const download = page.waitForEvent('download');
+		await page.getByRole('button', { name: /Export PNG/ }).click();
+		const png = readFileSync((await (await download).path())!);
+		const meta = readPngText(new Uint8Array(png));
+		expect(meta.Software).toBe('Graphoscope');
+		expect(meta.Source).toContain('example=mlph');
+		expect(meta.Source).toContain('mark=chr2:238,000,000-238,001,000,test');
+	});
+
+	test('a link with no graph says so', async ({ page }) => {
+		await page.goto('/gfa?example=nope');
+		await waitForDone(page);
+		await expect(page.locator('html')).toHaveAttribute('data-status', 'error');
+		await expect(page.getByTestId('param-warnings')).toContainText('example=nope');
 	});
 });

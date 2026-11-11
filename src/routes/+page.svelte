@@ -11,6 +11,18 @@
 	import { GRAPHS, DEFAULT_GENE, MAX_GFA_BYTES, type GraphId } from '$lib/graphs';
 	import { limits } from '$lib/limits.svelte';
 	import { base } from '$app/paths';
+	import ParamWarnings from '$lib/ParamWarnings.svelte';
+	import { graphComplexity } from '$lib/apiReport';
+	import { initAgentStatus, setAgentStatus, setAgentWarnings } from '$lib/agentStatus';
+	import { pageTitle } from '$lib/pageTitle';
+	import {
+		parseParams,
+		applyPatch,
+		formatQuery,
+		type GraphViewParams,
+		type PageParams,
+		type ParamPatch
+	} from '$lib/urlState';
 
 	let client: GbzClient | null = null;
 
@@ -160,41 +172,133 @@
 		if (e.key === 'Enter') run();
 	}
 
-	// ---- Shareable URL: ?ref=grch38|chm13 & ?locus=<gene or contig:start-end> --
-	// These make a query a single link — the thing an AI agent (or a colleague)
-	// can construct, open, and reproduce. On load we adopt them; after each query
-	// we write the current state back, preferring the gene symbol over resolved
-	// coordinates so the link stays legible (e.g. ?locus=SMN1, not chr5:709…).
-	function applyUrlParams(): boolean {
+	// ---- Shareable URL ----------------------------------------------------------
+	// A link carries the query (?ref, ?locus, ?context) and every view setting
+	// (layout, theme, zoom, marks, … — the full list is PARAMS in $lib/urlState),
+	// so it's the thing an AI agent (or a colleague) can construct, open, and
+	// reproduce. On load we adopt them; afterwards we write the current state back,
+	// preferring the gene symbol over resolved coordinates so the link stays
+	// legible (e.g. ?locus=SMN1, not chr5:709…).
+
+	// View settings for the graph view, re-read from the address bar each time it
+	// mounts (the Raw data tab unmounts it), so switching tabs keeps them.
+	let graphView = $state<GraphViewParams>({ marks: [] });
+	let pageParams = $state<PageParams>({ chrome: true });
+	let urlWarnings = $state<string[]>([]);
+	let viewWarnings = $state<string[]>([]);
+	const warnings = $derived([...urlWarnings, ...viewWarnings]);
+	$effect(() => setAgentWarnings(warnings));
+	// simplify=off: show the unsimplified graph once the first query lands.
+	let simplifyOffPending = $state(false);
+	// Nothing is written back to the URL until it has been read.
+	let urlRead = $state(false);
+
+	function applyUrlParams() {
 		const p = new URLSearchParams(window.location.search);
+		const parsed = parseParams(p, 'locus');
+		const problems = [...parsed.warnings];
 		const ref = p.get('ref');
 		if (ref === 'grch38' || ref === 'chm13') graphId = ref;
+		else if (ref) problems.push(`Ignored ref=${ref}: expected grch38 or chm13.`);
 		const ctxParam = p.get('context');
 		if (ctxParam != null) {
-			const ctx = Number(ctxParam);
+			const ctx = Number(ctxParam.replace(/,/g, ''));
 			if (Number.isFinite(ctx) && ctx >= 0) contextBp = ctx;
+			else problems.push(`Ignored context=${ctxParam}: expected a non-negative number of bp.`);
 		}
 		const locus = p.get('locus') ?? p.get('gene');
-		if (locus && locus.trim()) {
-			locusText = locus.trim();
-			return true;
+		if (locus && locus.trim()) locusText = locus.trim();
+		else if (parsed.graph.marks.length > 0) {
+			// A mark alone is enough to know where to look: query its stretch (the
+			// context margin adds the surroundings).
+			const m = parsed.graph.marks[0];
+			locusText = `${m.contig}:${m.start}-${m.end}`;
 		}
-		return false;
+		if (typeof parsed.page.simplify === 'number') sitesThreshold = parsed.page.simplify;
+		simplifyOffPending = parsed.page.simplify === 'off';
+		if (parsed.page.view) view = parsed.page.view;
+		graphView = parsed.graph;
+		pageParams = parsed.page;
+		urlWarnings = problems;
+		urlRead = true;
+	}
+
+	function replaceUrl(p: URLSearchParams) {
+		// replaceState (not a navigation) so this never reloads or adds history
+		// entries — it just keeps the address bar reproducible.
+		window.history.replaceState(window.history.state, '', `${window.location.pathname}?${formatQuery(p)}`);
 	}
 
 	function syncUrlParams() {
 		const p = new URLSearchParams(window.location.search);
 		p.set('ref', graphId);
 		p.set('locus', queriedGene ?? locusText);
+		p.delete('gene');
 		if (contextBp !== DEFAULT_CONTEXT_BP) p.set('context', String(contextBp));
 		else p.delete('context');
-		const qs = p.toString();
-		// replaceState (not a navigation) so this never reloads or adds history
-		// entries — it just keeps the address bar reproducible.
-		window.history.replaceState(window.history.state, '', `${window.location.pathname}?${qs}`);
+		replaceUrl(p);
 	}
 
+	// Graph-view settings arrive on every change (a pan reports a new range per
+	// frame), so they're batched: browsers throttle replaceState, and Safari throws
+	// past ~100 calls in 30 s.
+	let pendingPatch: ParamPatch = {};
+	let patchTimer: ReturnType<typeof setTimeout> | null = null;
+	function onGraphParams(patch: ParamPatch) {
+		pendingPatch = { ...pendingPatch, ...patch };
+		if (patchTimer) return;
+		patchTimer = setTimeout(() => {
+			patchTimer = null;
+			replaceUrl(applyPatch(new URLSearchParams(window.location.search), pendingPatch));
+			pendingPatch = {};
+		}, 250);
+	}
+
+	// Page-owned settings: the open tab and the Simplify threshold.
+	$effect(() => {
+		const patch: ParamPatch = {
+			view: view === 'graph' ? null : view,
+			simplify: showUnsimplified ? 'off' : sitesThreshold === SITES_DEFAULT ? null : String(sitesThreshold)
+		};
+		// Not before the URL is read, nor over a simplify=off that hasn't applied yet.
+		if (!urlRead || simplifyOffPending) return;
+		untrack(() => onGraphParams(patch));
+	});
+
+	function showGraphTab() {
+		if (view === 'graph') return;
+		graphView = parseParams(new URLSearchParams(window.location.search), 'locus').graph;
+		view = 'graph';
+	}
+
+	// The render's progress for agents (see $lib/agentStatus). The query stages are
+	// set by run(); once a graph is up, the graph view reports layout → done.
+	function onRenderState(stage: 'querying' | 'layout' | 'drawing' | 'done', info: { layoutMs: number }) {
+		if (running || error || simplifyOffPending) return;
+		setAgentStatus(stage, { layoutMs: info.layoutMs });
+	}
+	// The Raw data tab has no layout: it's done as soon as the graph is parsed.
+	$effect(() => {
+		if (view === 'data' && gfa && !running && !error) untrack(() => setAgentStatus('done'));
+	});
+
+	$effect(() => {
+		if (!simplifyOffPending || !gfa || running) return;
+		untrack(async () => {
+			if (canShowUnsimplified) await toggleUnsimplified();
+			else
+				urlWarnings = [
+					...urlWarnings,
+					unsimplifiedNodes > 0
+						? `simplify=off: the unsimplified graph (${unsimplifiedNodes.toLocaleString()} nodes) is too large to lay out here.`
+						: 'simplify=off: this graph has no unsimplified form to show.'
+				];
+			simplifyOffPending = false;
+		});
+	});
+
 	onMount(() => {
+		initAgentStatus(pageTitle('Graphoscope'));
 		initAnalytics();
 		client = new GbzClient();
 		applyUrlParams();
@@ -244,13 +348,26 @@
 			// parseLocus's own message already gives a coordinate example; just add
 			// the gene-symbol option rather than repeating the same example twice.
 			error = e instanceof Error ? `${e.message}, or a gene symbol (e.g. HLA-A).` : String(e);
+			setAgentStatus('error', { error });
 			return;
 		}
+		const queryInfo = {
+			graph: graph.id,
+			referenceSample: graph.referenceSample,
+			input: raw,
+			gene: queriedGene,
+			contig: locus.contig,
+			start: locus.start,
+			end: locus.end,
+			context: contextBp
+		};
+		setAgentStatus('querying', { query: queryInfo, complexity: null, layoutMs: null });
 		running = true;
 		try {
 			const result = await client!.query(qsource, locus);
 			if (!result.ok) {
 				error = `${result.error}\n${result.stderr ?? ''}`.trim();
+				setAgentStatus('error', { error });
 				return;
 			}
 			const gfaText = result.gfa ?? '';
@@ -264,6 +381,9 @@
 				oversized = { bytes: gfaText.length };
 				gfa = null;
 				rawGfa = '';
+				setAgentStatus('error', {
+					error: `The reduced graph is ${gfaText.length} bytes, over the ${MAX_GFA_BYTES}-byte ceiling: the window is too wide.`
+				});
 				trackEvent('query', {
 					graph: graph.id,
 					contig: locus.contig,
@@ -278,6 +398,7 @@
 
 			rawGfa = gfaText;
 			gfa = parseGfa(gfaText);
+			setAgentStatus('layout', { complexity: { ...graphComplexity(gfa, graph.referenceSample) } });
 			trackEvent('query', {
 				graph: graph.id,
 				contig: locus.contig,
@@ -289,6 +410,7 @@
 			});
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
+			setAgentStatus('error', { error });
 		} finally {
 			running = false;
 			// Reflect the query in the address bar so the link reproduces it. Runs
@@ -446,18 +568,26 @@
 	// it. Used both by the "show all nodes" toggle (which then shows it) and by
 	// disco-walks (which hands it off for background layout, showing it only once
 	// laid out).
-	async function ensureUnsimplifiedParsed(): Promise<Gfa | null> {
-		if (unsimplified) return unsimplified;
-		if (loadingUnsimplified) return null;
+	// A second caller while a load is in flight (Off clicked during a background
+	// load for the MSA or walk list, or a simplify=off link) waits on that load
+	// rather than getting null and silently doing nothing.
+	let parsingUnsimplified: Promise<Gfa | null> | null = null;
+	function ensureUnsimplifiedParsed(): Promise<Gfa | null> {
+		if (unsimplified) return Promise.resolve(unsimplified);
+		if (parsingUnsimplified) return parsingUnsimplified;
 		loadingUnsimplified = true;
-		try {
-			const text = await fetchUnsimplifiedGfa();
-			if (text === null) return null;
-			unsimplified = parseGfa(text);
-			return unsimplified;
-		} finally {
-			loadingUnsimplified = false;
-		}
+		parsingUnsimplified = (async () => {
+			try {
+				const text = await fetchUnsimplifiedGfa();
+				if (text === null) return null;
+				unsimplified = parseGfa(text);
+				return unsimplified;
+			} finally {
+				loadingUnsimplified = false;
+				parsingUnsimplified = null;
+			}
+		})();
+		return parsingUnsimplified;
 	}
 
 	async function toggleUnsimplified() {
@@ -484,10 +614,14 @@
 		gfa;
 		unsimplifiedGfaText = null;
 		unsimplified = null;
+		parsingUnsimplified = null;
 		showUnsimplified = false;
 		untrack(() => {
 			sitesGfa = null;
-			if (sitesThreshold !== SITES_DEFAULT) setSitesThreshold(sitesThreshold);
+			// Only for a real graph: this also runs once at mount, before the first query
+			// has resolved a gene symbol to coordinates, and re-querying then fails to
+			// parse the symbol (a simplify= link would leave that error up).
+			if (gfa && sitesThreshold !== SITES_DEFAULT) setSitesThreshold(sitesThreshold);
 		});
 	});
 
@@ -534,7 +668,12 @@
 	}}
 />
 
-<div class="app">
+<div
+	class="app"
+	class:fixed-size={!!pageParams.size}
+	style={pageParams.size ? `width:${pageParams.size.width}px;height:${pageParams.size.height}px` : undefined}
+>
+	{#if pageParams.chrome}
 	<AppBar tagline="HPRC pangenome graphs, queried by locus" aboutSource={graph.s3Source}>
 		{#snippet children()}
 		<div class="querypill-wrap">
@@ -647,6 +786,7 @@
 		</div>
 		{/snippet}
 	</AppBar>
+	{/if}
 
 	{#if queryOpen}
 		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -656,18 +796,21 @@
 	{#if error}
 		<div class="error-banner"><pre>{error}</pre></div>
 	{/if}
+	<ParamWarnings {warnings} />
 
 	<div class="workspace">
 		{#if stats && gfa}
 			<section class="mainview">
+				{#if pageParams.chrome}
 				<nav class="tabs">
-					<button class="tab" class:active={view === 'graph'} onclick={() => (view = 'graph')}
+					<button class="tab" class:active={view === 'graph'} onclick={showGraphTab}
 						>Graph layout</button
 					>
 					<button class="tab" class:active={view === 'data'} onclick={() => (view = 'data')}
 						>Raw data</button
 					>
 				</nav>
+				{/if}
 
 				<div class="tabbody" class:pad={view !== 'graph'}>
 					{#if view === 'graph' && displayGfa}
@@ -692,7 +835,12 @@
 							showHaplotypes={true}
 							windowedSubgraph={true}
 							{fetchInfo}
-							querying={running}
+							querying={running || simplifyOffPending}
+							bare={!pageParams.chrome}
+							initialView={graphView}
+							onParams={onGraphParams}
+							{onRenderState}
+							onWarnings={(w) => (viewWarnings = w)}
 						/>
 					{:else if view === 'data'}
 						<RawDataView

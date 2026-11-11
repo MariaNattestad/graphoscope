@@ -21,7 +21,7 @@
 		type LayoutMode,
 		type LayoutFamily
 	} from './layoutModes';
-	import GraphCanvas, { type CanvasSkip } from './GraphCanvas.svelte';
+	import GraphCanvas, { type CanvasSkip, type CanvasApi } from './GraphCanvas.svelte';
 	import LayoutModePicker from './LayoutModePicker.svelte';
 	import MsaPanel from './MsaPanel.svelte';
 	import QueryReport from './QueryReport.svelte';
@@ -41,6 +41,7 @@
 	import { trackEvent } from '../analytics';
 	import { transcriptsInRange, representativeTranscripts, type Transcript } from '../geneTrack';
 	import type { RefKey } from '../genes';
+	import { formatRange, type GraphViewParams, type ParamPatch } from '../urlState';
 
 	let {
 		gfa: inputGfa,
@@ -69,7 +70,11 @@
 		backboneOptions = [],
 		backboneNote = null,
 		hasTraversals = true,
-		windowedSubgraph = false
+		windowedSubgraph = false,
+		initialView = { marks: [] },
+		onParams,
+		onRenderState,
+		onWarnings
 	}: {
 		gfa: Gfa;
 		referenceSample: string;
@@ -152,6 +157,19 @@
 		/** Current subgraph context radius (bp). When a re-query of the same locus comes
 		 * back with a larger value, the newly-pulled-in nodes are glowed until dismissed. */
 		context?: number;
+		/** View settings from the URL. The plain switches seed this view's own state
+		 * at mount; range/select/pin/msa are applied once, after the first layout of a
+		 * settled graph. `marks` are drawn for as long as they're passed. */
+		initialView?: GraphViewParams;
+		/** This view's settings changed: the URL parameters to set or remove, so the
+		 * address bar keeps reproducing what's on screen. */
+		onParams?: (patch: ParamPatch) => void;
+		/** Where the render is: still querying, laying out, drawing (genes, MSA,
+		 * pending re-fits), or done and safe to screenshot. */
+		onRenderState?: (stage: 'querying' | 'layout' | 'drawing' | 'done', info: { layoutMs: number }) => void;
+		/** Problems applying `initialView` (a mark off the window, a node that doesn't
+		 * exist), for the page to show next to its own URL warnings. */
+		onWarnings?: (warnings: string[]) => void;
 	} = $props();
 
 	// --- Assembly graph mode: each part of it on its own switch ----------------
@@ -255,7 +273,8 @@
 	// so the user can keep comparing the same view. See layoutModes.ts.
 	// Seeded once from the prop (untracked — later prop changes shouldn't yank the
 	// user's chosen mode out from under them); the control owns it from then on.
-	let layoutMode = $state<LayoutMode>(untrack(() => initialLayoutMode) ?? DEFAULT_LAYOUT_MODE);
+	const defaultLayoutMode = untrack(() => initialLayoutMode) ?? DEFAULT_LAYOUT_MODE;
+	let layoutMode = $state<LayoutMode>(untrack(() => initialView.layout) ?? defaultLayoutMode);
 	const modeCfg = $derived(getModeConfig(layoutMode));
 	// Reference-free modes have no backbone, so they show no coordinate axis and no
 	// gene track (see the GraphCanvas props below).
@@ -281,11 +300,11 @@
 	// dangle. Off for a clean figure — and only meaningful for a windowed subgraph:
 	// on a whole uploaded GFA a loose end is a real graph terminus, not an exit, so
 	// the cue (and its checkbox) are hidden there entirely.
-	let showExits = $state(untrack(() => windowedSubgraph));
+	let showExits = $state(untrack(() => initialView.exits ?? windowedSubgraph));
 
 	// The gene track drawn in a band under the backbone, inside the graph canvas. On
 	// by default; switched off from the side panel.
-	let showGeneTrack = $state(true);
+	let showGeneTrack = $state(untrack(() => initialView.genes) ?? true);
 
 	// What hovering a node does, on top of the always-on tooltip:
 	//   'info'   — nothing extra (just the tooltip / click-to-inspect).
@@ -318,17 +337,15 @@
 
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
-	let lightMode = $state(false);
-	let canvasApi = $state<{
-		exportImage: (filename: string) => void;
-		colorForSegment: (segId: string) => string;
-	} | null>(null);
+	let lightMode = $state(untrack(() => initialView.theme) === 'light');
+	let canvasApi = $state<CanvasApi | null>(null);
 
 	// What each node's fill encodes. Defaults to walk coverage (the original heatmap),
 	// except on a graph with no real walks/paths — there every node's coverage is 0, so
 	// the heatmap is a flat uniform colour; fall back to node length, which is always
 	// meaningful. The picker lives in the on-graph legend at the foot of the canvas.
-	let colorMode = $state<ColorMode>(untrack(() => hasTraversals) ? 'coverage' : 'length');
+	const defaultColorMode: ColorMode = untrack(() => hasTraversals) ? 'coverage' : 'length';
+	let colorMode = $state<ColorMode>(untrack(() => initialView.color) ?? defaultColorMode);
 	const colorModeInfo = $derived(COLOR_MODES.find((m) => m.mode === colorMode) ?? COLOR_MODES[0]);
 	// The graph's fill colour for a node, handed to the MSA colour track so it mirrors
 	// the graph exactly. `colorMode`/`lightMode` are read only so this re-derives (and
@@ -1113,20 +1130,27 @@
 	// effort: on any failure (or when the track is switched off) it stays empty and
 	// the graph is unaffected.
 	let genes = $state<Transcript[]>([]);
+	// A fetch is in flight — the render isn't finished until it lands (or fails).
+	let genesLoading = $state(false);
 	$effect(() => {
 		const win = locusWindow;
 		const key = refKey;
 		if (!win || !key || !showGeneTrack) {
 			genes = [];
+			genesLoading = false;
 			return;
 		}
 		let cancelled = false;
+		genesLoading = true;
 		transcriptsInRange(key, win.contig, win.start, win.end)
 			.then((t) => {
 				if (!cancelled) genes = representativeTranscripts(t);
 			})
 			.catch(() => {
 				if (!cancelled) genes = [];
+			})
+			.finally(() => {
+				if (!cancelled) genesLoading = false;
 			});
 		return () => {
 			cancelled = true;
@@ -1425,6 +1449,150 @@
 	const displayLayout = $derived(layoutIsCurrent ? layout : (provisionalLayout ?? layout));
 	const usingProvisional = $derived(displayLayout != null && displayLayout === provisionalLayout);
 
+	// ---- Settings from the URL, and back ------------------------------------------
+	// The plain switches were seeded from `initialView` above. The rest — zoom range,
+	// selected node, MSA, pinned walks — only mean something on a laid-out graph, so
+	// they're applied once, to the first graph that has settled (no query or Simplify
+	// re-run in flight, genes in, layout built for it). After that every change is
+	// reported back as URL parameters, so the address bar reproduces the view.
+	let viewMoved = $state(false);
+	let initialApplied = $state(false);
+	let pinsApplied = $state(untrack(() => !initialView.pin?.length));
+	let viewWarnings: string[] = [];
+	const settledGraph = $derived(layoutIsCurrent && !querying && !sitesLoading && !genesLoading && !computing);
+
+	function warn(w: string) {
+		viewWarnings = [...viewWarnings, w];
+		onWarnings?.(viewWarnings);
+	}
+
+	function fmtDistance(bp: number): string {
+		return bp < 1000 ? `${bp} bp` : bp < 1e6 ? `${(bp / 1000).toFixed(1)} kb` : `${(bp / 1e6).toFixed(2)} Mb`;
+	}
+
+	$effect(() => {
+		if (initialApplied || !settledGraph || !canvasApi) return;
+		const api = canvasApi;
+		// Deferred past this flush: the canvas re-fits itself when a layout or the gene
+		// band lands, and a zoom applied before that would be thrown away.
+		const t = setTimeout(() =>
+			untrack(() => {
+				const v = initialView;
+				const win = locusWindow;
+				for (const m of v.marks) {
+					if (referenceFree) warn(`Mark "${m.label}" isn't drawn: marks need a reference-based layout.`);
+					else if (!win) warn(`Mark "${m.label}" isn't drawn: this graph has no reference coordinates.`);
+					else if (m.contig !== win.contig)
+						warn(`Mark "${m.label}" is on ${m.contig}, but this graph's reference is ${win.contig}.`);
+					else if (m.end < win.start || m.start > win.end)
+						warn(
+							`Mark "${m.label}" is ${fmtDistance(m.end < win.start ? win.start - m.end : m.start - win.end)} outside the loaded window ${formatRange(win)}. Check it uses this graph's reference assembly, or raise context.`
+						);
+				}
+				if (v.range && !api.zoomToRange(v.range))
+					warn(
+						`Couldn't zoom to range ${formatRange(v.range)}: ${referenceFree ? 'reference-free layouts have no coordinate axis' : `it isn't on this graph's reference${win ? ` (${formatRange(win)})` : ''}`}.`
+					);
+				if (v.select) {
+					if (gfa.segments.has(v.select)) {
+						selected = v.select;
+						inspectorDismissed = false;
+					} else warn(`select=${v.select}: there's no node with that id in this graph.`);
+				}
+				if (v.msa) {
+					msaRegion = viewRange && viewFitsMsa ? { start: viewRange.start, end: viewRange.end } : null;
+					msaOpen = true;
+					if (!msaGfa && discoAvailable && !discoLoading) onRequestDiscoGraph?.();
+				}
+				if (v.pin?.length && namedWalks.length === 0) {
+					if (discoAvailable && !discoLoading) onRequestDiscoGraph?.();
+					else if (!discoAvailable) {
+						warn(`pin: this graph's haplotype walks aren't available to trace.`);
+						pinsApplied = true;
+					}
+				}
+				initialApplied = true;
+			})
+		);
+		return () => clearTimeout(t);
+	});
+
+	// Pins wait for the named walks, which on the locus browser arrive with the
+	// full-walk graph (requested above).
+	$effect(() => {
+		const want = initialView.pin;
+		const walks = namedWalks;
+		if (pinsApplied || !initialApplied || !want?.length || walks.length === 0) return;
+		untrack(() => {
+			const keys: string[] = [];
+			for (const name of want) {
+				const lc = name.toLowerCase();
+				// A bare sample name pins every walk of that sample (both haplotypes).
+				const hits = walks.filter(
+					(w) =>
+						w.key === name ||
+						`${w.sample}#${w.hapIndex}` === name ||
+						w.sample === name ||
+						(w.sample === 'unknown' && w.label.toLowerCase() === lc)
+				);
+				if (hits.length) keys.push(...hits.map((w) => w.key));
+				else warn(`pin=${name}: no walk with that name. Use a sample name, sample#haplotype, a full key, or "Walk N".`);
+			}
+			pinnedKeys = [...new Set(keys)];
+			pinsApplied = true;
+		});
+	});
+
+	/** The shortest name `pin=` will match back to this walk. */
+	function pinName(key: string): string {
+		const w = namedWalks.find((x) => x.key === key);
+		if (!w) return key;
+		if (w.sample === 'unknown') return w.label;
+		const same = (pred: (x: NamedWalk) => boolean) => namedWalks.filter(pred).length === 1;
+		if (same((x) => x.sample === w.sample)) return w.sample;
+		if (same((x) => x.sample === w.sample && x.hapIndex === w.hapIndex)) return `${w.sample}#${w.hapIndex}`;
+		return w.key;
+	}
+
+	$effect(() => {
+		if (!onParams || !initialApplied) return;
+		const patch: ParamPatch = {
+			layout: layoutMode === defaultLayoutMode ? null : layoutMode,
+			theme: lightMode ? 'light' : null,
+			color: colorMode === defaultColorMode ? null : colorMode,
+			genes: showGeneTrack ? null : '0',
+			msa: msaOpen ? '1' : null,
+			select: selected,
+			pin: pinsApplied ? (pinnedKeys.length ? pinnedKeys.map(pinName) : null) : (initialView.pin ?? null),
+			range: viewMoved && viewRange ? formatRange(viewRange) : null
+		};
+		if (windowedSubgraph) patch.exits = showExits ? null : '0';
+		untrack(() => onParams(patch));
+	});
+
+	// Report where the render is. "done" needs a settled graph, the URL settings
+	// applied, pins traced, the MSA's graph in, and then the canvas quiet (no eased
+	// re-fit or debounce pending) on two checks in a row. Polled on a timer rather
+	// than animation frames, which stop in background tabs.
+	$effect(() => {
+		if (!onRenderState) return;
+		const stage = querying || sitesLoading ? 'querying' : !layoutIsCurrent || computing ? 'layout' : 'drawing';
+		const waiting =
+			genesLoading || !initialApplied || !pinsApplied || (msaOpen && discoLoading) || !canvasApi;
+		const api = canvasApi;
+		untrack(() => onRenderState(stage, { layoutMs: ms }));
+		if (stage !== 'drawing' || waiting || !api) return;
+		let calm = 0;
+		let timer: ReturnType<typeof setTimeout>;
+		const check = () => {
+			calm = api.isSettled() ? calm + 1 : 0;
+			if (calm >= 2) untrack(() => onRenderState('done', { layoutMs: ms }));
+			else timer = setTimeout(check, 50);
+		};
+		timer = setTimeout(check, 50);
+		return () => clearTimeout(timer);
+	});
+
 	// The layout-shaping options the user controls — anything here changes the
 	// computed layout, so it's the worker's options.
 	interface LayoutKnobs {
@@ -1519,10 +1687,28 @@
 		return `${c.contig}:${c.start.toLocaleString()}–${c.end.toLocaleString()}`;
 	}
 
+	let linkCopied = $state(false);
+	async function copyLink() {
+		try {
+			await navigator.clipboard.writeText(window.location.href);
+			linkCopied = true;
+			setTimeout(() => (linkCopied = false), 1500);
+			trackEvent('widget_interact', { widget: 'graph_layout', action: 'copy_link' });
+		} catch {
+			// Clipboard blocked (permissions, insecure context): the address bar has it.
+		}
+	}
+
 	function exportImage() {
 		const win = locusWindow;
 		const base = win ? `${win.contig}_${win.start}-${win.end}` : 'graphoscope-graph';
-		canvasApi?.exportImage(`${base}.png`);
+		// The PNG carries the link that reproduces it; the address bar is kept in sync
+		// with every view setting, so the current URL is that link.
+		canvasApi?.exportImage(`${base}.png`, {
+			Source: window.location.href,
+			Software: 'Graphoscope',
+			...(locusLabel ? { Title: locusLabel } : {})
+		});
 	}
 
 	// Tooltip text for a hovered node, built from the fields the user has enabled.
@@ -2041,8 +2227,15 @@
 								</span>
 							</label>
 						{/if}
-						<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG">
+						<button class="action" onclick={exportImage} title="Download the current view as a high-resolution PNG (the link to this view is embedded in the file)">
 							⬇ Export PNG
+						</button>
+						<button
+							class="action"
+							onclick={copyLink}
+							title="Copy a link that reopens exactly this view: query, layout, theme, zoom, selection, and marks"
+						>
+							{linkCopied ? '✓ Copied' : '🔗 Copy link to this view'}
 						</button>
 					{/if}
 			</section>
@@ -2093,6 +2286,8 @@
 						discoActive={traceActive}
 						onReady={(api) => (canvasApi = api)}
 						onViewRange={(r) => (viewRange = r)}
+						onViewMoved={(m) => (viewMoved = m)}
+						marks={initialView.marks}
 						onSelectSegment={(id) => {
 							selected = id;
 							if (id) {
