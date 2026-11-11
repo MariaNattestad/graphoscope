@@ -61,6 +61,8 @@ test('locus browser: simplify=off shows every node', async ({ page }) => {
 	await page.goto('/?ref=grch38&locus=C4A&simplify=off');
 	await page.waitForSelector('html[data-status="done"], html[data-status="error"]', { timeout: 180_000 });
 	await expect(page.locator('html')).toHaveAttribute('data-status', 'done');
+	// Simplify's state shows on the sidebar's Settings tab.
+	await page.getByRole('tablist', { name: 'Sidebar' }).getByRole('tab', { name: 'Settings' }).click();
 	await expect(page.getByText(/all [\d,]+ nodes shown/)).toBeVisible();
 	expect(new URL(page.url()).searchParams.get('simplify')).toBe('off');
 });
