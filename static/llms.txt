@@ -32,12 +32,12 @@ Layouts are deterministic: the same graph, settings and window size always draw 
 
 ## GFA viewer parameters
 
-- `example`: `mlph` (bundled), `drb1`, `mt`, `plasmids`, `tiny`.
+- `example`: `mlph` (bundled), `fly` (bundled), `drb1`, `mt`, `plasmids`, `tiny`.
 - `url`: an http(s) URL of a GFA file. The server must send CORS headers.
 
 ## View parameters (both pages)
 
-- `layout`: `stacked` (shown as Strands, the default), `classic` (Skyline), `naive`, `assembly`, `fm3` (Untangled), `simple-force`, `flow`, `layered` (DAG), `radial`. The shown names work too.
+- `layout`: `stacked` (shown as Strands, the default), `classic` (Skyline), `assembly`, `fm3` (Untangled), `simple-force`, `flow`, `layered` (DAG), `radial`. The shown names work too.
 - `theme`: `dark` (default) | `light`. Light is for figures.
 - `color`: what node colour encodes: `coverage` (walks through the node; default), `bubbleSize`, `bubble`, `node`, `length`.
 - `genes`: `1` | `0`. Draw the gene track. Default `1`.

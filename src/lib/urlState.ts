@@ -157,7 +157,6 @@ export function parseLayoutMode(text: string): LayoutMode | null {
 		'simple-force-directed': 'simple-force',
 		dag: 'layered',
 		'layered-(dag)': 'layered',
-		'naïve': 'naive',
 		'assembly-graph': 'assembly'
 	};
 	if (alias[t]) return alias[t];

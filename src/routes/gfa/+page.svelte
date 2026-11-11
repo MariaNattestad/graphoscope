@@ -196,8 +196,8 @@
 		if (file) loadFile(file);
 	}
 
-	// Example graphs, one per kind the viewer handles. The first is bundled (it's the
-	// hosted W-line example); the rest are fetched on demand from the test-data of
+	// Example graphs, one per kind the viewer handles. The first two are bundled (the
+	// hosted W-line examples); the rest are fetched on demand from the test-data of
 	// well-known tools (odgi, gfatools, Bandage) so they don't bloat the app bundle.
 	// raw.githubusercontent.com sends permissive CORS, so a client-side fetch works.
 	interface Example {
@@ -219,6 +219,13 @@
 			kind: 'W-line walks',
 			name: 'MLPH.chm13.subset.gfa',
 			src: { bundle: 'MLPH.chm13.subset.gfa' }
+		},
+		{
+			id: 'fly',
+			label: 'Fly Cyp6g1',
+			kind: '16 fly genomes',
+			name: 'fly.cyp6g1.gfa',
+			src: { bundle: 'fly.cyp6g1.gfa' }
 		},
 		{
 			id: 'drb1',
