@@ -16,7 +16,7 @@ const WASM_URL = `${base}/query.wasm`;
  * app and /api always pass it to the wasm explicitly (whose own fallback, in
  * crates/reduce, is 100), so this constant is the one that counts. Shared so the
  * app and the /api endpoint agree on what "no context param" means. */
-export const DEFAULT_CONTEXT = 10000;
+export const DEFAULT_CONTEXT = 1000;
 
 /** The reducer's own Simplify threshold (crates/reduce DEFAULT_MAX_VARIANT): what a
  * query collapses at unless asked otherwise. */

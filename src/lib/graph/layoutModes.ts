@@ -82,7 +82,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Strands',
 		family: 'anchored',
 		blurb:
-			'A force layout along a straight reference axis: each bubble is pulled into a column over the reference position it attaches to, and its strands relax into their own shape.',
+			'Bubbles pulled into columns over a straight reference; strands relax into shape.',
 		lanes: false,
 		bendNodes: false
 	},
@@ -91,7 +91,7 @@ export const LAYOUT_MODES: LayoutModeConfig[] = [
 		label: 'Skyline',
 		family: 'anchored',
 		blurb:
-			'Each bubble placed directly above the reference as horizontal lanes at true bp scale, alleles side by side, with no simulation. Good for structuring extremely dense loci.',
+			'Bubbles as true-scale lanes above the reference, no simulation. For dense loci.',
 		lanes: true,
 		// Skyline never simulates, so bend nodes cost nothing; they carry the skip arcs.
 		bendNodes: true
