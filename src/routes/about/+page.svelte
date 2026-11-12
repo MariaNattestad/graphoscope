@@ -22,51 +22,21 @@
 				structure, and has tons of features for exploring the graph and inspecting all the underlying data.
 			</p>
 
-			<h3>How the on-demand querying works</h3>
+			<h3>How it works</h3>
 			<div class="section">
 				<p>
-					The graphs themselves are the <b>HPRC Release 2 Minigraph-Cactus pangenomes</b> — built by
-					the Human Pangenome Reference Consortium. Each is distributed as a
-					<code>.gbz</code> file of several gigabytes.
+					The graphs are the Human Pangenome Reference Consortium's (HPRC) Release 2 pangenomes, which
+					are several gigabytes each. Rather than download one, Graphoscope uses
+					<a href="https://github.com/jltsiren/gbz-base">GBZ-base</a>, which stores the graph in a
+					database that can be searched by position. A small WebAssembly program runs in your browser
+					and fetches only the few megabytes covering the region you asked for, straight from the
+					public HPRC bucket. Before drawing, it simplifies the region against the reference path, folding
+					small variants together so the larger structure is easy to see. Nothing is uploaded and there
+					is no server.
 				</p>
 				<p>
-					Querying one by genomic coordinate normally means downloading the whole thing. Instead we
-					build on <b>GBZ-base</b> (part of the
-					<a href="https://github.com/jltsiren/gbz-base" 
-						>vg / GBZ-base</a
-					>
-					tooling by Jouni Sirén and colleagues), which stores a graph in a SQLite database
-					(<code>.gbz.db</code>) that <i>can</i> be queried by position. The HPRC publishes these
-					databases alongside the v2.1 graphs.
-				</p>
-				<p>
-					We added a small Rust program that uses the GBZ-base library, unmodified, for
-					the coordinate lookup, compiled to WebAssembly (<code>wasm32-wasip1</code>), plus a WASI
-					filesystem shim that backs SQLite's page reads with <b>HTTP range requests</b>. So the
-					browser runs the real query engine in a Web Worker and pulls only the few megabytes of
-					database pages a locus actually touches — served straight from the public HPRC S3 bucket.
-				</p>
-				<p>
-					A raw locus can still be far too tangled to read — and, more to the point, far too heavy to
-					hold in a browser tab, since the per-haplotype walks through the graph dominate the data
-					(for a repetitive locus like <b>LPA</b> they are the great majority of the bytes). So before
-					anything is drawn, the same WebAssembly module runs Graphoscope's own
-					<b>reference-guided simplification</b> (<code>crates/reduce</code>; this part is independent
-					of GBZ-base), reading the extracted walks as a stream and keeping only per-node and per-edge
-					aggregates rather than the walks themselves. Anchored on the
-					reference path, it detects the <i>superbubbles</i> hanging off it and collapses any whose
-					alternate alleles are shorter than a <b>collapse threshold</b> (50&nbsp;bp). Then, at every
-					variant site, it folds each haplotype's allele into the nearest kept allele that differs from it
-					by less than the threshold, keeping every place a haplotype leaves the window, and merges the
-					resulting non-branching runs of nodes into single segments. Crucially, instead of keeping
-					every walk it just <b>counts</b> how many pass through each node and edge — that count is
-					what the gold&#8202;→&#8202;red colouring shows. The effect on memory is large: a locus
-					like LPA drops from hundreds of megabytes of parsed graph to a few.
-				</p>
-				<p>
-					There's also a standalone <a href="{base}/gfa" >GFA viewer</a>
-					for dropping in <i>any</i> <code>.gfa</code> file (with W-line walks, P-line paths, rGFA
-					tags, or none of those) — parsed entirely in your browser, nothing uploaded.
+					There's also a standalone <a href="{base}/gfa">GFA viewer</a> for dropping in any
+					<code>.gfa</code> file, parsed entirely in your browser.
 				</p>
 			</div>
 
