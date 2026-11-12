@@ -1,5 +1,6 @@
 <script lang="ts">
-	// Simplification playground: every example graph, one per row — the original
+	// Simplification playground: the real loci and the synthetic examples that
+	// keep alt alleles (PLAYGROUND_FIXTURES), one per row — the original
 	// and what Simplify makes of it, at one threshold.
 	//
 	// The simplification here is not a demo reimplementation — it runs the actual
@@ -11,7 +12,7 @@
 	// pane is `windowedSubgraph` and draws the same exit cues on loose ends.
 	import { onMount } from 'svelte';
 	import { parseGfa, type Gfa } from '$lib/gfa';
-	import { ALL_FIXTURES, type Fixture } from '$lib/graph/fixtures';
+	import { PLAYGROUND_FIXTURES, type Fixture } from '$lib/graph/fixtures';
 	import type { ReduceRequest, ReduceResult } from '$lib/gfaReduce.worker';
 	import GraphLayoutView from '$lib/graph/GraphLayoutView.svelte';
 	import { base } from '$app/paths';
@@ -94,7 +95,7 @@
 		const mv = maxVariant;
 		const w = worker;
 		if (!w) return;
-		for (const f of ALL_FIXTURES) {
+		for (const f of PLAYGROUND_FIXTURES) {
 			const key = `${f.id}:${mv}`;
 			if (!visible.has(f.id) || requested.has(key)) continue;
 			requested.add(key);
@@ -124,7 +125,7 @@
 		<p class="sub">
 			Each example graph as it comes in, then what <b>Simplify</b> makes of it: small bubbles popped onto
 			the reference, then each haplotype's allele at every site folded into the nearest kept allele. It
-			runs in the same <code>query.wasm</code> the locus browser uses. The synthetic examples are the ones
+			runs in the same <code>query.wasm</code> the locus browser uses. The synthetic examples are among the ones
 			<code>crates/reduce/src/tests.rs</code> asserts on.
 			<a href="{base}/" data-sveltekit-reload>← back to the browser</a>
 		</p>
@@ -137,7 +138,7 @@
 		<span class="muted">Simplify folds every variant under it</span>
 	</div>
 
-	{#each ALL_FIXTURES as f (f.id)}
+	{#each PLAYGROUND_FIXTURES as f (f.id)}
 		{@const shown = visible.has(f.id)}
 		{@const r = reduced[f.id]}
 		{@const stats = r?.gfa?.reduced}
@@ -242,12 +243,12 @@
 		width: 5rem;
 	}
 	.example {
-		padding: 1.2rem 0;
+		padding: 2.5rem 0 2rem;
 		border-bottom: 1px solid #eee;
 		scroll-margin-top: 3.5rem;
 	}
 	.ex-head {
-		margin-bottom: 0.6rem;
+		margin-bottom: 0.9rem;
 	}
 	.desc {
 		margin: 0.25rem 0 0;
