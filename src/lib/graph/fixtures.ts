@@ -291,3 +291,13 @@ const REAL_FIXTURES: Fixture[] = [
 ];
 
 export const ALL_FIXTURES: Fixture[] = [...SYNTHETIC_FIXTURES, ...REAL_FIXTURES];
+
+// What /playground shows: the real loci first, then the synthetic examples that
+// still have alt alleles after Simplify. The ones where nothing changes (no
+// variation) or every alt folds away (SNP, small deletion, adjacent SNPs, loop)
+// stay in ALL_FIXTURES for the tests but aren't worth a row.
+const PLAYGROUND_HIDDEN = new Set(['snp', 'small_del', 'mnp', 'cyclic', 'long_run']);
+export const PLAYGROUND_FIXTURES: Fixture[] = [
+	...REAL_FIXTURES,
+	...SYNTHETIC_FIXTURES.filter((f) => !PLAYGROUND_HIDDEN.has(f.id))
+];

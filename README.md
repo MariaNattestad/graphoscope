@@ -221,12 +221,12 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 
 [`/playground`](https://graphoscope.omgenomics.com/playground) is a
 standalone sandbox for the reference-guided simplification algorithm behind the
-graph layout: every fixture (synthetic edge cases and real HPRC loci) in its own
-row, the original graph beside what Simplify makes of it at one shared threshold, with
+graph layout: the real HPRC loci first, then the synthetic examples that still
+have alt alleles after Simplify, each in its own row, the original graph beside what Simplify makes of it at one shared threshold, with
 the same exit cues the locus browser draws. It's where the simplification approach
 gets prototyped and stress-tested independently of the main query flow — the
-exact fixtures it uses are also what the Rust unit tests assert on
-(`crates/reduce/src/tests.rs`).
+synthetic fixtures are also what the Rust unit tests assert on
+(`crates/reduce/src/tests.rs`), including the trivial ones the page leaves out.
 
 ## Gene-name lookup
 
