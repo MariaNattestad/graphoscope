@@ -1,6 +1,77 @@
 # Graphoscope
 
-Explore an HPRC human pangenome graph at any locus, straight from the browser. Pick a region to see the subgraph for that locus, visualized with a few early prototypes designed to highlight major graph patterns relative to the reference.
+**Type a gene, get its pangenome graph.** Graphoscope explores the HPRC human
+pangenome straight from the browser, with nothing to install and no server:
+pick a locus, and it pulls just that region of the graph and draws it against
+the reference.
+
+**[Try it: marianattestad.github.io/graphoscope](https://marianattestad.github.io/graphoscope/)**
+
+![LPA on CHM13 across all 465 HPRC haplotypes, simplified from 27,534 nodes to 123](docs/images/lpa.png)
+
+*LPA on CHM13 across all 465 HPRC haplotypes, simplified from 27,534 nodes to 123,
+in the browser. The loops and arcs are LPA's KIV-2 repeat: 5.5 kb units whose copy
+number varies widely between people (fewer copies mean higher Lp(a), a
+heart-disease risk factor). The 5.5-5.6 kb loops are extra copies, and haplotypes
+with fewer copies than CHM13 skip whole units.*
+
+## What you can do
+
+### Simplify a tangle into its structure
+
+Real loci are dense. Reference-guided simplification pops small variants and
+merges unbranching runs, so the large-scale structure shows. At C4A and C4B, 4,007
+nodes become 25.
+
+| Simplify off: 4,007 nodes | Simplify on: 25 nodes |
+|---|---|
+| ![C4A and C4B with simplification off](docs/images/c4-simplify-off.png) | ![C4A and C4B with simplification on](docs/images/c4-simplify-on.png) |
+
+C4A and C4B sit in tandem RCCX modules, and each C4 gene is long (L) or short (S)
+depending on a HERV-K(C4) retrovirus in intron 9 (Blanchong et al. 2000, *J Exp Med*
+191:2183). Graphoscope recovers that known structure, and each walk reads as one of
+the published arrangements.
+
+### Trace individual haplotypes
+
+![Hovering one MLPH node traces the single haplotype that carries it](docs/images/trace-walk.png)
+
+Hover a node to trace every walk through it, each in its own colour. This MLPH
+node is carried by one haplotype, whose walk runs the outer ring. Turn on
+"disco-walks" to flash many haplotype walks in rapid succession.
+
+### Inspect bubbles
+
+![A 6,233 bp LINE-1 insertion next to HLA-A, carried by 6 haplotypes](docs/images/inspect-bubble.png)
+
+Click a bubble for its size: next to HLA-A, a 6,233 bp LINE-1 insertion carried by
+6 haplotypes. Each bubble shows its longest and shortest paths and its reference
+span, giving an overview of how much variation each locus has.
+
+### Drop down to the bases
+
+![Base-level multiple sequence alignment lined up with the graph](docs/images/msa.png)
+
+The MSA view shows individual bases, lined up with the graph above, for detailed
+comparison of haplotypes.
+
+### Bring your own graph
+
+Drop any GFA file on [`/gfa`](https://marianattestad.github.io/graphoscope/gfa). It
+is parsed in your browser and never uploaded.
+
+- Any format: GFA 1.1 walks, GFA 1.0 paths (vg, odgi), minigraph rGFA, or a bare assembly graph
+- Pick the reference: any walk or path can be the straight axis
+- Every layout, including a force-directed assembly graph view
+- Click a walk to trace it, or straighten it under the reference
+- Graph report: N50, depth, dead ends, components
+
+| Fruit fly, 16 strains | Assembly graph, no reference |
+|---|---|
+| ![Cyp6g1 in D. melanogaster across 16 strains](docs/images/fly.png) | ![Bandage's plasmid test assembly](docs/images/assembly-graph.png) |
+| *Cyp6g1 across 16 strains, with the dm6 reference as the axis. Tracing haplotypes reveals the full structure.* | *Bandage's plasmid test assembly in a reference-free layout.* |
+
+## Data
 
 Two HPRC **Release 2 (v2.1)** Minigraph-Cactus graphs are built in, switchable in
 the UI:
@@ -10,6 +81,15 @@ the UI:
 
 Both are read directly from the public `human-pangenomics` S3 bucket (see
 [Data hosting](#data-hosting)); nothing is downloaded up front.
+
+Graphoscope is open source (MIT). It builds on the HPRC and the Minigraph-Cactus
+team, [GBZ-base](https://github.com/jltsiren/gbz-base) (Sirén, Paten),
+browser_wasi_shim and Bandage. AI agents can drive it entirely through URLs, see
+[Query by URL](#query-by-url-and-for-ai-agents).
+
+---
+
+# Technical details
 
 ## How it works
 
