@@ -26,7 +26,7 @@ function tinyPng(): Uint8Array {
 
 describe('pngWithText', () => {
 	it('embeds text chunks that read back', () => {
-		const url = 'https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&mark=chr5:100-200,Alu';
+		const url = 'https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1&mark=chr5:100-200,Alu';
 		const out = pngWithText(tinyPng(), { Source: url, Software: 'Graphoscope' });
 		expect(readPngText(out)).toEqual({ Source: url, Software: 'Graphoscope' });
 	});

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-	<url><loc>https://marianattestad.github.io/graphoscope/</loc></url>
-	<url><loc>https://marianattestad.github.io/graphoscope/gfa</loc></url>
-	<url><loc>https://marianattestad.github.io/graphoscope/about</loc></url>
-	<url><loc>https://marianattestad.github.io/graphoscope/llms.txt</loc></url>
+	<url><loc>https://graphoscope.omgenomics.com/</loc></url>
+	<url><loc>https://graphoscope.omgenomics.com/gfa</loc></url>
+	<url><loc>https://graphoscope.omgenomics.com/about</loc></url>
+	<url><loc>https://graphoscope.omgenomics.com/llms.txt</loc></url>
 </urlset>

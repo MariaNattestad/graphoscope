@@ -4,7 +4,7 @@
 	import { base } from '$app/paths';
 	import { page } from '$app/state';
 
-	const SITE = 'https://marianattestad.github.io';
+	const SITE = 'https://graphoscope.omgenomics.com';
 	const canonical = $derived(`${SITE}${page.url.pathname}`);
 
 	let { children } = $props();

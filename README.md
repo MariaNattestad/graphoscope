@@ -5,7 +5,7 @@ pangenome straight from the browser, with nothing to install and no server:
 pick a locus, and it pulls just that region of the graph and draws it against
 the reference.
 
-**[Try it: marianattestad.github.io/graphoscope](https://marianattestad.github.io/graphoscope/)**
+**[Try it: graphoscope.omgenomics.com](https://graphoscope.omgenomics.com/)**
 
 ![LPA on CHM13 across all 465 HPRC haplotypes, simplified from 27,534 nodes to 123](docs/images/lpa.png)
 
@@ -57,7 +57,7 @@ comparison of haplotypes.
 
 ### Bring your own graph
 
-Drop any GFA file on [`/gfa`](https://marianattestad.github.io/graphoscope/gfa). It
+Drop any GFA file on [`/gfa`](https://graphoscope.omgenomics.com/gfa). It
 is parsed in your browser and never uploaded.
 
 - Any format: GFA 1.1 walks, GFA 1.0 paths (vg, odgi), minigraph rGFA, or a bare assembly graph
@@ -219,7 +219,7 @@ The parsed `Gfa` (from `src/lib/gfa.ts`) drives several views:
 
 ### Simplification playground
 
-[`/playground`](https://marianattestad.github.io/graphoscope/playground) is a
+[`/playground`](https://graphoscope.omgenomics.com/playground) is a
 standalone sandbox for the reference-guided simplification algorithm behind the
 graph layout: every fixture (synthetic edge cases and real HPRC loci) in its own
 row, the original graph beside what Simplify makes of it at one shared threshold, with
@@ -253,13 +253,13 @@ A query is a shareable link. These params drive the app:
 
 ```
 # GRCh38-based graph, by gene symbol
-https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1
+https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1
 
 # CHM13-based (T2T) graph, by coordinates
-https://marianattestad.github.io/graphoscope/?ref=chm13&locus=chr6:161783171-162011762
+https://graphoscope.omgenomics.com/?ref=chm13&locus=chr6:161783171-162011762
 
 # wider context to follow haplotypes further past the locus
-https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&context=50000
+https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1&context=50000
 ```
 
 Opening the app writes the current `ref`/`locus` (and `context`, when non-default)
@@ -275,10 +275,10 @@ reference, written for AI agents, is [`static/llms.txt`](static/llms.txt) (serve
 
 ```
 # a figure: a labelled region, light background, no UI, fixed size
-https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&mark=chr5:70,940,000-70,941,000,region%20of%20interest&theme=light&chrome=0&size=1600x900
+https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1&mark=chr5:70,940,000-70,941,000,region%20of%20interest&theme=light&chrome=0&size=1600x900
 
 # a bundled GFA with two haplotypes traced
-https://marianattestad.github.io/graphoscope/gfa?example=mlph&pin=HG00438%231&pin=HG00621
+https://graphoscope.omgenomics.com/gfa?example=mlph&pin=HG00438%231&pin=HG00621
 ```
 
 Unknown parameters and values that don't parse are listed in a banner on the
@@ -307,9 +307,9 @@ stats as JSON** instead of the visualizations. It takes the same params as the a
 `context` back in the response:
 
 ```
-https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1
-https://marianattestad.github.io/graphoscope/api?ref=chm13&locus=LPA
-https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1&context=50000
+https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1
+https://graphoscope.omgenomics.com/api?ref=chm13&locus=LPA
+https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1&context=50000
 ```
 
 ```jsonc
@@ -432,6 +432,9 @@ it needs no server of its own — only the `.gbz.db` files on S3 as above.
 ### GitHub Pages
 
 `.github/workflows/deploy-pages.yml` builds and deploys on every push to `main`.
+The site is served at the root of the custom domain
+[graphoscope.omgenomics.com](https://graphoscope.omgenomics.com/), set by
+`static/CNAME`.
 
 ## The locus query (`crates/reduce`)
 

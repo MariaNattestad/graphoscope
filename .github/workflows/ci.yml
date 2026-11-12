@@ -33,8 +33,6 @@ jobs:
       - run: npm test
       # The same build the Pages deploy makes, so a PR can't break it.
       - run: npm run build
-        env:
-          BASE_PATH: /graphoscope
 
   rust:
     name: Reducer tests (crates/reduce)

@@ -2,4 +2,4 @@
 User-agent: *
 Disallow:
 
-Sitemap: https://marianattestad.github.io/graphoscope/sitemap.xml
+Sitemap: https://graphoscope.omgenomics.com/sitemap.xml
