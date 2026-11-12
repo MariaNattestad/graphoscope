@@ -2,13 +2,18 @@
 	import favicon from '$lib/assets/favicon.svg';
 	import { pageTitle } from '$lib/pageTitle';
 	import { base } from '$app/paths';
+	import { page } from '$app/state';
+
+	const SITE = 'https://marianattestad.github.io';
+	const canonical = $derived(`${SITE}${page.url.pathname}`);
 
 	let { children } = $props();
 </script>
 
 <svelte:head>
-	<title>{pageTitle('Graphoscope')}</title>
+	<title>{pageTitle('Graphoscope: HPRC pangenome graph viewer')}</title>
 	<link rel="icon" href={favicon} />
+	<link rel="canonical" href={canonical} />
 	<meta
 		name="description"
 		content="Draw HPRC pangenome graphs by gene or locus, or any GFA file, in the browser. Every view is a URL; the parameter reference for AI agents and scripts is at llms.txt."
@@ -22,6 +27,7 @@
 <p class="agent-note">
 	For AI agents and scripts: every view is set by URL parameters, and the page sets
 	html[data-status="done"] when it is ready to screenshot. Reference: <a href="{base}/llms.txt">{base}/llms.txt</a>.
+	Plain-language guide: <a href="{base}/about">{base}/about</a>.
 	Numbers without drawing: <a href="{base}/api">{base}/api</a>.
 </p>
 

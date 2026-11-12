@@ -36,6 +36,8 @@
 				structure, and has tons of features for exploring the graph and inspecting all the underlying data.
 			</p>
 
+			<p><a href="{base}/about">What is a pangenome graph? Read the guide →</a></p>
+
 			<h3>How the on-demand querying works</h3>
 			<div class="section">
 				<p>
