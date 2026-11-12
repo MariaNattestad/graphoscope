@@ -1,30 +1,24 @@
 <script lang="ts">
 	// The purple identity strip at the top of every page, shared so the wordmark,
-	// GitHub / About links and the About modal stay identical across the locus
+	// GitHub / About links stay identical across the locus
 	// browser and the standalone GFA viewer. Pages differ only in their `tagline`,
 	// the optional middle content (`children` — e.g. the query pill), and any
 	// page-specific `links` placed before GitHub / About.
 	import type { Snippet } from 'svelte';
 	import { base } from '$app/paths';
-	import AboutModal from './AboutModal.svelte';
 
 	let {
 		tagline,
-		aboutSource = null,
 		children,
 		links
 	}: {
 		/** The sub-wordmark line, the one thing that names the current page. */
 		tagline: string;
-		/** Optional "Currently showing: …" line for the About modal (locus browser). */
-		aboutSource?: string | null;
 		/** Middle content (query pill, file name, …). */
 		children?: Snippet;
 		/** Page-specific links, rendered before the shared GitHub / About links. */
 		links?: Snippet;
 	} = $props();
-
-	let aboutOpen = $state(false);
 </script>
 
 <header class="appbar">
@@ -43,13 +37,10 @@
 		<a class="link-btn" href="https://github.com/MariaNattestad/graphoscope" target="_blank" rel="noopener">
 			GitHub ↗
 		</a>
-		<button class="link-btn" onclick={() => (aboutOpen = true)}>About</button>
+		<a class="link-btn" href="{base}/about" target="_blank" rel="noopener">About</a>
 	</div>
 </header>
 
-{#if aboutOpen}
-	<AboutModal source={aboutSource} onClose={() => (aboutOpen = false)} />
-{/if}
 
 <style>
 	.appbar {

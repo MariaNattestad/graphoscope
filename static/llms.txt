@@ -2,13 +2,13 @@
 
 > Graphoscope draws pangenome graphs in the browser. It queries the HPRC v2.1 pangenome graphs (GRCh38- or CHM13-based) by gene or coordinates, and also opens any GFA file. Everything it shows is set by URL parameters, so a link reproduces a view exactly. There is no backend: pages run the query (wasm + HTTP range requests) in the browser, so use a JS-capable browser, not curl.
 
-Base URL: https://marianattestad.github.io/graphoscope/
+Base URL: https://graphoscope.omgenomics.com/
 
 ## Pages
 
-- [Locus browser](https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1): query an HPRC graph by gene symbol or contig:start-end and draw it.
-- [GFA viewer](https://marianattestad.github.io/graphoscope/gfa?example=mlph): draw a bundled example or any GFA reachable by URL.
-- [JSON endpoint](https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1): the same query as numbers (node/link/walk counts, variant sites, fetch cost) without drawing anything. `/api` with no locus lists its parameters.
+- [Locus browser](https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1): query an HPRC graph by gene symbol or contig:start-end and draw it.
+- [GFA viewer](https://graphoscope.omgenomics.com/gfa?example=mlph): draw a bundled example or any GFA reachable by URL.
+- [JSON endpoint](https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1): the same query as numbers (node/link/walk counts, variant sites, fetch cost) without drawing anything. `/api` with no locus lists its parameters.
 
 ## Waiting for a page to finish
 
@@ -57,11 +57,11 @@ As you change the view, the address bar is rewritten to match (defaults left out
 
 ## Examples
 
-- A figure with a labelled region: https://marianattestad.github.io/graphoscope/?ref=grch38&locus=SMN1&mark=chr5:70,940,000-70,941,000,region%20of%20interest&theme=light&chrome=0&size=1600x900
-- Two layouts of the same locus: https://marianattestad.github.io/graphoscope/?ref=chm13&locus=LPA&layout=fm3
-- Zoomed in, with the alignment open: https://marianattestad.github.io/graphoscope/?ref=grch38&locus=HLA-A&range=chr6:29,942,000-29,943,500&msa=1
-- A haplotype traced on a bundled GFA: https://marianattestad.github.io/graphoscope/gfa?example=mlph&layout=strands&pin=HG00438#1
-- Complexity numbers only: https://marianattestad.github.io/graphoscope/api?ref=grch38&locus=SMN1
+- A figure with a labelled region: https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1&mark=chr5:70,940,000-70,941,000,region%20of%20interest&theme=light&chrome=0&size=1600x900
+- Two layouts of the same locus: https://graphoscope.omgenomics.com/?ref=chm13&locus=LPA&layout=fm3
+- Zoomed in, with the alignment open: https://graphoscope.omgenomics.com/?ref=grch38&locus=HLA-A&range=chr6:29,942,000-29,943,500&msa=1
+- A haplotype traced on a bundled GFA: https://graphoscope.omgenomics.com/gfa?example=mlph&layout=strands&pin=HG00438#1
+- Complexity numbers only: https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1
 
 ## Source
 

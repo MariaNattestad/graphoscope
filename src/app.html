@@ -4,6 +4,39 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
+		<!-- Static so crawlers and link-preview bots that don't run JS still get them.
+		     Per-page <title>/canonical are set at runtime in +layout.svelte. -->
+		<title>Graphoscope: HPRC pangenome graph viewer</title>
+		<meta
+			name="description"
+			content="Type a gene and see its human pangenome graph. Graphoscope draws HPRC pangenome graph regions by gene or locus, or any GFA file, in your browser with nothing to install."
+		/>
+		<meta name="author" content="Maria Nattestad" />
+		<meta property="og:type" content="website" />
+		<meta property="og:site_name" content="Graphoscope" />
+		<meta property="og:title" content="Graphoscope: HPRC pangenome graph viewer" />
+		<meta
+			property="og:description"
+			content="Type a gene, get its pangenome graph. Explore the HPRC human pangenome or any GFA file in the browser."
+		/>
+		<meta property="og:url" content="https://graphoscope.omgenomics.com/" />
+		<meta property="og:image" content="https://graphoscope.omgenomics.com/about/lpa.png" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<script type="application/ld+json">
+			{
+				"@context": "https://schema.org",
+				"@type": "WebApplication",
+				"name": "Graphoscope",
+				"url": "https://graphoscope.omgenomics.com/",
+				"description": "Browser-based viewer for the HPRC human pangenome graph and any GFA file. Search by gene or locus to see bubbles, structural variants and haplotype paths.",
+				"applicationCategory": "BrowserApplication",
+				"applicationSubCategory": "Genomics visualization",
+				"operatingSystem": "Any (web browser)",
+				"offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+				"author": { "@type": "Person", "name": "Maria Nattestad", "url": "https://github.com/marianattestad" },
+				"sameAs": ["https://github.com/marianattestad/graphoscope"]
+			}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

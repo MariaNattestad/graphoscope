@@ -58,9 +58,8 @@ function devBranchPlugin(): Plugin {
 	};
 }
 
-// GitHub Pages serves this repo at /graphoscope/, not domain root. Only the
-// Pages build workflow sets BASE_PATH; local dev/build stay at root so
-// `npm run dev`/`npm run build` behave exactly as before.
+// The site is served at the root of graphoscope.omgenomics.com, so no build sets
+// BASE_PATH today. Set it (e.g. /graphoscope) to build for a subpath instead.
 const rawBase = process.env.BASE_PATH;
 if (rawBase && !rawBase.startsWith('/')) {
 	throw new Error(`BASE_PATH must start with "/" (got "${rawBase}")`);
