@@ -27,7 +27,7 @@
 <p class="agent-note">
 	For AI agents and scripts: every view is set by URL parameters, and the page sets
 	html[data-status="done"] when it is ready to screenshot. Reference: <a href="{base}/llms.txt">{base}/llms.txt</a>.
-	Plain-language guide: <a href="{base}/about">{base}/about</a>.
+	About: <a href="{base}/about">{base}/about</a>.
 	Numbers without drawing: <a href="{base}/api">{base}/api</a>.
 </p>
 

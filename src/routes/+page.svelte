@@ -678,7 +678,7 @@
 	style={pageParams.size ? `width:${pageParams.size.width}px;height:${pageParams.size.height}px` : undefined}
 >
 	{#if pageParams.chrome}
-	<AppBar tagline="HPRC pangenome graphs, queried by locus" aboutSource={graph.s3Source}>
+	<AppBar tagline="HPRC pangenome graphs, queried by locus">
 		{#snippet children()}
 		<div class="querypill-wrap">
 			<button
