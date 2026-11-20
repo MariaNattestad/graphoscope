@@ -8,6 +8,7 @@ Base URL: https://graphoscope.omgenomics.com/
 
 - [Locus browser](https://graphoscope.omgenomics.com/?ref=grch38&locus=SMN1): query an HPRC graph by gene symbol or contig:start-end and draw it.
 - [GFA viewer](https://graphoscope.omgenomics.com/gfa?example=mlph): draw a bundled example or any GFA reachable by URL.
+- [gfaidx browser](https://graphoscope.omgenomics.com/gfaidx?index=chr21&locus=SOD1) (experimental): the locus browser over a [gfaidx](https://github.com/fawaz-dabbaghieh/gfaidx) index, with haplotypes named but queries much slower. See [/gfaidx-docs](https://graphoscope.omgenomics.com/gfaidx-docs).
 - [JSON endpoint](https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1): the same query as numbers (node/link/walk counts, variant sites, fetch cost) without drawing anything. `/api` with no locus lists its parameters.
 
 ## Waiting for a page to finish
@@ -35,14 +36,26 @@ Layouts are deterministic: the same graph, settings and window size always draw 
 - `example`: `mlph` (bundled), `fly` (bundled), `drb1`, `mt`, `plasmids`, `tiny`.
 - `url`: an http(s) URL of a GFA file. The server must send CORS headers.
 
-## View parameters (both pages)
+## gfaidx browser parameters (`/gfaidx`, experimental)
+
+Experimental, and about ten times slower than the locus browser: prefer the locus browser unless you need haplotype names. Building and hosting an index: https://graphoscope.omgenomics.com/gfaidx-docs
+
+- `index`: `chr21` (HPRC v2 PGGB chromosome 21, 242 named haplotypes, hosted; opens on SOD1), or the http(s) URL of a gfaidx-indexed graph with its sidecars beside it.
+- `path`: the path or walk whose coordinates `locus` is in, as `sample#haplotype#contig` (`CHM13#0#chr21`) or a sample. Default: a reference path.
+- `locus`: `contig:start-end` on that path, or a gene symbol on a CHM13 or GRCh38 path. At most 2 Mb.
+- `context`: bp. Off by default (each haplotype is cut at the two ends of `locus`); a number also takes everything within that distance, much more slowly.
+- `simplify`: as on the locus browser.
+
+`window.graphoscope.complexity.namedWalks` is the number of named haplotypes returned. `pin` takes their names.
+
+## View parameters (all pages)
 
 - `layout`: `stacked` (shown as Strands, the default), `classic` (Skyline), `assembly`, `fm3` (Untangled), `simple-force`, `flow`, `layered` (DAG), `radial`. The shown names work too.
 - `theme`: `dark` (default) | `light`. Light is for figures.
 - `color`: what node colour encodes: `coverage` (walks through the node; default), `bubbleSize`, `bubble`, `node`, `length`.
 - `genes`: `1` | `0`. Draw the gene track. Default `1`.
 - `labels`: `1` | `100` | `1kb` | `10kb` | `none`. Label nodes at least this long with their length (the sidebar's Length labels slider). Where labels would overlap, the longer node wins; zoom in with `range` to see more. Default `100`.
-- `exits`: `1` | `0`. Locus browser only: cues on haplotypes cut off at the window edge. Default `1`.
+- `exits`: `1` | `0`. Locus browser and `/gfaidx` only: cues on haplotypes cut off at the window edge. Default `1`.
 - `range`: `contig:start-end`. Zoom to this stretch of reference after layout.
 - `select`: a node id. Select it and open its inspector.
 - `pin`: a walk to trace: a sample name (pins all its haplotypes), `sample#haplotype`, a full `sample#haplotype#sequence` key, or `Walk 3` for the locus browser's anonymous walks. Repeat it to trace several.
@@ -61,6 +74,7 @@ As you change the view, the address bar is rewritten to match (defaults left out
 - Two layouts of the same locus: https://graphoscope.omgenomics.com/?ref=chm13&locus=LPA&layout=fm3
 - Zoomed in, with the alignment open: https://graphoscope.omgenomics.com/?ref=grch38&locus=HLA-A&range=chr6:29,942,000-29,943,500&msa=1
 - A haplotype traced on a bundled GFA: https://graphoscope.omgenomics.com/gfa?example=mlph&layout=strands&pin=HG00438#1
+- Two named haplotypes through an insertion in SOD1, from a gfaidx index (experimental): https://graphoscope.omgenomics.com/gfaidx?index=chr21&locus=SOD1&pin=HG02486%231&pin=HG00321%231
 - Complexity numbers only: https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1
 
 ## Source

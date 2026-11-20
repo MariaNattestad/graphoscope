@@ -23,7 +23,13 @@ export interface Mark extends GenomicRange {
 }
 
 /** Which page a parameter applies to. */
-export type ParamPage = 'locus' | 'gfa';
+export type ParamPage = 'locus' | 'gfa' | 'gfaidx';
+
+const PAGE_NAMES: Record<ParamPage, string> = {
+	locus: 'the locus browser',
+	gfa: 'the /gfa viewer',
+	gfaidx: 'the /gfaidx page'
+};
 
 export interface ParamDoc {
 	name: string;
@@ -37,85 +43,100 @@ export const PARAMS: ParamDoc[] = [
 	{ name: 'ref', pages: ['locus'], values: 'grch38 | chm13', description: 'Which HPRC graph to query. Default grch38.' },
 	{
 		name: 'locus',
-		pages: ['locus'],
+		pages: ['locus', 'gfaidx'],
 		values: 'gene symbol or contig:start-end',
 		description: 'What to query, e.g. SMN1 or chr5:70,925,000-70,955,000. `gene` is an alias.'
 	},
 	{
 		name: 'context',
-		pages: ['locus'],
+		pages: ['locus', 'gfaidx'],
 		values: 'bp',
-		description: 'How far past the locus haplotypes are followed. Default 10000.'
+		description:
+			'How far past the locus haplotypes are followed. Default 10000. On /gfaidx it is off by default: each haplotype is cut at the two ends of the locus instead.'
 	},
 	{
 		name: 'simplify',
-		pages: ['locus'],
+		pages: ['locus', 'gfaidx'],
 		values: 'bp | off',
 		description: 'Pop variants under this many bp (default 50). `off` shows the unsimplified graph.'
+	},
+	{
+		name: 'index',
+		pages: ['gfaidx'],
+		values: 'example name or https URL',
+		description:
+			'The gfaidx index to query on /gfaidx (experimental): the hosted example (chr21), or the URL of a gfaidx-indexed graph with its sidecars (.idx, .ndx, .pdx, .lnx, .pcx) beside it, on a host that allows CORS and range requests. See /gfaidx-docs.'
+	},
+	{
+		name: 'path',
+		pages: ['gfaidx'],
+		values: 'sample#haplotype#contig, or a sample',
+		description:
+			'The path of the index whose coordinates `locus` is in, e.g. CHM13#0#chr21. Default: the first reference (CHM13, GRCh38) on the contig asked for.'
 	},
 	{ name: 'example', pages: ['gfa'], values: 'example name', description: 'Open a bundled example graph, e.g. mlph.' },
 	{ name: 'url', pages: ['gfa'], values: 'https URL', description: 'Load a GFA from a URL (it must allow CORS).' },
 	{
 		name: 'layout',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: LAYOUT_MODES.map((m) => m.id).join(' | '),
 		description: 'Layout mode. Shown names work too: strands, skyline, untangled, dag.'
 	},
 	{
 		name: 'theme',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: 'dark | light',
 		description: 'Graph canvas background. light is for figures. Default dark.'
 	},
 	{
 		name: 'color',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: COLOR_MODES.map((m) => m.mode).join(' | '),
 		description: 'What node colour encodes. Default coverage (length for a graph with no walks).'
 	},
-	{ name: 'genes', pages: ['locus', 'gfa'], values: '1 | 0', description: 'Draw the gene track. Default 1.' },
+	{ name: 'genes', pages: ['locus', 'gfa', 'gfaidx'], values: '1 | 0', description: 'Draw the gene track. Default 1.' },
 	{
 		name: 'labels',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: '1 | 100 | 1kb | 10kb | none',
 		description: 'Label nodes at least this long with their length. Default 100.'
 	},
 	{
 		name: 'exits',
-		pages: ['locus'],
+		pages: ['locus', 'gfaidx'],
 		values: '1 | 0',
 		description: 'Draw cues on haplotypes cut off at the window edge. Default 1.'
 	},
 	{ name: 'view', pages: ['locus'], values: 'graph | data', description: 'Which tab is open. Default graph.' },
 	{
 		name: 'range',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: 'contig:start-end',
 		description: 'Zoom the graph to this stretch of reference after layout.'
 	},
-	{ name: 'select', pages: ['locus', 'gfa'], values: 'node id', description: 'Select a node and open its inspector.' },
+	{ name: 'select', pages: ['locus', 'gfa', 'gfaidx'], values: 'node id', description: 'Select a node and open its inspector.' },
 	{
 		name: 'pin',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: 'walk name, repeatable',
 		description: 'Trace a walk: a sample name, sample#haplotype, a full key, or "Walk 3".'
 	},
-	{ name: 'msa', pages: ['locus', 'gfa'], values: '1', description: 'Open the alignment panel under the graph.' },
+	{ name: 'msa', pages: ['locus', 'gfa', 'gfaidx'], values: '1', description: 'Open the alignment panel under the graph.' },
 	{
 		name: 'mark',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: 'contig:start-end,label (repeatable)',
 		description: 'Highlight a stretch of reference with a labelled band. With no locus, the first mark is queried.'
 	},
 	{
 		name: 'chrome',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: '1 | 0',
 		description: '0 hides the header, tabs and options panel, leaving only the graph.'
 	},
 	{
 		name: 'size',
-		pages: ['locus', 'gfa'],
+		pages: ['locus', 'gfa', 'gfaidx'],
 		values: 'WIDTHxHEIGHT',
 		description: 'Render the page at a fixed pixel size, e.g. 1600x900, so screenshots match.'
 	}
@@ -253,7 +274,7 @@ export function parseParams(p: URLSearchParams, page: ParamPage): ParsedParams {
 			const elsewhere = PARAMS.find((d) => d.name === key);
 			warnings.push(
 				elsewhere
-					? `Ignored ${key}: it only applies to the ${elsewhere.pages.includes('gfa') ? '/gfa viewer' : 'locus browser'}.`
+					? `Ignored ${key}: it only applies to ${elsewhere.pages.map((n) => PAGE_NAMES[n]).join(' and ')}.`
 					: `Ignored unknown parameter "${key}". See llms.txt for the list.`
 			);
 		}
