@@ -64,10 +64,11 @@
 	const CONTEXT_DEFAULT = 1000;
 	// The picker's examples: regions of the chr21 index.
 	const LOCI: { locus: string; label: string; kind: string }[] = [
-		{ locus: 'SOD1', label: 'SOD1', kind: 'an insertion some haplotypes carry' },
+		{ locus: 'SOD1', label: 'SOD1', kind: 'An insertion some haplotypes carry' },
 		{ locus: 'TMPRSS2', label: 'TMPRSS2', kind: '45 kb, with large alternative paths' }
 	];
 	const CHR21 = EXAMPLES[0];
+	const CHR21_BLURB = 'HPRC v2 PGGB graph of chromosome 21: CHM13, GRCh38 and 120 samples, 242 named haplotypes.';
 	// A region wider than this is refused before any request: every haplotype's
 	// walk through it comes back, and on a fine-grained graph that is too much
 	// text to hold.
@@ -128,6 +129,7 @@
 		if (!url || typeof window === 'undefined') return undefined;
 		return EXAMPLES.find((e) => new URL(e.url, window.location.href).href === url);
 	}
+	const onChr21 = $derived(exampleOf(indexUrl)?.id === CHR21.id);
 	const indexName = $derived(
 		exampleOf(indexUrl)?.label ??
 			decodeURIComponent(indexUrl.split('/').pop() ?? '').replace(/\.(gfa\.gz|gfaidx)$/, '')
@@ -208,7 +210,8 @@
 				return false;
 			}
 			indexUrl = url;
-			indexText = exampleOf(url)?.id ?? url;
+			// The field is for your own index; an example's URL is its placeholder.
+			indexText = exampleOf(url) ? '' : url;
 			tracks = found;
 			track = pickTrack(found, wantPath);
 			pathText = track?.name ?? '';
@@ -481,16 +484,24 @@
 					{#if pickerOpen}
 						<div class="pop" role="dialog" aria-label="Choose an index and a region">
 							<div class="block">
-								<span class="head">Examples · {CHR21.label}, {CHR21.kind}</span>
-								<div class="ex-grid">
-									{#each LOCI as ex (ex.locus)}
-										<button class="ex" onclick={() => openExample(CHR21, ex.locus)} disabled={opening || running}>
-											<b>{ex.label}</b>
-											<span class="ex-kind">{ex.kind}</span>
+								<span class="head">Graph</span>
+								<div class="graphs" role="group" aria-label="Choose a gfaidx index">
+									<button
+										class="graph"
+										class:active={onChr21}
+										onclick={() => !onChr21 && openExample(CHR21)}
+										disabled={opening || running}
+									>
+										<b>{CHR21.label}</b>
+										<span class="desc">{CHR21_BLURB}</span>
+									</button>
+									{#if indexUrl && !onChr21}
+										<button class="graph active" disabled={opening || running} title={indexUrl}>
+											<b>{indexName}</b>
+											<span class="desc">Your own index, opened by URL</span>
 										</button>
-									{/each}
+									{/if}
 								</div>
-								<span class="head">Or your own index</span>
 								<form
 									class="row"
 									onsubmit={(e) => {
@@ -501,7 +512,8 @@
 									<input
 										class="field grow"
 										type="text"
-										placeholder="https://…/graph.gfa.gz"
+										placeholder={CHR21.url}
+										aria-label="URL of your own gfaidx index"
 										bind:value={indexText}
 										spellcheck="false"
 									/>
@@ -510,21 +522,21 @@
 									</button>
 								</form>
 								<p class="hint">
-									The URL of a graph indexed with <code>gfaidx index_gfa</code>, with its five index files beside it,
-									on a host that allows CORS and range requests.
+									Or open your own: the URL of a graph indexed with <code>gfaidx index_gfa</code>, with its five
+									index files beside it, on a host that allows CORS and range requests.
 									<a href="{base}/gfaidx-docs" target="_blank" rel="noopener">How to build and host one →</a>
 								</p>
 							</div>
 
-							{#if tracks.length > 0}
-								<form
-									class="block"
-									onsubmit={(e) => {
-										e.preventDefault();
-										runQuery();
-									}}
-								>
-									<span class="head">Region</span>
+							<form
+								class="block"
+								onsubmit={(e) => {
+									e.preventDefault();
+									runQuery();
+								}}
+							>
+								<span class="head">Region</span>
+								{#if tracks.length > 0}
 									<label class="row">
 										<span class="lab">On path</span>
 										<input class="field grow" type="text" list="gfaidx-paths" bind:value={pathText} spellcheck="false" />
@@ -544,6 +556,22 @@
 											spellcheck="false"
 										/>
 									</label>
+								{/if}
+								{#if !indexUrl || onChr21}
+									<div class="examples">
+										<span class="ex-lbl">e.g.</span>
+										{#each LOCI as ex (ex.locus)}
+											<button
+												type="button"
+												class="chip"
+												title={ex.kind}
+												onclick={() => openExample(CHR21, ex.locus)}
+												disabled={opening || running}>{ex.label}</button
+											>
+										{/each}
+									</div>
+								{/if}
+								{#if tracks.length > 0}
 									<div class="row modes">
 										<label class="mode">
 											<input type="radio" name="mode" checked={contextBp == null} onchange={() => setMode(false)} />
@@ -571,14 +599,15 @@
 											{running ? 'Querying…' : 'Show region'}
 										</button>
 									</div>
-								</form>
-							{/if}
+								{/if}
+							</form>
 
 							<div class="foot">
 								<span
 									>Built with <a href="https://github.com/fawaz-dabbaghieh/gfaidx" target="_blank" rel="noopener"
 										>gfaidx</a
-									>, compiled to WebAssembly.</span
+									>, compiled to WebAssembly and patched to need fewer requests
+									(<button class="link-inline" onclick={() => (aboutOpen = true)}>how</button>).</span
 								>
 								<a href="{base}/gfaidx-docs">gfaidx docs</a>
 								<a href="{base}/" data-sveltekit-reload>Locus browser →</a>
@@ -848,15 +877,17 @@
 		opacity: 0.55;
 		cursor: default;
 	}
-	.ex-grid {
+	/* the graph boxes and example chips, as on the locus browser's picker */
+	.graphs {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
 		gap: 0.5rem;
 	}
-	.ex {
+	.graph {
 		display: flex;
 		flex-direction: column;
-		gap: 0.1rem;
+		gap: 0.15rem;
+		min-width: 0;
 		text-align: left;
 		font: inherit;
 		background: #f7f8fa;
@@ -865,20 +896,62 @@
 		padding: 0.5rem 0.6rem;
 		cursor: pointer;
 	}
-	.ex:hover:not(:disabled) {
-		background: #f5f0ff;
-		border-color: #c7b8ec;
+	.graph:hover:not(:disabled) {
+		background: #eef2ff;
+		border-color: #c7d2fe;
 	}
-	.ex:disabled {
+	.graph.active {
+		background: #f5f0ff;
+		border-color: #9333ea;
+		box-shadow: inset 0 0 0 1px rgba(147, 51, 234, 0.35);
+		cursor: default;
+	}
+	.graph b {
+		font-size: 0.85rem;
+		color: #1f2430;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.graph.active b {
+		color: #6d28d9;
+	}
+	.desc {
+		font-size: 0.72rem;
+		line-height: 1.35;
+		color: #7a828f;
+	}
+	.graph:disabled:not(.active) {
 		opacity: 0.6;
 		cursor: default;
 	}
-	.ex b {
-		font-size: 0.82rem;
+	.examples {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		flex-wrap: wrap;
 	}
-	.ex-kind {
-		font-size: 0.7rem;
-		color: #7a828f;
+	.ex-lbl {
+		font-size: 0.72rem;
+		color: #98a0ac;
+	}
+	.chip {
+		font: inherit;
+		font-size: 0.8rem;
+		font-weight: 600;
+		cursor: pointer;
+		background: #eef2ff;
+		color: #3730a3;
+		border: 1px solid #e0e7ff;
+		border-radius: 999px;
+		padding: 0.2rem 0.6rem;
+	}
+	.chip:hover:not(:disabled) {
+		background: #e0e7ff;
+	}
+	.chip:disabled {
+		opacity: 0.5;
+		cursor: default;
 	}
 	.foot {
 		display: flex;
