@@ -74,6 +74,7 @@ As you change the view, the address bar is rewritten to match (defaults left out
 - Two layouts of the same locus: https://graphoscope.omgenomics.com/?ref=chm13&locus=LPA&layout=fm3
 - Zoomed in, with the alignment open: https://graphoscope.omgenomics.com/?ref=grch38&locus=HLA-A&range=chr6:29,942,000-29,943,500&msa=1
 - A haplotype traced on a bundled GFA: https://graphoscope.omgenomics.com/gfa?example=mlph&layout=strands&pin=HG00438#1
+- The same SOD1 region on a sample haplotype's own coordinates, that haplotype as the backbone (gfaidx, experimental): https://graphoscope.omgenomics.com/gfaidx?index=chr21&path=HG02486%231%23CM088205.1&locus=CM088205.1:29,322,146-29,342,901&pin=CHM13
 - Two named haplotypes through an insertion in SOD1, from a gfaidx index (experimental): https://graphoscope.omgenomics.com/gfaidx?index=chr21&locus=SOD1&pin=HG02486%231&pin=HG00321%231
 - Complexity numbers only: https://graphoscope.omgenomics.com/api?ref=grch38&locus=SMN1
 

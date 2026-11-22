@@ -7,6 +7,7 @@
 	import { pageTitle } from '$lib/pageTitle';
 
 	const chr21 = `${base}/gfaidx?index=chr21&locus=SOD1&pin=HG02486%231&pin=HG00321%231`;
+	const hg02486 = `${base}/gfaidx?index=chr21&path=HG02486%231%23CM088205.1&locus=CM088205.1:29,322,146-29,342,901&pin=CHM13`;
 	const UPLOAD = `for f in graph.indexed.gfa.gz{,.idx,.ndx,.lnx,.pdx,.pcx}; do
   aws s3 cp --content-type application/octet-stream "$f" s3://my-bucket/graphs/"$f"
 done`;
@@ -147,6 +148,17 @@ done`;
 		is in <a href="{base}/llms.txt">llms.txt</a>.
 	</p>
 
+	<h3>Asking on another haplotype</h3>
+	<p>
+		<code>path</code> can be any path in the index, not only a reference: the region is then read in that
+		haplotype's own coordinates, and that haplotype is drawn as the straight backbone, with every other haplotype
+		relative to it. For example, <a href={hg02486}>SOD1 on HG02486's first haplotype</a>, which carries an
+		insertion there: on CHM13 the insertion branches off the backbone, while on HG02486 it is part of the backbone
+		and CHM13 is the one that skips it. Gene names work only on CHM13 and GRCh38 paths, so on any other haplotype
+		give <code>contig:start-end</code> on its own contig. The path box on <code>/gfaidx</code> lists every path in
+		the index; type a sample or contig to narrow it.
+	</p>
+
 	<h2 id="speed">What to expect</h2>
 	<p>Measured on SOD1, opened from our S3 bucket in Chrome:</p>
 	<table>
@@ -158,7 +170,9 @@ done`;
 	</table>
 	<p>
 		They are different graphs: HPRC v2's Minigraph-Cactus graph on the locus browser, its PGGB graph of 120
-		samples here. The same gfaidx query from a server on this machine takes 2.4 s, so the time is almost all
+		samples here. The example is PGGB because HPRC publishes PGGB graphs one chromosome at a time as GFA, which
+		is what gfaidx indexes; Minigraph-Cactus is published per chromosome only in vg's own formats, and as GFA only
+		for the whole genome (66 GB compressed). The two graphs can differ a lot at the same locus. The same gfaidx query from a server on this machine takes 2.4 s, so the time is almost all
 		request round trips.
 	</p>
 	<p>
@@ -243,6 +257,11 @@ done`;
 	h2 {
 		margin: 2rem 0 0.6rem;
 		font-size: 1.15rem;
+		color: #1f2430;
+	}
+	h3 {
+		margin: 1.4rem 0 0.4rem;
+		font-size: 1rem;
 		color: #1f2430;
 	}
 	.beta {

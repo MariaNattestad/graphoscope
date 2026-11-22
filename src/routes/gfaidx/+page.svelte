@@ -67,6 +67,17 @@
 		{ locus: 'SOD1', label: 'SOD1', kind: 'An insertion some haplotypes carry' },
 		{ locus: 'TMPRSS2', label: 'TMPRSS2', kind: '45 kb, with large alternative paths' }
 	];
+	// The same region asked on other paths: in their own coordinates, with that
+	// path as the drawing's straight backbone.
+	const OTHER_PATHS: { path: string; locus: string; label: string; kind: string }[] = [
+		{ path: 'GRCh38', locus: 'SOD1', label: 'SOD1 on GRCh38', kind: 'SOD1 in GRCh38 coordinates (chr21:31.6 Mb)' },
+		{
+			path: 'HG02486#1#CM088205.1',
+			locus: 'CM088205.1:29,322,146-29,342,901',
+			label: 'SOD1 on HG02486 hap 1',
+			kind: "SOD1 in HG02486 haplotype 1's own coordinates. It carries the insertion, so here the insertion is on the backbone and the haplotypes without it branch around it."
+		}
+	];
 	const CHR21 = EXAMPLES[0];
 	const CHR21_BLURB = 'HPRC v2 PGGB graph of chromosome 21: CHM13, GRCh38 and 120 samples, 242 named haplotypes.';
 	// A region wider than this is refused before any request: every haplotype's
@@ -117,13 +128,25 @@
 	const unsimplifiedNodes = $derived(full?.segments.size ?? 0);
 	const canShowUnsimplified = $derived(unsimplifiedNodes > 0 && unsimplifiedNodes <= limits.maxUnsimplifiedNodes);
 	const displayGfa = $derived(showUnsimplified && full ? full : (reduced ?? full));
-	// The picker's suggestions: references first, and never the whole list of a
-	// 466-haplotype chromosome (any name can still be typed).
-	const suggestions = $derived.by(() => {
-		const refs = tracks.filter(isReferenceTrack);
-		const rest = tracks.filter((t) => !isReferenceTrack(t)).slice(0, 400 - Math.min(refs.length, 400));
-		return [...refs.slice(0, 400), ...rest];
+	// The path list under the "On path" field: every path, references first,
+	// filtered by what is typed (a sample, a contig, any part of the name). While
+	// the field still holds the open path's name, nothing is filtered, so the
+	// whole list shows. At most PATH_LIST_MAX rows are drawn.
+	const PATH_LIST_MAX = 200;
+	let pathListOpen = $state(false);
+	const pathMatches = $derived.by(() => {
+		const typed = pathText.trim().toLowerCase();
+		const filter = typed && typed !== track?.name.toLowerCase() ? typed : '';
+		const hit = (t: IndexTrack) => !filter || t.name.toLowerCase().includes(filter);
+		const all = [...tracks.filter(isReferenceTrack), ...tracks.filter((t) => !isReferenceTrack(t))].filter(hit);
+		return { shown: all.slice(0, PATH_LIST_MAX), total: all.length };
 	});
+	function pickPath(t: IndexTrack) {
+		pathText = t.name;
+		pathListOpen = false;
+		// A region on the old path means nothing on another sample's contig.
+		if (track && t.contig !== track.contig && !refKeyFor(t)) locusText = '';
+	}
 	/** The bundled example an absolute index URL is, if it is one. */
 	function exampleOf(url: string): GfaidxExample | undefined {
 		if (!url || typeof window === 'undefined') return undefined;
@@ -225,9 +248,11 @@
 		}
 	}
 
-	async function openExample(ex: GfaidxExample, locus = ex.locus) {
+	async function openExample(ex: GfaidxExample, locus = ex.locus, path: string | null = null) {
 		const url = new URL(ex.url, window.location.href).href;
 		if (url !== indexUrl && !(await openIndex(url, null))) return;
+		const on = pickTrack(tracks, path);
+		pathText = on?.name ?? '';
 		locusText = locus;
 		await runQuery();
 	}
@@ -537,21 +562,70 @@
 							>
 								<span class="head">Region</span>
 								{#if tracks.length > 0}
-									<label class="row">
-										<span class="lab">On path</span>
-										<input class="field grow" type="text" list="gfaidx-paths" bind:value={pathText} spellcheck="false" />
-										<datalist id="gfaidx-paths">
-											{#each suggestions as t (t.name)}
-												<option value={t.name}></option>
-											{/each}
-										</datalist>
-									</label>
+									<div class="row">
+										<label class="lab" for="gfaidx-path">On path</label>
+										<div class="path-pick">
+											<input
+												id="gfaidx-path"
+												class="field grow"
+												type="text"
+												role="combobox"
+												aria-expanded={pathListOpen}
+												aria-controls="gfaidx-path-list"
+												autocomplete="off"
+												bind:value={pathText}
+												onfocus={(e) => {
+													(e.currentTarget as HTMLInputElement).select();
+													pathListOpen = true;
+												}}
+												oninput={() => (pathListOpen = true)}
+												onblur={() => setTimeout(() => (pathListOpen = false), 150)}
+												onkeydown={(e) => {
+													if (e.key === 'Escape') pathListOpen = false;
+													if (e.key === 'Enter' && pathListOpen && pathMatches.shown.length > 0) {
+														e.preventDefault();
+														pickPath(pathMatches.shown[0]);
+													}
+												}}
+												spellcheck="false"
+											/>
+											{#if pathListOpen}
+												<ul class="path-list" id="gfaidx-path-list" role="listbox">
+													{#each pathMatches.shown as t (t.name)}
+														<!-- svelte-ignore a11y_click_events_have_key_events -->
+														<li
+															role="option"
+															aria-selected={t.name === track?.name}
+															class:current={t.name === track?.name}
+															onmousedown={(e) => {
+																e.preventDefault();
+																pickPath(t);
+															}}
+														>
+															<b>{t.sample}</b>
+															{#if !isReferenceTrack(t)}<span class="pl-hap">hap {t.haplotype}</span>{/if}
+															<span class="pl-contig">{t.contig}</span>
+														</li>
+													{:else}
+														<li class="pl-none">No path matches "{pathText}".</li>
+													{/each}
+													<li class="pl-count">
+														{pathMatches.total > pathMatches.shown.length
+															? `${pathMatches.shown.length} of ${pathMatches.total.toLocaleString()} paths: type a sample or contig to narrow`
+															: `${pathMatches.total.toLocaleString()} of ${tracks.length.toLocaleString()} paths`}
+													</li>
+												</ul>
+											{/if}
+										</div>
+									</div>
 									<label class="row">
 										<span class="lab">Region</span>
 										<input
 											class="field grow"
 											type="text"
-											placeholder={refKey ? 'gene, or contig:start-end' : 'contig:start-end'}
+											placeholder={refKey
+												? 'gene, or contig:start-end'
+												: `${pickTrack(tracks, pathText.trim() || null)?.contig ?? 'contig'}:start-end`}
 											bind:value={locusText}
 											spellcheck="false"
 										/>
@@ -560,12 +634,24 @@
 								{#if !indexUrl || onChr21}
 									<div class="examples">
 										<span class="ex-lbl">e.g.</span>
-										{#each LOCI as ex (ex.locus)}
+										{#each LOCI as ex (ex.label)}
 											<button
 												type="button"
 												class="chip"
 												title={ex.kind}
 												onclick={() => openExample(CHR21, ex.locus)}
+												disabled={opening || running}>{ex.label}</button
+											>
+										{/each}
+									</div>
+									<div class="examples">
+										<span class="ex-lbl">on another path</span>
+										{#each OTHER_PATHS as ex (ex.label)}
+											<button
+												type="button"
+												class="chip"
+												title={ex.kind}
+												onclick={() => openExample(CHR21, ex.locus, ex.path)}
 												disabled={opening || running}>{ex.label}</button
 											>
 										{/each}
@@ -1014,6 +1100,63 @@
 		font-weight: 600;
 		text-decoration: none;
 		white-space: nowrap;
+	}
+	.path-pick {
+		position: relative;
+		flex: 1;
+		display: flex;
+		min-width: 0;
+	}
+	.path-list {
+		position: absolute;
+		top: calc(100% + 3px);
+		left: 0;
+		right: 0;
+		z-index: 30;
+		max-height: 260px;
+		overflow-y: auto;
+		margin: 0;
+		padding: 4px;
+		list-style: none;
+		background: #fff;
+		border: 1px solid #e2e5ea;
+		border-radius: 8px;
+		box-shadow: 0 10px 28px rgba(16, 24, 40, 0.18);
+	}
+	.path-list li {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+		padding: 0.3rem 0.5rem;
+		border-radius: 5px;
+		font-size: 0.8rem;
+		cursor: pointer;
+	}
+	.path-list li:hover {
+		background: #f5f0ff;
+	}
+	.path-list li.current b {
+		color: #6d28d9;
+	}
+	.pl-hap {
+		font-size: 0.72rem;
+		color: #9aa0aa;
+	}
+	.pl-contig {
+		margin-left: auto;
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.74rem;
+		color: #6b7280;
+	}
+	.path-list li.pl-count,
+	.path-list li.pl-none {
+		cursor: default;
+		font-size: 0.72rem;
+		color: #9aa0aa;
+	}
+	.path-list li.pl-count:hover,
+	.path-list li.pl-none:hover {
+		background: none;
 	}
 	.error-banner {
 		flex: 0 0 auto;
