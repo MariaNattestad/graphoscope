@@ -18,6 +18,11 @@ export const test = base.extend<{ appErrors: string[] }>({
 				// own-origin ones are caught below with their URL; the rest are third
 				// party (analytics, UCSC gene tracks, aborted S3 range reads).
 				if (msg.text().startsWith('Failed to load resource')) return;
+				// A third-party host that drops its CORS headers (UCSC does, for
+				// GitHub's runners) is reported as a CORS block rather than a failed
+				// load; it is the same third-party failure.
+				const cors = msg.text().match(/^Access to fetch at '([^']+)' from origin .* blocked by CORS policy/);
+				if (cors && !cors[1].startsWith(ownOrigin)) return;
 				errors.push(`console.error: ${msg.text()}`);
 			});
 			page.on('response', (r) => {
