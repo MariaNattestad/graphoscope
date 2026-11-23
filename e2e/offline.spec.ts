@@ -163,7 +163,8 @@ test.describe('links for agents', () => {
 const MLPH_INDEX = '/examples/gfaidx/mlph.gfaidx';
 test.describe('a gfaidx index', () => {
 	test('a region comes back with named haplotypes', async ({ page }) => {
-		await page.goto(`/gfaidx?index=${MLPH_INDEX}&locus=chr2:238,030,000-238,040,000&pin=HG00621`);
+		// genes=0: the CHM13 gene track comes from UCSC, which CI can't rely on.
+		await page.goto(`/gfaidx?index=${MLPH_INDEX}&locus=chr2:238,030,000-238,040,000&pin=HG00621&genes=0`);
 		await waitForDone(page);
 		const state = await page.evaluate(() => {
 			const g = (
