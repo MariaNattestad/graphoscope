@@ -249,9 +249,12 @@ export function bubbleStringSpots(
 			const { x, height } = loopPoint(a.x, b.x, a.dist, a.dist + b.dist, lo, hi);
 			spots.set(nodeId, {
 				x,
-				// Never closer to the line than the clearance the simulation keeps
-				// anyway, so the ends of the loop don't start out fighting it.
-				height: Math.max(minHeight, height),
+				// The whole loop sits on the clearance the simulation keeps anyway, so
+				// its ends don't start out fighting it. Lifted, not clamped: clamping a
+				// small loop (an insertion whose circle is shorter than the clearance)
+				// flattened all of it onto one line, where the strand folded back on
+				// itself and its links seemed to leave from its middle.
+				height: minHeight + height,
 				baseY: (a.y + b.y) / 2,
 				room: [lo, hi]
 			});

@@ -100,6 +100,11 @@ export interface LayoutResult {
 	 * be coloured as the reference even though nothing is laid out along it.
 	 * (Kept apart from `backboneSegIds`, which also means "drawn on the axis".) */
 	referenceSegIds?: Set<string>;
+	/** `${from}>${to}` (both orientations) for each pair of segments that follow
+	 * one another on a backbone: the reference's own links, which run along the
+	 * axis. Any other link between two backbone segments skips reference
+	 * sequence (a deletion). */
+	axisLinks?: Set<string>;
 	segmentLengths: Map<string, number>;
 	/** Count of non-reference (non-backbone) paths traversing each segment. */
 	pathCoverage: Map<string, number>;
@@ -676,12 +681,23 @@ export function assembleResult(
 	let maxPathCoverage = 0;
 	for (const count of pathCoverage.values()) maxPathCoverage = Math.max(maxPathCoverage, count);
 
+	const axisLinks = new Set<string>();
+	for (const b of backbones) {
+		for (let i = 1; i < b.steps.length; i++) {
+			const from = b.steps[i - 1].id;
+			const to = b.steps[i].id;
+			axisLinks.add(`${from}>${to}`);
+			axisLinks.add(`${to}>${from}`);
+		}
+	}
+
 	return {
 		nodesById,
 		chains,
 		structuralLinkPaths,
 		backbones: backboneInfo,
 		backboneSegIds,
+		axisLinks,
 		segmentLengths,
 		pathCoverage,
 		maxPathCoverage
@@ -1148,14 +1164,16 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// a neighbour's space. One shared floor flattened everything a dense tangle
 	// pushed down onto a single indistinguishable line, so each node's floor is
 	// its own: a clearance that varies per segment (1–2×, the same along a strand
-	// so it stays smooth), or half the height its spot on the loop asks for,
-	// whichever is higher.
+	// so it stays smooth), plus half of however far its spot on the loop sits
+	// above the planned minimum.
 	const floorHeight = new Map<SimNode, number>();
 	for (const node of nodeArray) {
 		const planned = node.targetY != null ? node.componentBaselineY - node.targetY : 0;
 		const clearance =
 			minBaselineClearance * (1.5 + stableUnit(`floor:${node.segId === BEND_SEG_ID ? node.id : node.segId}`));
-		floorHeight.set(node, Math.max(clearance, planned * FLOOR_PER_PLANNED));
+		// The floor follows the planned shape above the clearance, so a small loop
+		// resting on it keeps its curve instead of being pressed flat.
+		floorHeight.set(node, clearance + Math.max(0, planned - minBaselineClearance) * FLOOR_PER_PLANNED);
 	}
 	function enforceRoom() {
 		for (const node of nodeArray) {

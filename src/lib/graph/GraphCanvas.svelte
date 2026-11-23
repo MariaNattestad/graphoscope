@@ -776,8 +776,12 @@
 			const a = layout.nodesById.get(link.fromNode);
 			const b = layout.nodesById.get(link.toNode);
 			if (!a || !b) continue;
-			const isDeletionSkip =
+			const onBackbone =
 				!layout.assembly && layout.backboneSegIds.has(link.from) && layout.backboneSegIds.has(link.to);
+			// The reference's own link between two neighbouring reference nodes runs
+			// along the axis (straight across the small gap between them), not as a bow.
+			const alongAxis = onBackbone && (layout.axisLinks?.has(`${link.from}>${link.to}`) ?? false);
+			const isDeletionSkip = onBackbone && !alongAxis;
 			const skip = isDeletionSkip ? skipByLink.get(`${link.from}>${link.to}`) : undefined;
 			const skipActive = skip != null && skip.key === activeSkipKey;
 			// An edge belonging to the spotlit bubble — either internal to it, or the
@@ -792,7 +796,11 @@
 			ctx.save();
 			ctx.beginPath();
 			ctx.moveTo(ax, ay);
-			if (isDeletionSkip) {
+			if (alongAxis) {
+				ctx.lineTo(bx, by);
+				ctx.lineWidth = 1;
+				if (anyHighlight && !inBubble) ctx.globalAlpha = 0.15;
+			} else if (isDeletionSkip) {
 				const { dir, peakY, run, x1, x2 } = traceSkipBow(ctx, ax, ay, bx, by);
 				ctx.lineWidth = skipActive ? 3 : 1.5;
 				if (skipActive) ctx.strokeStyle = theme.bubbleHighlight;
