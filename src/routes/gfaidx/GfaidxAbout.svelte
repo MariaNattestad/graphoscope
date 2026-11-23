@@ -99,11 +99,12 @@
 			<tbody>
 				<tr><td>GBZ-base (main page)</td><td>7</td><td>0.45 MB</td><td>about 3 s</td><td>464, anonymous</td></tr>
 				<tr><td>gfaidx (this page)</td><td>~660</td><td>7.1 MB</td><td>about 30 s</td><td>242, named</td></tr>
+				<tr><td>gfaidx, a region seen before</td><td>6</td><td>0.4 MB</td><td>about 2 s</td><td>242, named</td></tr>
 			</tbody>
 		</table>
 		<p class="small">
 			The two are different graphs: HPRC v2's Minigraph-Cactus graph on the main page, and its PGGB graph of
-			120 samples here. gfaidx takes either kind of graph
+			120 samples here. A region seen before is read from your browser's storage. gfaidx takes either kind of graph
 			(<a href="{base}/gfaidx-docs#graphs" target="_blank" rel="noopener">which graphs work</a>).
 		</p>
 

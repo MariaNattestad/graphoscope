@@ -149,7 +149,7 @@ function openIndex(url: string): Promise<OpenIndex> {
 	return index;
 }
 
-const baseline = new WeakMap<SparseRangeReader, { requests: number; bytes: number }>();
+const baseline = new WeakMap<SparseRangeReader, { requests: number; bytes: number; disk: number }>();
 
 interface Attempt {
 	exitCode: number;
@@ -201,24 +201,33 @@ async function run(req: GfaidxRequest): Promise<GfaidxResult> {
 	const t0 = performance.now();
 	const [index, module] = await Promise.all([openIndex(req.indexUrl), getModule(req.wasmUrl)]);
 	const readers = [...index.readers.values()];
-	const before = readers.map((r) => baseline.get(r) ?? { requests: 0, bytes: 0 });
+	const before = readers.map((r) => baseline.get(r) ?? { requests: 0, bytes: 0, disk: 0 });
 
 	// A span query settles in a handful of rounds; 400 is a backstop.
-	const { result, rounds } = await runPlanned(readers, () => attempt(module, index, req), 400);
+	let planned: Awaited<ReturnType<typeof runPlanned<Attempt>>>;
+	try {
+		planned = await runPlanned(readers, () => attempt(module, index, req), 400);
+	} finally {
+		// What this query fetched is kept for next time, even if it failed.
+		for (const r of readers) r.flush();
+	}
+	const { result, rounds } = planned;
 
 	let requestCount = 0;
 	let bytesFetched = 0;
+	let diskHits = 0;
 	let indexSize = 0;
 	readers.forEach((r, i) => {
 		requestCount += r.requestCount - before[i].requests;
 		bytesFetched += r.bytesFetched - before[i].bytes;
+		diskHits += r.diskHits - before[i].disk;
 		indexSize += r.size;
-		baseline.set(r, { requests: r.requestCount, bytes: r.bytesFetched });
+		baseline.set(r, { requests: r.requestCount, bytes: r.bytesFetched, disk: r.diskHits });
 	});
 	const stats = {
 		requestCount,
 		bytesFetched,
-		diskHits: 0,
+		diskHits,
 		indexSize,
 		rounds,
 		elapsedMs: Math.round(performance.now() - t0)

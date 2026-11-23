@@ -168,12 +168,19 @@ done`;
 		<tbody>
 			<tr><td>Locus browser (GBZ-base)</td><td>7</td><td>0.45 MB</td><td>about 3 s</td><td>464, anonymous</td></tr>
 			<tr><td><code>/gfaidx</code></td><td>~660</td><td>7.1 MB</td><td>about 30 s</td><td>242, named</td></tr>
+			<tr><td><code>/gfaidx</code>, a region seen before</td><td>6</td><td>0.4 MB</td><td>about 2 s</td><td>242, named</td></tr>
 		</tbody>
 	</table>
 	<p>
 		They are different graphs: HPRC v2's Minigraph-Cactus graph on the locus browser, its PGGB graph of 120
 		samples here (<a href="#graphs">why PGGB</a>), and they can differ a lot at the same locus. The same gfaidx
 		query from a server on this machine takes 2.4 s, so the time is almost all request round trips.
+	</p>
+	<p>
+		What a query fetches is kept in your browser's own storage (64 MB per index file at most, oldest out
+		first), so a region seen before comes back in a couple of seconds, with one request per file to check the
+		index hasn't changed. A changed file (a new ETag) is fetched afresh. With no <code>index</code> in the link,
+		the page opens the hosted index as soon as it loads, so the path list is ready while you choose a region.
 	</p>
 	<p>
 		gfaidx is built for an index on a local disk, where its many small reads are nearly free. The paper's

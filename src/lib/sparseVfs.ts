@@ -18,15 +18,21 @@
 //
 // Exact ranges are fetched, not fixed blocks: of a 64 KiB block around a
 // 200-byte read, nearly all would be another haplotype's data.
+//
+// What is fetched is also kept on disk (diskRangeStore.ts), 4 KiB blocks at a
+// time, so a later visit reads the index's heads and any region seen before
+// without asking the host.
 
 import { File as WasiFile, OpenFile, wasi } from '@bjorn3/browser_wasi_shim';
+import { BLOCK, DiskRangeStore, validatorOf } from './diskRangeStore';
 
 /** Fetch bytes [start, end) of the file. */
 export type RangeFetcher = (start: number, end: number) => Promise<Uint8Array>;
 
 // A wanted range is widened to this grain, so reads next to each other (the
 // next few entries of a table) come along and are not a round of their own.
-const GRAIN = 4096;
+// The disk store's block, so every fetched range is whole blocks.
+const GRAIN = BLOCK;
 // When a round found only a few reads in a file, the run was stopped short:
 // something is being read in order (posting blocks one after another, the
 // graph's gzip members) and the run failed on the first one that was zeros.
@@ -79,6 +85,17 @@ export class SparseRangeReader {
 	private wantedBytes = 0;
 	/** Reads of the current run that were too long to be meant. */
 	oversize = 0;
+	/** Blocks kept on disk between visits, where the browser allows it. */
+	disk: DiskRangeStore | null = null;
+
+	/** Blocks served from disk instead of the host. */
+	get diskHits(): number {
+		return this.disk?.hits ?? 0;
+	}
+	/** Write the disk store's index: call once a query is done. */
+	flush() {
+		this.disk?.flush();
+	}
 
 	constructor(
 		readonly size: number,
@@ -178,7 +195,8 @@ export class SparseRangeReader {
 		this.held += data.length;
 	}
 
-	/** Fetch everything the last run missed, in parallel. */
+	/** Fetch everything the last run missed, in parallel: from disk where it is
+	 * there, from the host otherwise. */
 	async fetchWanted(): Promise<void> {
 		const ahead = Math.min(AHEAD_MAX, Math.floor(AHEAD_BUDGET / this.wanted.length / GRAIN) * GRAIN);
 		const ranges = this.wanted
@@ -190,16 +208,32 @@ export class SparseRangeReader {
 		this.wanted = [];
 		this.wantedOrder = [];
 		this.wantedBytes = 0;
-		const requests: [number, number][] = [];
-		for (const [start, end] of ranges) {
-			const last = requests[requests.length - 1];
-			if (last && start <= last[1] + JOIN_GAP) last[1] = Math.max(last[1], end);
-			else requests.push([start, end]);
-		}
 		if (this.held > MAX_HELD_BYTES) {
 			this.starts = [];
 			this.pieces = [];
 			this.held = 0;
+		}
+		// Blocks on disk are read now; the rest become ranges to fetch.
+		const fromHost: [number, number][] = [];
+		for (const [start, end] of ranges) {
+			for (let at = start; at < end; at += GRAIN) {
+				const blockEnd = Math.min(at + GRAIN, this.size);
+				if (this.has(at, blockEnd)) continue;
+				const bytes = this.disk?.get(at / GRAIN, blockEnd - at);
+				if (bytes) {
+					this.insert(at, bytes);
+					continue;
+				}
+				const last = fromHost[fromHost.length - 1];
+				if (last && at <= last[1]) last[1] = Math.max(last[1], blockEnd);
+				else fromHost.push([at, blockEnd]);
+			}
+		}
+		const requests: [number, number][] = [];
+		for (const [start, end] of fromHost) {
+			const last = requests[requests.length - 1];
+			if (last && start <= last[1] + JOIN_GAP) last[1] = Math.max(last[1], end);
+			else requests.push([start, end]);
 		}
 		let next = 0;
 		const worker = async () => {
@@ -209,9 +243,20 @@ export class SparseRangeReader {
 				this.requestCount++;
 				this.bytesFetched += data.length;
 				this.insert(start, data);
+				this.keep(start, data);
 			}
 		};
 		await Promise.all(Array.from({ length: Math.min(MAX_PARALLEL, requests.length) }, worker));
+	}
+
+	/** Write fetched bytes to disk, a whole block at a time. `start` is block-aligned. */
+	private keep(start: number, data: Uint8Array) {
+		if (!this.disk) return;
+		for (let at = 0; at < data.length; at += GRAIN) {
+			const end = Math.min(at + GRAIN, data.length);
+			// A short piece is whole only at the end of the file.
+			if (end - at === GRAIN || start + end === this.size) this.disk.put((start + at) / GRAIN, data.subarray(at, end));
+		}
 	}
 
 	/** Fetch the file's head and tail (all of a small file), which nearly every
@@ -226,7 +271,7 @@ export class SparseRangeReader {
 	}
 
 	/** Open a remote file. */
-	static async open(url: string): Promise<SparseRangeReader> {
+	static async open(url: string, keepOnDisk = true): Promise<SparseRangeReader> {
 		// The size comes back with the first bytes, which are kept.
 		// `no-store` throughout: the browser's HTTP cache locks a URL while it
 		// writes to it, so parallel ranges of one file would wait on each other
@@ -247,7 +292,12 @@ export class SparseRangeReader {
 		reader.requestCount = 1;
 		reader.bytesFetched = data.length;
 		reader.insert(0, data);
+		if (keepOnDisk) {
+			reader.disk = await DiskRangeStore.open(url, validatorOf(reader.size, res.headers));
+			reader.keep(0, data);
+		}
 		await reader.seed();
+		reader.flush();
 		return reader;
 	}
 }

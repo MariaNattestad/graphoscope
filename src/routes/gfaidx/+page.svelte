@@ -219,6 +219,7 @@
 		if (!client) return false;
 		error = null;
 		opening = true;
+		warming = null;
 		setAgentStatus('querying', { query: { index: url }, complexity: null, layoutMs: null });
 		try {
 			const result = await client.run(url, 'tracks');
@@ -246,6 +247,26 @@
 		} finally {
 			opening = false;
 		}
+	}
+
+	/** With no index in the link, the hosted one is opened at once, quietly:
+	 * gfaidx.wasm compiled, each file's head and tail read, the path list in. By
+	 * the time a region is chosen, only the query itself is left to fetch. A
+	 * failure here says nothing; opening it for real reports it. */
+	let warming = $state<string | null>(null);
+	async function warmIndex(url: string) {
+		if (!client) return;
+		warming = url;
+		const result = await client.run(url, 'tracks').catch(() => null);
+		// Opened something else in the meantime: leave it.
+		if (warming !== url || indexUrl || opening || !result?.ok) return;
+		warming = null;
+		const found = parseTracks(result.out ?? '');
+		if (found.length === 0) return;
+		indexUrl = url;
+		tracks = found;
+		track = pickTrack(found, null);
+		pathText = track?.name ?? '';
 	}
 
 	async function openExample(ex: GfaidxExample, locus = ex.locus, path: string | null = null) {
@@ -316,9 +337,12 @@
 		error = null;
 		running = true;
 		pickerOpen = false;
+		// The box and the header name the region being fetched, not the one on screen.
+		queriedLabel = locusText.trim();
 		try {
 			const locus = await resolveLocus();
 			if (id !== queryId) return;
+			if (typeof locus !== 'string') queriedLabel = locus.label;
 			if (typeof locus === 'string') {
 				fail(locus);
 				return;
@@ -450,6 +474,7 @@
 				}
 			});
 		} else {
+			warmIndex(new URL(CHR21.url, window.location.href).href);
 			setAgentStatus('error', {
 				error: `No index open. Pass index=<${EXAMPLES.map((e) => e.id).join('|')}> or index=<URL of a gfaidx-indexed .gfa.gz>, and locus=<contig:start-end>.`
 			});
@@ -641,6 +666,8 @@
 											{running ? 'Querying…' : 'Show region'}
 										</button>
 									</div>
+								{:else if warming}
+									<span class="note">Opening the chr21 index…</span>
 								{/if}
 							</form>
 
@@ -702,6 +729,7 @@
 						windowedSubgraph={true}
 						{fetchInfo}
 						querying={running}
+						fetchingRegion={running ? queriedLabel || locusText : null}
 						bare={!pageParams.chrome}
 						initialView={graphView}
 						onParams={onGraphParams}

@@ -71,6 +71,7 @@
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
+		fetchingRegion = null,
 		showHaplotypes = false,
 		initialLayoutMode,
 		walkNoun = 'haplotype walks',
@@ -126,6 +127,9 @@
 		} | null;
 		/** A query round-trip is in flight (report shows the fetching phase). */
 		querying?: boolean;
+		/** A different region is being fetched: the graph on screen is the old one,
+		 * so it is covered, with this region's name, until the new one lands. */
+		fetchingRegion?: string | null;
 		/** Whether the parent can supply the full (unsimplified) graph — the one that
 		 * still carries every haplotype walk — so disco-walks has anything to trace. */
 		discoAvailable?: boolean;
@@ -2398,7 +2402,11 @@
 						}}
 					/>
 				{/if}
-				{#if computing && !recomputeKeepsCanvas && !usingProvisional}
+				{#if fetchingRegion}
+					<div class="overlay fetching">
+						<span><span class="spinner"></span> fetching {fetchingRegion}…</span>
+					</div>
+				{:else if computing && !recomputeKeepsCanvas && !usingProvisional}
 					<div class="overlay">
 						<span>
 							computing layout…
@@ -4027,6 +4035,14 @@
 		to {
 			transform: rotate(360deg);
 		}
+	}
+	.overlay.fetching {
+		background: rgba(11, 13, 18, 0.88);
+	}
+	.overlay.fetching > span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
 	}
 	.overlay-warning {
 		display: inline-block;
