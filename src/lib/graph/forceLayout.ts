@@ -1164,14 +1164,16 @@ export function buildAndRunLayout(graph: GfaGraph, options: LayoutOptions = {}):
 	// a neighbour's space. One shared floor flattened everything a dense tangle
 	// pushed down onto a single indistinguishable line, so each node's floor is
 	// its own: a clearance that varies per segment (1–2×, the same along a strand
-	// so it stays smooth), or half the height its spot on the loop asks for,
-	// whichever is higher.
+	// so it stays smooth), plus half of however far its spot on the loop sits
+	// above the planned minimum.
 	const floorHeight = new Map<SimNode, number>();
 	for (const node of nodeArray) {
 		const planned = node.targetY != null ? node.componentBaselineY - node.targetY : 0;
 		const clearance =
 			minBaselineClearance * (1.5 + stableUnit(`floor:${node.segId === BEND_SEG_ID ? node.id : node.segId}`));
-		floorHeight.set(node, Math.max(clearance, planned * FLOOR_PER_PLANNED));
+		// The floor follows the planned shape above the clearance, so a small loop
+		// resting on it keeps its curve instead of being pressed flat.
+		floorHeight.set(node, clearance + Math.max(0, planned - minBaselineClearance) * FLOOR_PER_PLANNED);
 	}
 	function enforceRoom() {
 		for (const node of nodeArray) {
