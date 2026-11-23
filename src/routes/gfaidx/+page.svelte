@@ -26,7 +26,7 @@
 	import { resolveGene, geneToLocus } from '$lib/genes';
 	import { limits } from '$lib/limits.svelte';
 	import { graphComplexity } from '$lib/apiReport';
-	import { initAgentStatus, setAgentStatus, setAgentWarnings, noteFetch, clearFetch } from '$lib/agentStatus';
+	import { initAgentStatus, setAgentStatus, setAgentWarnings } from '$lib/agentStatus';
 	import {
 		parseTracks,
 		pickTrack,
@@ -108,7 +108,6 @@
 	let sitesLoading = $state(false);
 	let showUnsimplified = $state(false);
 	let queriedLabel = $state('');
-	let askedRange = $state<{ start: number; end: number } | null>(null);
 	let fetchInfo = $state<{ requestCount: number; bytesFetched: number; dbSize: number; elapsedMs: number } | null>(
 		null
 	);
@@ -240,7 +239,6 @@
 			tracks = found;
 			track = pickTrack(found, wantPath);
 			pathText = track?.name ?? '';
-			noteFetch('index', result.stats);
 			return true;
 		} catch (e) {
 			fail(e instanceof Error ? e.message : String(e));
@@ -318,7 +316,6 @@
 		error = null;
 		running = true;
 		pickerOpen = false;
-		clearFetch();
 		try {
 			const locus = await resolveLocus();
 			if (id !== queryId) return;
@@ -347,7 +344,6 @@
 				regionArgs({ track: locus.track, start: locus.start, end: locus.end })
 			);
 			if (id !== queryId) return;
-			noteFetch('graph', result.stats);
 			if (!result.ok) {
 				fail(result.error ?? 'The query failed');
 				return;
@@ -372,7 +368,6 @@
 			reduced = simplified;
 			if (!canShowUnsimplified) showUnsimplified = false;
 			queriedLabel = locus.label;
-			askedRange = { start: locus.start, end: locus.end };
 			fetchInfo = result.stats
 				? {
 						requestCount: result.stats.requestCount,
@@ -709,7 +704,6 @@
 						querying={running}
 						bare={!pageParams.chrome}
 						initialView={graphView}
-						{askedRange}
 						onParams={onGraphParams}
 						{onRenderState}
 						onWarnings={(w) => (viewWarnings = w)}
