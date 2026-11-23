@@ -100,6 +100,11 @@ export interface LayoutResult {
 	 * be coloured as the reference even though nothing is laid out along it.
 	 * (Kept apart from `backboneSegIds`, which also means "drawn on the axis".) */
 	referenceSegIds?: Set<string>;
+	/** `${from}>${to}` (both orientations) for each pair of segments that follow
+	 * one another on a backbone: the reference's own links, which run along the
+	 * axis. Any other link between two backbone segments skips reference
+	 * sequence (a deletion). */
+	axisLinks?: Set<string>;
 	segmentLengths: Map<string, number>;
 	/** Count of non-reference (non-backbone) paths traversing each segment. */
 	pathCoverage: Map<string, number>;
@@ -676,12 +681,23 @@ export function assembleResult(
 	let maxPathCoverage = 0;
 	for (const count of pathCoverage.values()) maxPathCoverage = Math.max(maxPathCoverage, count);
 
+	const axisLinks = new Set<string>();
+	for (const b of backbones) {
+		for (let i = 1; i < b.steps.length; i++) {
+			const from = b.steps[i - 1].id;
+			const to = b.steps[i].id;
+			axisLinks.add(`${from}>${to}`);
+			axisLinks.add(`${to}>${from}`);
+		}
+	}
+
 	return {
 		nodesById,
 		chains,
 		structuralLinkPaths,
 		backbones: backboneInfo,
 		backboneSegIds,
+		axisLinks,
 		segmentLengths,
 		pathCoverage,
 		maxPathCoverage
