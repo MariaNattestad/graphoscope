@@ -129,10 +129,6 @@ export interface RegionQuery {
 	/** 0-based, half-open, on the track's own coordinates. */
 	start: number;
 	end: number;
-	/** bp of graph followed past the interval, every walk inside it kept. Null
-	 * asks instead for exactly the stretch each haplotype has between the
-	 * interval's two ends. */
-	context: number | null;
 }
 
 /** The flags `gfaidx-query region` takes for a query. */
@@ -147,8 +143,10 @@ export function regionArgs(q: RegionQuery): string[] {
 		'--end',
 		String(Math.round(q.end))
 	];
-	if (q.context == null) args.push('--mode', 'all');
-	else args.push('--mode', 'bfs', '--context', String(Math.round(q.context)));
+	// Exactly the stretch each haplotype has between the interval's two ends.
+	// gfaidx's other mode (bfs --context) only widened the window, at many times
+	// the requests, and gave up on complex loci.
+	args.push('--mode', 'all');
 	return args;
 }
 

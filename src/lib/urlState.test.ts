@@ -143,12 +143,13 @@ describe('parseParams', () => {
 	});
 
 	it('knows the /gfaidx page\'s own parameters, and keeps them off the others', () => {
-		const ok = parse('index=mlph&path=CHM13%230%23chr2&locus=chr2:1-2&context=500&simplify=100&pin=HG00621', 'gfaidx');
+		const ok = parse('index=mlph&path=CHM13%230%23chr2&locus=chr2:1-2&simplify=100&pin=HG00621', 'gfaidx');
 		expect(ok.warnings).toEqual([]);
 		expect(ok.page.simplify).toBe(100);
 		expect(ok.graph.pin).toEqual(['HG00621']);
 		expect(parse('index=mlph').warnings[0]).toMatch(/only applies to the \/gfaidx page/);
 		expect(parse('ref=chm13', 'gfaidx').warnings[0]).toMatch(/only applies to the locus browser/);
+		expect(parse('context=500', 'gfaidx').warnings[0]).toMatch(/only applies to the locus browser/);
 	});
 
 	it('accepts the gene alias on the locus page', () => {
@@ -196,7 +197,7 @@ describe('llms.txt', () => {
 	it('documents every /gfaidx index id', () => {
 		const text = fs.readFileSync(path.resolve(__dirname, '../../static/llms.txt'), 'utf8');
 		const page = fs.readFileSync(path.resolve(__dirname, '../routes/gfaidx/+page.svelte'), 'utf8');
-		const examples = page.slice(page.indexOf('const EXAMPLES'), page.indexOf('const CONTEXT_DEFAULT'));
+		const examples = page.slice(page.indexOf('const EXAMPLES'), page.indexOf('const LOCI'));
 		const ids = [...examples.matchAll(/^\s*id: '([\w-]+)'/gm)].map((m) => m[1]);
 		expect(ids.length).toBeGreaterThan(0);
 		for (const id of ids) expect(text, `llms.txt is missing index ${id}`).toContain(`\`${id}\``);

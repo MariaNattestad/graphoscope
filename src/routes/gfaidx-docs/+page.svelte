@@ -42,6 +42,19 @@ done`;
 	</p>
 	<p>Try it on HPRC v2 chromosome 21: <a href={chr21}>two haplotypes through an insertion in SOD1</a>.</p>
 
+	<h2 id="graphs">Which graphs work</h2>
+	<p>
+		Both PGGB and Minigraph-Cactus graphs work, and so does any other GFA whose haplotypes are
+		<code>P</code> paths (PGGB, odgi) or <code>W</code> walks (Minigraph-Cactus, vg). Haplotype names come from
+		those lines, so name them <code>sample#haplotype#contig</code> and the page groups them by sample.
+	</p>
+	<p>
+		The hosted example is PGGB because that is the form HPRC publishes per chromosome: each PGGB chromosome is a
+		GFA file ready to index. Minigraph-Cactus is published per chromosome only in vg's formats, so it needs a
+		<code>vg convert</code> to GFA first. Its only published GFA is the whole genome, 66 GB compressed. We
+		haven't indexed a Minigraph-Cactus graph ourselves yet.
+	</p>
+
 	<h2>1. Build the index</h2>
 	<p>
 		Install gfaidx (<code>conda install -c conda-forge -c bioconda gfaidx</code>, or build it from
@@ -65,10 +78,6 @@ done`;
 		</tbody>
 	</table>
 	<ul>
-		<li>
-			Any GFA with <code>W</code> walks (Minigraph-Cactus) or <code>P</code> paths (PGGB, odgi) works. Haplotype
-			names come from them, so name paths <code>sample#haplotype#contig</code> to have the page group them.
-		</li>
 		<li>
 			<code>--checkpoint_steps 1024</code> (the default is 4096) stores coordinates more often, so a query reads
 			fewer steps to find where a region starts. The checkpoints add little to the index.
@@ -133,13 +142,6 @@ done`;
 					><code>contig:start-end</code>, or a gene symbol when the path is a CHM13 or GRCh38 one. Up to 2 Mb.</td
 				>
 			</tr>
-			<tr>
-				<td><code>context</code></td><td
-					>Off by default: each haplotype is cut where it crosses the region's two ends. A number of bp instead
-					takes everything within that distance of the region, as the locus browser does. That is much slower
-					here, because it follows the graph one node at a time.</td
-				>
-			</tr>
 			<tr><td><code>pin</code></td><td>Trace a haplotype by name, e.g. <code>pin=HG00621%231</code></td></tr>
 		</tbody>
 	</table>
@@ -170,10 +172,8 @@ done`;
 	</table>
 	<p>
 		They are different graphs: HPRC v2's Minigraph-Cactus graph on the locus browser, its PGGB graph of 120
-		samples here. The example is PGGB because HPRC publishes PGGB graphs one chromosome at a time as GFA, which
-		is what gfaidx indexes; Minigraph-Cactus is published per chromosome only in vg's own formats, and as GFA only
-		for the whole genome (66 GB compressed). The two graphs can differ a lot at the same locus. The same gfaidx query from a server on this machine takes 2.4 s, so the time is almost all
-		request round trips.
+		samples here (<a href="#graphs">why PGGB</a>), and they can differ a lot at the same locus. The same gfaidx
+		query from a server on this machine takes 2.4 s, so the time is almost all request round trips.
 	</p>
 	<p>
 		gfaidx is built for an index on a local disk, where its many small reads are nearly free. The paper's

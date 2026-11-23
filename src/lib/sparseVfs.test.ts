@@ -229,7 +229,7 @@ describe('gfaidx.wasm through the planner', () => {
 			const tracks = await index.run('tracks');
 			expect(tracks.exitCode, tracks.err).toBe(0);
 			const track = pickTrack(parseTracks(tracks.out), 'CHM13')!;
-			const args = regionArgs({ track, start: 238_030_000, end: 238_040_000, context: null });
+			const args = regionArgs({ track, start: 238_030_000, end: 238_040_000 });
 			const region = await index.run('region', args);
 			expect(region.exitCode, region.err).toBe(0);
 			expect(region.rounds).toBeLessThan(12);
@@ -257,7 +257,7 @@ describe('gfaidx.wasm through the planner', () => {
 		try {
 			const tracks = await index.run('tracks');
 			const track = pickTrack(parseTracks(tracks.out), 'CHM13')!;
-			const off = await index.run('region', regionArgs({ track, start: 10, end: 20, context: null }));
+			const off = await index.run('region', regionArgs({ track, start: 10, end: 20 }));
 			expect(off.exitCode).toBe(1);
 			expect(off.err).toMatch(/gfaidx error: /);
 		} finally {
@@ -276,20 +276,18 @@ describe('gfaidx.wasm through the planner', () => {
 			expect(tracks.exitCode, tracks.err).toBe(0);
 			const track = pickTrack(parseTracks(tracks.out), process.env.GFAIDX_TEST_PATH ?? null)!;
 			const [start, end] = (process.env.GFAIDX_TEST_REGION ?? '').split('-').map(Number);
-			for (const context of process.env.GFAIDX_TEST_CONTEXT === 'off' ? [null] : [null, 1000]) {
-				const fresh = await planned(big!);
-				try {
-					const t0 = performance.now();
-					const region = await fresh.run('region', regionArgs({ track, start, end, context }));
-					console.log(`${Math.round(performance.now() - t0)} ms`);
-					console.log(
-						`${track.name}:${start}-${end} context=${context}: ${region.rounds} rounds, ${region.requests} requests, ` +
-							`${(region.bytes / 1048576).toFixed(2)} MB, ${region.out.length} bytes out (sha1 ${createHash('sha1').update(region.out).digest('hex').slice(0, 12)}), exit ${region.exitCode}`
-					);
-					expect(region.exitCode, region.err).toBe(0);
-				} finally {
-					fresh.close();
-				}
+			const fresh = await planned(big!);
+			try {
+				const t0 = performance.now();
+				const region = await fresh.run('region', regionArgs({ track, start, end }));
+				console.log(`${Math.round(performance.now() - t0)} ms`);
+				console.log(
+					`${track.name}:${start}-${end}: ${region.rounds} rounds, ${region.requests} requests, ` +
+						`${(region.bytes / 1048576).toFixed(2)} MB, ${region.out.length} bytes out (sha1 ${createHash('sha1').update(region.out).digest('hex').slice(0, 12)}), exit ${region.exitCode}`
+				);
+				expect(region.exitCode, region.err).toBe(0);
+			} finally {
+				fresh.close();
 			}
 			console.log(`tracks: ${tracks.rounds} rounds, ${tracks.requests} requests, ${(tracks.bytes / 1048576).toFixed(2)} MB`);
 		} finally {

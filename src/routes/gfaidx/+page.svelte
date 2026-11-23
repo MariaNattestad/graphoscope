@@ -61,7 +61,6 @@
 		}
 	];
 
-	const CONTEXT_DEFAULT = 1000;
 	// The picker's examples: regions of the chr21 index.
 	const LOCI: { locus: string; label: string; kind: string }[] = [
 		{ locus: 'SOD1', label: 'SOD1', kind: 'An insertion some haplotypes carry' },
@@ -98,9 +97,6 @@
 	let track = $state.raw<IndexTrack | null>(null);
 	let pathText = $state('');
 	let locusText = $state('');
-	/** Context mode's reach in bp, or null for haplotype-span mode. */
-	let contextBp = $state<number | null>(null);
-	let contextText = $state(String(CONTEXT_DEFAULT));
 
 	// ---- what came back --------------------------------------------------------
 	/** The region as gfaidx returned it: every node, every haplotype a named walk. */
@@ -125,6 +121,13 @@
 
 	const referenceSample = $derived(track?.sample ?? '');
 	const refKey = $derived(refKeyFor(track));
+	// The Region field's hint follows the path in the "On path" box, not the
+	// last one queried: a gene name works only where there are genes.
+	const regionPlaceholder = $derived.by(() => {
+		const t = pickTrack(tracks, pathText.trim() || null);
+		const contig = t?.contig ?? 'contig';
+		return t && refKeyFor(t) ? `gene, or ${contig}:start-end` : `${contig}:start-end`;
+	});
 	const unsimplifiedNodes = $derived(full?.segments.size ?? 0);
 	const canShowUnsimplified = $derived(unsimplifiedNodes > 0 && unsimplifiedNodes <= limits.maxUnsimplifiedNodes);
 	const displayGfa = $derived(showUnsimplified && full ? full : (reduced ?? full));
@@ -176,7 +179,6 @@
 				index: example ? example.id : indexUrl || null,
 				path: track?.name ?? null,
 				locus: locusText.trim() || null,
-				context: contextBp == null ? null : String(contextBp),
 				simplify: showUnsimplified ? 'off' : sitesThreshold === SITES_DEFAULT ? null : String(sitesThreshold)
 			})
 		);
@@ -333,8 +335,7 @@
 					path: locus.track.name,
 					contig: locus.track.contig,
 					start: locus.start,
-					end: locus.end,
-					context: contextBp
+					end: locus.end
 				},
 				complexity: null,
 				layoutMs: null
@@ -343,7 +344,7 @@
 			const result = await client.run(
 				indexUrl,
 				'region',
-				regionArgs({ track: locus.track, start: locus.start, end: locus.end, context: contextBp })
+				regionArgs({ track: locus.track, start: locus.start, end: locus.end })
 			);
 			if (id !== queryId) return;
 			noteFetch('graph', result.stats);
@@ -423,14 +424,6 @@
 		syncQuery();
 	}
 
-	function setMode(context: boolean) {
-		if (!context) contextBp = null;
-		else {
-			const n = Number(contextText.replace(/,/g, ''));
-			contextBp = Number.isFinite(n) && n >= 0 ? Math.round(n) : CONTEXT_DEFAULT;
-		}
-	}
-
 	onMount(() => {
 		initAgentStatus(pageTitle('Graphoscope · gfaidx'));
 		client = new GfaidxClient();
@@ -441,15 +434,6 @@
 		const problems = [...parsed.warnings];
 		if (typeof parsed.page.simplify === 'number') sitesThreshold = parsed.page.simplify;
 		if (parsed.page.simplify === 'off') showUnsimplified = true;
-
-		const context = p.get('context')?.trim();
-		if (context) {
-			const n = Number(context.replace(/,/g, ''));
-			if (Number.isFinite(n) && n >= 0) {
-				contextBp = Math.round(n);
-				contextText = String(contextBp);
-			} else problems.push(`Ignored context=${context}: expected a number of bp.`);
-		}
 
 		const index = p.get('index')?.trim();
 		const example = index ? EXAMPLES.find((e) => e.id === index.toLowerCase()) : undefined;
@@ -561,6 +545,32 @@
 								}}
 							>
 								<span class="head">Region</span>
+								{#if !indexUrl || onChr21}
+									<div class="examples">
+										<span class="ex-lbl">e.g.</span>
+										{#each LOCI as ex (ex.label)}
+											<button
+												type="button"
+												class="chip"
+												title={ex.kind}
+												onclick={() => openExample(CHR21, ex.locus)}
+												disabled={opening || running}>{ex.label}</button
+											>
+										{/each}
+									</div>
+									<div class="examples">
+										<span class="ex-lbl">on another path</span>
+										{#each OTHER_PATHS as ex (ex.label)}
+											<button
+												type="button"
+												class="chip"
+												title={ex.kind}
+												onclick={() => openExample(CHR21, ex.locus, ex.path)}
+												disabled={opening || running}>{ex.label}</button
+											>
+										{/each}
+									</div>
+								{/if}
 								{#if tracks.length > 0}
 									<div class="row">
 										<label class="lab" for="gfaidx-path">On path</label>
@@ -623,62 +633,13 @@
 										<input
 											class="field grow"
 											type="text"
-											placeholder={refKey
-												? 'gene, or contig:start-end'
-												: `${pickTrack(tracks, pathText.trim() || null)?.contig ?? 'contig'}:start-end`}
+											placeholder={regionPlaceholder}
 											bind:value={locusText}
 											spellcheck="false"
 										/>
 									</label>
 								{/if}
-								{#if !indexUrl || onChr21}
-									<div class="examples">
-										<span class="ex-lbl">e.g.</span>
-										{#each LOCI as ex (ex.label)}
-											<button
-												type="button"
-												class="chip"
-												title={ex.kind}
-												onclick={() => openExample(CHR21, ex.locus)}
-												disabled={opening || running}>{ex.label}</button
-											>
-										{/each}
-									</div>
-									<div class="examples">
-										<span class="ex-lbl">on another path</span>
-										{#each OTHER_PATHS as ex (ex.label)}
-											<button
-												type="button"
-												class="chip"
-												title={ex.kind}
-												onclick={() => openExample(CHR21, ex.locus, ex.path)}
-												disabled={opening || running}>{ex.label}</button
-											>
-										{/each}
-									</div>
-								{/if}
 								{#if tracks.length > 0}
-									<div class="row modes">
-										<label class="mode">
-											<input type="radio" name="mode" checked={contextBp == null} onchange={() => setMode(false)} />
-											<span
-												><b>Haplotype spans</b> — what each haplotype has between the two ends of the region</span
-											>
-										</label>
-										<label class="mode">
-											<input type="radio" name="mode" checked={contextBp != null} onchange={() => setMode(true)} />
-											<span
-												><b>Context</b> (slower: many more round trips) — everything within
-												<input
-													class="field bp"
-													type="text"
-													inputmode="numeric"
-													bind:value={contextText}
-													oninput={() => contextBp != null && setMode(true)}
-												/> bp of the region</span
-											>
-										</label>
-									</div>
 									<div class="row end">
 										<span class="note">{tracks.length.toLocaleString()} paths in this index</span>
 										<button class="btn primary" type="submit" disabled={running || !locusText.trim()}>
@@ -741,7 +702,6 @@
 						allNodesCount={unsimplifiedNodes}
 						allNodesTooMany={unsimplifiedNodes > 0 && !canShowUnsimplified}
 						onToggleSimplify={toggleUnsimplified}
-						context={contextBp ?? undefined}
 						locusLabel={queriedLabel || locusText}
 						showHaplotypes={true}
 						windowedSubgraph={true}
@@ -893,11 +853,6 @@
 	.row.end {
 		justify-content: space-between;
 	}
-	.row.modes {
-		flex-direction: column;
-		align-items: stretch;
-		gap: 0.35rem;
-	}
 	.lab {
 		flex: 0 0 4.2rem;
 		font-size: 0.78rem;
@@ -921,22 +876,6 @@
 		flex: 1;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.8rem;
-	}
-	.field.bp {
-		width: 5.5rem;
-		padding: 0.15rem 0.4rem;
-		text-align: right;
-	}
-	.mode {
-		display: flex;
-		align-items: baseline;
-		gap: 0.45rem;
-		font-size: 0.8rem;
-		color: #4b5563;
-		cursor: pointer;
-	}
-	.mode b {
-		color: #1f2430;
 	}
 	.note {
 		font-size: 0.74rem;

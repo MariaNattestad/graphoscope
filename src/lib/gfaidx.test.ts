@@ -94,12 +94,9 @@ describe('pickTrack', () => {
 
 describe('regionArgs', () => {
 	const track = parseTracks('P\t\t0\tCHM13#0#chr21\t-1\t-1\t9\n')[0];
-	it('asks for haplotype spans by default, and a context search when given one', () => {
-		expect(regionArgs({ track, start: 10, end: 20, context: null })).toEqual([
+	it('asks for each haplotype\'s span between the two ends', () => {
+		expect(regionArgs({ track, start: 10, end: 20 })).toEqual([
 			'--reference', '', '--sequence', 'CHM13#0#chr21', '--begin', '10', '--end', '20', '--mode', 'all'
-		]);
-		expect(regionArgs({ track, start: 10, end: 20, context: 1000 }).slice(-4)).toEqual([
-			'--mode', 'bfs', '--context', '1000'
 		]);
 	});
 });
@@ -190,7 +187,7 @@ describe('gfaidx.wasm on the bundled index', () => {
 
 	it('returns a region with every haplotype named, on its own coordinates', () => {
 		const track = pickTrack(tracks, 'CHM13')!;
-		const result = run('region', regionArgs({ track, start: 238_030_000, end: 238_040_000, context: null }));
+		const result = run('region', regionArgs({ track, start: 238_030_000, end: 238_040_000 }));
 		expect(result.exitCode, result.err).toBe(0);
 		const region = parseGfa(toWalkGfa(result.out, track.sample).gfa);
 
@@ -227,18 +224,9 @@ describe('gfaidx.wasm on the bundled index', () => {
 		}
 	});
 
-	it('follows the graph past the region in context mode', () => {
-		const track = pickTrack(tracks, 'CHM13')!;
-		const spans = run('region', regionArgs({ track, start: 238_035_000, end: 238_036_000, context: null }));
-		const context = run('region', regionArgs({ track, start: 238_035_000, end: 238_036_000, context: 2000 }));
-		expect(context.exitCode, context.err).toBe(0);
-		const count = (text: string) => text.split('\n').filter((l) => l.startsWith('S\t')).length;
-		expect(count(context.out)).toBeGreaterThan(count(spans.out));
-	});
-
 	it('says why a region off the path has nothing', () => {
 		const track = pickTrack(tracks, 'CHM13')!;
-		const result = run('region', regionArgs({ track, start: 10, end: 20, context: null }));
+		const result = run('region', regionArgs({ track, start: 10, end: 20 }));
 		expect(result.exitCode).toBe(1);
 		expect(result.err).toMatch(/gfaidx error: /);
 	});

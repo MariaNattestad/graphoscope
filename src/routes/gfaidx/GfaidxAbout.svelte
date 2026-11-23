@@ -103,7 +103,8 @@
 		</table>
 		<p class="small">
 			The two are different graphs: HPRC v2's Minigraph-Cactus graph on the main page, and its PGGB graph of
-			120 samples here.
+			120 samples here. gfaidx takes either kind of graph
+			(<a href="{base}/gfaidx-docs#graphs" target="_blank" rel="noopener">which graphs work</a>).
 		</p>
 
 		<h3>How we made it work</h3>

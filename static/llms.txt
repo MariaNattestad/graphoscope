@@ -42,8 +42,7 @@ Experimental, and about ten times slower than the locus browser: prefer the locu
 
 - `index`: `chr21` (HPRC v2 PGGB chromosome 21, 242 named haplotypes, hosted; opens on SOD1), or the http(s) URL of a gfaidx-indexed graph with its sidecars beside it.
 - `path`: the path or walk whose coordinates `locus` is in, as `sample#haplotype#contig` (`CHM13#0#chr21`) or a sample. Default: a reference path.
-- `locus`: `contig:start-end` on that path, or a gene symbol on a CHM13 or GRCh38 path. At most 2 Mb.
-- `context`: bp. Off by default (each haplotype is cut at the two ends of `locus`); a number also takes everything within that distance, much more slowly.
+- `locus`: `contig:start-end` on that path, or a gene symbol on a CHM13 or GRCh38 path. At most 2 Mb. Each haplotype comes back as the stretch it has between the two ends.
 - `simplify`: as on the locus browser.
 
 `window.graphoscope.complexity.namedWalks` is the number of named haplotypes returned. `pin` takes their names.

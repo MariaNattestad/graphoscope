@@ -203,8 +203,7 @@ async function run(req: GfaidxRequest): Promise<GfaidxResult> {
 	const readers = [...index.readers.values()];
 	const before = readers.map((r) => baseline.get(r) ?? { requests: 0, bytes: 0 });
 
-	// A context search follows the graph node by node, each step a look-up that
-	// depends on the last: far more rounds than the handful a span query takes.
+	// A span query settles in a handful of rounds; 400 is a backstop.
 	const { result, rounds } = await runPlanned(readers, () => attempt(module, index, req), 400);
 
 	let requestCount = 0;

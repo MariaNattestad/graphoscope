@@ -49,10 +49,9 @@ export const PARAMS: ParamDoc[] = [
 	},
 	{
 		name: 'context',
-		pages: ['locus', 'gfaidx'],
+		pages: ['locus'],
 		values: 'bp',
-		description:
-			'How far past the locus haplotypes are followed. Default 10000. On /gfaidx it is off by default: each haplotype is cut at the two ends of the locus instead.'
+		description: 'How far past the locus haplotypes are followed. Default 10000.'
 	},
 	{
 		name: 'simplify',
