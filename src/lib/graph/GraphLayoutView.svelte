@@ -71,6 +71,7 @@
 		locusLabel = '',
 		fetchInfo = null,
 		querying = false,
+		fetchingRegion = null,
 		showHaplotypes = false,
 		initialLayoutMode,
 		walkNoun = 'haplotype walks',
@@ -126,6 +127,9 @@
 		} | null;
 		/** A query round-trip is in flight (report shows the fetching phase). */
 		querying?: boolean;
+		/** A different region is being fetched: the graph on screen is the old one,
+		 * so it is covered, with this region's name, until the new one lands. */
+		fetchingRegion?: string | null;
 		/** Whether the parent can supply the full (unsimplified) graph — the one that
 		 * still carries every haplotype walk — so disco-walks has anything to trace. */
 		discoAvailable?: boolean;
@@ -350,7 +354,11 @@
 		LENGTH_LABEL_STEPS.indexOf(untrack(() => (initialView.labels === undefined ? LENGTH_LABEL_DEFAULT : initialView.labels)))
 	);
 	const lengthLabelMinBp = $derived(LENGTH_LABEL_STEPS[lengthLabelStep] ?? null);
-	const fmtStep = (bp: number | null) => (bp == null ? 'none' : bp >= 1000 ? `${bp / 1000} kb` : `${bp} bp`);
+	/** A haplotype's span in the list, short so the name keeps the room: 812 bp,
+	 * 20.1 kb, 1.24 Mb. The exact count is in the cell's tooltip. */
+	const shortBp = (bp: number) =>
+		bp < 1000 ? `${bp} bp` : bp < 1e6 ? `${(bp / 1000).toFixed(bp < 1e5 ? 1 : 0)} kb` : `${(bp / 1e6).toFixed(2)} Mb`;
+	const fmtStep = (bp: number | null) =>(bp == null ? 'none' : bp >= 1000 ? `${bp / 1000} kb` : `${bp} bp`);
 
 	// Render the graph on a light theme (for figures/publication) instead of the
 	// dark screen one. The export button below writes a PNG of the current view.
@@ -2012,7 +2020,9 @@
 										{/if}
 										<span class="hl-name">{w.label}</span>
 										{#if w.sample !== 'unknown' && !traversalsArePaths}<span class="hl-hap">hap {w.hapIndex}</span>{/if}
-										<span class="hl-span">{w.span > 0 ? `${w.span.toLocaleString()} bp` : ''}</span>
+										<span class="hl-span" title={w.span > 0 ? `${w.span.toLocaleString()} bp` : undefined}
+											>{w.span > 0 ? shortBp(w.span) : ''}</span
+										>
 									</button>
 									<button
 										class="haplo-straighten"
@@ -2392,7 +2402,11 @@
 						}}
 					/>
 				{/if}
-				{#if computing && !recomputeKeepsCanvas && !usingProvisional}
+				{#if fetchingRegion}
+					<div class="overlay fetching">
+						<span><span class="spinner"></span> fetching {fetchingRegion}…</span>
+					</div>
+				{:else if computing && !recomputeKeepsCanvas && !usingProvisional}
 					<div class="overlay">
 						<span>
 							computing layout…
@@ -3606,22 +3620,30 @@
 	.hl-name {
 		font-weight: 600;
 		color: #1f2430;
-		/* Long path names (e.g. rGFA/odgi "gi|568815592:32578768-32589835") must
-		   truncate rather than shove the hap/span columns out of the box; the full
-		   name stays in the row's title tooltip. */
-		flex: 1 1 auto;
+		/* The name matters most: the span gives way first (its large shrink
+		   weight), then the hap, and only then does the name truncate. Long path
+		   names (e.g. rGFA/odgi "gi|568815592:32578768-32589835") still truncate
+		   rather than shove the columns out of the box; the full name stays in the
+		   row's title tooltip. */
+		flex: 0 1 auto;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.hl-hap {
-		flex: 0 0 auto;
+		flex: 0 20 auto;
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
 		color: #9aa0aa;
 		font-size: 0.7rem;
 	}
 	.hl-span {
-		flex: 0 0 auto;
+		flex: 0 100 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		margin-left: auto;
 		color: #9aa0aa;
 		font-size: 0.7rem;
@@ -4013,6 +4035,14 @@
 		to {
 			transform: rotate(360deg);
 		}
+	}
+	.overlay.fetching {
+		background: rgba(11, 13, 18, 0.88);
+	}
+	.overlay.fetching > span {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
 	}
 	.overlay-warning {
 		display: inline-block;

@@ -71,6 +71,15 @@ is parsed in your browser and never uploaded.
 | ![Cyp6g1 in D. melanogaster across 16 strains](docs/images/fly.png) | ![Bandage's plasmid test assembly](docs/images/assembly-graph.png) |
 | *Cyp6g1 across 16 strains, with the dm6 reference as the axis. Tracing haplotypes reveals the full structure.* | *Bandage's plasmid test assembly in a reference-free layout.* |
 
+### Experimental: gfaidx indexes
+
+[`/gfaidx`](https://graphoscope.omgenomics.com/gfaidx?index=chr21&locus=SOD1)
+opens a [gfaidx](https://github.com/fawaz-dabbaghieh/gfaidx) index (Dabbaghie &
+Steinegger) instead of a GBZ-base database, still with no server. Its
+haplotypes come back named, but a query is about ten times slower, so the
+locus browser stays the main way in. How to build, host and open your own,
+and how it runs in the browser: [`/gfaidx-docs`](https://graphoscope.omgenomics.com/gfaidx-docs).
+
 ## Data
 
 Two HPRC **Release 2 (v2.1)** Minigraph-Cactus graphs are built in, switchable in
@@ -361,13 +370,14 @@ these places:
 | A view setting (new control, renamed option, new default) | `PARAMS` and the parser in `src/lib/urlState.ts`; seed it from `initialView` and report it in the `onParams` effect in `src/lib/graph/GraphLayoutView.svelte`, so a link sets it and the address bar follows it |
 | A layout or colour mode added, renamed or removed | `src/lib/graph/layoutModes.ts` / `colors.ts`, plus any alias in `parseLayoutMode` (`urlState.ts`) |
 | A `/gfa` example | give it an `id` in `EXAMPLES` (`src/routes/gfa/+page.svelte`) |
+| A `/gfaidx` index that can be opened by name | give it an `id` in `EXAMPLES` (`src/routes/gfaidx/+page.svelte`) |
 | Any of the above | `static/llms.txt` (the parameter reference and its examples) and the [Query by URL](#query-by-url-and-for-ai-agents) section above |
-| A new async step before the picture is final (a fetch, a second layout pass, an animation) | keep `done` after it: `onRenderState` in `GraphLayoutView.svelte`, `isSettled()` in `GraphCanvas.svelte`, and the `setAgentStatus` calls in `src/routes/+page.svelte` and `src/routes/gfa/+page.svelte` (`src/lib/agentStatus.ts` defines the states) |
+| A new async step before the picture is final (a fetch, a second layout pass, an animation) | keep `done` after it: `onRenderState` in `GraphLayoutView.svelte`, `isSettled()` in `GraphCanvas.svelte`, and the `setAgentStatus` calls in `src/routes/+page.svelte`, `src/routes/gfa/+page.svelte` and `src/routes/gfaidx/+page.svelte` (`src/lib/agentStatus.ts` defines the states) |
 | `/api` params or response shape | `API_PARAMS` and `help()` in `src/routes/api/+page.svelte`, `src/lib/apiReport.ts`, and the JSON example above |
 | A new page | `initAgentStatus` in its `onMount`, a `pages` entry for its params in `urlState.ts`, and a line in `llms.txt`'s page list |
 
 `src/lib/urlState.test.ts` fails when `llms.txt` is missing a parameter, layout id,
-colour mode or `/gfa` example id, and the "links for agents" tests in
+colour mode, `/gfa` example id or `/gfaidx` index id, and the "links for agents" tests in
 `e2e/offline.spec.ts` check that a link reaches `done` with its settings applied.
 Prose, defaults and examples aren't checked, so read the `llms.txt` lines you touch.
 

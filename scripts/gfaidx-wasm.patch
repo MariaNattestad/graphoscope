@@ -1,0 +1,894 @@
+diff -ruN a/src/api/indexed_graph.cpp b/src/api/indexed_graph.cpp
+--- a/src/api/indexed_graph.cpp	2026-11-19 20:56:01
++++ b/src/api/indexed_graph.cpp	2026-11-19 20:56:01
+@@ -19,6 +19,7 @@
+ #include <utility>
+ 
+ #include "chunk/chunk_reader.h"
++#include "fs/lazy_file.h"
+ #include "coordinates/coordinate_index.h"
+ #include "coordinates/path_coordinate_query.h"
+ #include "coordinates/path_haplotype_query.h"
+@@ -650,7 +651,18 @@
+                 return continue_output;
+             });
+         };
++        // Graphoscope patch: say which members will be read before reading the
++        // first, so they can all be fetched at once.
+         for (const auto community : selection.communities) {
++            if (community < spans.size()) {
++                gfaidx::advise_will_need(graph_path, spans[community].gz_offset, spans[community].gz_size);
++            }
++        }
++        if (shared_community() < spans.size()) {
++            gfaidx::advise_will_need(graph_path, spans[shared_community()].gz_offset,
++                                     spans[shared_community()].gz_size);
++        }
++        for (const auto community : selection.communities) {
+             if (!continue_output) return;
+             emit_member(community);
+         }
+@@ -725,6 +737,22 @@
+             report_progress(callbacks, done.str());
+         };
+ 
++#ifdef __wasi__
++        // Graphoscope patch: read every walk once before writing any. Over
++        // range requests a read of bytes not fetched yet comes back as zeros,
++        // noted for the next round; a walk formatted from zeros fails, and
++        // without this pass the loop below would stop there, finding one
++        // haplotype's reads per round. Errors here are for the loop below to
++        // report, once the bytes are real.
++        if (runs->size() > 1) {
++            for (const auto& run : *runs) {
++                try {
++                    (void)format_run(*path_index, run, [](const std::string&) {});
++                } catch (const std::exception&) {
++                }
++            }
++        }
++#endif
+         if (options.threads == 1 || runs->size() < 2) {
+             for (const auto& run : *runs) {
+                 require_continue(callbacks);
+diff -ruN a/src/chunk/chunk_reader.cpp b/src/chunk/chunk_reader.cpp
+--- a/src/chunk/chunk_reader.cpp	2026-11-19 20:56:01
++++ b/src/chunk/chunk_reader.cpp	2026-11-19 20:56:01
+@@ -1,4 +1,5 @@
+ #include "chunk/chunk_reader.h"
++#include "fs/lazy_file.h"
+ 
+ #include <zlib.h>
+ 
+@@ -104,6 +105,9 @@
+ 
+     std::ifstream in(gz_path, std::ios::binary);
+     if (!in) throw std::runtime_error("Failed to open " + gz_path);
++
++    // Graphoscope patch: the member's extent is known before it is read.
++    gfaidx::advise_will_need(gz_path, offset, gz_size);
+ 
+     in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+     if (!in) throw std::runtime_error("seekg failed");
+diff -ruN a/src/coordinates/path_coordinate_query.cpp b/src/coordinates/path_coordinate_query.cpp
+--- a/src/coordinates/path_coordinate_query.cpp	2026-11-19 20:56:01
++++ b/src/coordinates/path_coordinate_query.cpp	2026-11-19 20:56:01
+@@ -2,12 +2,17 @@
+ 
+ #include <algorithm>
+ #include <limits>
++#include <memory>
++#include <optional>
+ #include <stdexcept>
+ #include <string>
+ #include <vector>
+ 
++#include <sys/stat.h>
++
+ #include "indexer/node_length_index.h"
+ #include "paths/p_path_coordinates.h"
++#include "paths/path_coordinate_checkpoints.h"
+ 
+ namespace gfaidx::coordinates {
+ namespace {
+@@ -87,13 +92,122 @@
+     std::uint64_t end{};
+ };
+ 
++// Graphoscope patch: find the interval from the path's coordinate checkpoints
++// (.pcx) instead of scanning the path from its first step. The checkpoints give
++// the coordinate of every Nth step, so a binary search over them brackets the
++// interval and only the steps inside the bracket are read. Upstream reads every
++// step of the path and every node length it visits: on chromosome 21 that is
++// megabytes of the index for a path nobody preselected into a .cdx. With this,
++// any path or walk is as cheap to ask a region on as a reference.
++// It selects the same steps as the scan below. A path's recorded span is not
++// re-checked against its segment lengths here, which the scan does.
++std::optional<CandidateSpan> append_overlapping_nodes_checkpointed(
++    const paths::PathIndexReader& path_index,
++    const indexer::NodeLengthIndexReader& lengths,
++    const paths::PathCoordinateCheckpointIndexReader& checkpoints,
++    const CandidatePath& candidate,
++    std::uint64_t begin,
++    std::uint64_t end,
++    PathCoordinateQueryResult& result) {
++    const auto info = path_index.get_path_info(candidate.path_id);
++    const std::uint64_t stride = checkpoints.checkpoint_stride();
++    const std::uint64_t steps = info.step_count;
++    if (steps == 0 || stride == 0) return std::nullopt;
++
++    const std::uint64_t base = candidate.coordinate_start;
++    // Checkpoint k is the coordinate at which step k * stride starts.
++    const std::uint64_t last_checkpoint = steps / stride;
++    const auto start_of = [&](std::uint64_t checkpoint) {
++        std::uint64_t at = 0;
++        return base + checkpoints.prefix_before_step(candidate.path_id, checkpoint * stride, at);
++    };
++
++    // The last checkpoint at or before `begin`.
++    std::uint64_t low_checkpoint = 0;
++    std::uint64_t high_checkpoint = last_checkpoint;
++    while (low_checkpoint < high_checkpoint) {
++        const std::uint64_t mid = low_checkpoint + (high_checkpoint - low_checkpoint + 1) / 2;
++        if (start_of(mid) <= begin) low_checkpoint = mid;
++        else high_checkpoint = mid - 1;
++    }
++    const std::uint64_t first_checkpoint = low_checkpoint;
++    // The first checkpoint at or after `end`, if the path has one.
++    low_checkpoint = first_checkpoint;
++    high_checkpoint = last_checkpoint + 1;
++    while (low_checkpoint < high_checkpoint) {
++        const std::uint64_t mid = low_checkpoint + (high_checkpoint - low_checkpoint) / 2;
++        if (start_of(mid) >= end) high_checkpoint = mid;
++        else low_checkpoint = mid + 1;
++    }
++    const std::uint64_t first_step = first_checkpoint * stride;
++    const std::uint64_t stop_step =
++        low_checkpoint <= last_checkpoint ? std::min(steps, low_checkpoint * stride) : steps;
++
++    std::vector<std::uint64_t> starts;
++    std::vector<std::uint32_t> node_ranks;
++    std::uint64_t coordinate = start_of(first_checkpoint);
++    if (stop_step > first_step) {
++        starts.reserve(static_cast<std::size_t>(stop_step - first_step));
++        node_ranks.reserve(static_cast<std::size_t>(stop_step - first_step));
++        path_index.for_each_step(info.path_id, first_step, stop_step - first_step,
++            [&](const paths::StepRecord& step, std::uint64_t) {
++                if (step.node_id >= lengths.node_count()) {
++                    throw std::runtime_error("Path references a node outside the .lnx length table: " +
++                                             path_label(info));
++                }
++                starts.push_back(coordinate);
++                node_ranks.push_back(step.node_id);
++                coordinate += static_cast<std::uint64_t>(lengths.length(step.node_id));
++            });
++    }
++    // Where the step after the window starts: at or past `end`, or the path's end.
++    const std::uint64_t window_end = coordinate;
++    const CandidateSpan span{
++        base,
++        candidate.has_expected_end ? candidate.expected_end : window_end,
++    };
++
++    auto high_it = std::lower_bound(starts.begin(), starts.end(), end);
++    std::size_t high = static_cast<std::size_t>(high_it - starts.begin());
++    auto low_it = std::upper_bound(starts.begin(), starts.end(), begin);
++    std::size_t low = static_cast<std::size_t>(low_it - starts.begin());
++    if (low > 0) --low;
++    while (low < high) {
++        const auto step_end = (low + 1 < starts.size()) ? starts[low + 1] : window_end;
++        if (step_end > begin) break;
++        ++low;
++    }
++    if (low >= high) return span;
++
++    result.reference_path_runs.push_back(paths::SubpathRun{
++        candidate.path_id,
++        first_step + static_cast<std::uint64_t>(low),
++        static_cast<std::uint64_t>(high - low),
++    });
++    result.reference_run_bounds.push_back(ReferenceRunBounds{
++        starts[low],
++        high < starts.size() ? starts[high] : window_end,
++    });
++    for (std::size_t i = low; i < high; ++i) {
++        result.node_ranks.push_back(node_ranks[i]);
++    }
++    return span;
++}
++
+ CandidateSpan append_overlapping_nodes(
+     const paths::PathIndexReader& path_index,
+     const indexer::NodeLengthIndexReader& lengths,
++    const paths::PathCoordinateCheckpointIndexReader* checkpoints,
+     const CandidatePath& candidate,
+     std::uint64_t begin,
+     std::uint64_t end,
+     PathCoordinateQueryResult& result) {
++    if (checkpoints != nullptr) {
++        if (const auto span = append_overlapping_nodes_checkpointed(
++                path_index, lengths, *checkpoints, candidate, begin, end, result)) {
++            return *span;
++        }
++    }
+     const auto info = path_index.get_path_info(candidate.path_id);
+ 
+     // Build one start-coordinate table from the selected fragment base so the
+@@ -251,6 +365,23 @@
+         throw std::runtime_error(".lnx and .pdx node counts differ; rebuild them against the same .ndx");
+     }
+ 
++    // Graphoscope patch: the checkpoints beside the length index, when there.
++    // A file that is there but does not fit this index is an error, not a
++    // reason to fall back to reading the whole path.
++    std::unique_ptr<paths::PathCoordinateCheckpointIndexReader> checkpoints;
++    const std::string lnx_suffix = ".lnx";
++    if (length_index_path.size() > lnx_suffix.size() &&
++        length_index_path.compare(length_index_path.size() - lnx_suffix.size(),
++                                  lnx_suffix.size(), lnx_suffix) == 0) {
++        const std::string checkpoint_path =
++            length_index_path.substr(0, length_index_path.size() - lnx_suffix.size()) + ".pcx";
++        struct stat checkpoint_stat {};
++        if (::stat(checkpoint_path.c_str(), &checkpoint_stat) == 0) {
++            checkpoints = std::make_unique<paths::PathCoordinateCheckpointIndexReader>(checkpoint_path);
++            checkpoints->validate_against(path_index, lengths.node_count());
++        }
++    }
++
+     auto candidates = find_candidate_paths(path_index,
+                                            reference_name,
+                                            sequence_name,
+@@ -272,6 +403,7 @@
+     for (const auto& candidate : candidates) {
+         const auto span = append_overlapping_nodes(path_index,
+                                                    lengths,
++                                                   checkpoints.get(),
+                                                    candidate,
+                                                    begin,
+                                                    end,
+diff -ruN a/src/fs/lazy_file.h b/src/fs/lazy_file.h
+--- a/src/fs/lazy_file.h	1970-01-01 01:00:00
++++ b/src/fs/lazy_file.h	2026-11-19 20:56:01
+@@ -0,0 +1,133 @@
++#ifndef GFAIDX_LAZY_FILE_H
++#define GFAIDX_LAZY_FILE_H
++
++// Graphoscope patch: a read-only file read in 4 KiB pages on demand, standing
++// in for mmap. WebAssembly (WASI) has no real mmap, and its emulation reads the
++// whole file; for a sidecar fetched by HTTP range request that would download
++// all of it. Here only the pages a query touches are read, each once. The page
++// is small because the lookups are: one 8-byte checkpoint per haplotype, each
++// in its own part of the file.
++
++#include <cstddef>
++#include <cstdint>
++#include <cstring>
++#include <memory>
++#include <mutex>
++#include <stdexcept>
++#include <string>
++#include <unordered_map>
++
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++namespace gfaidx {
++
++class LazyFile {
++public:
++    LazyFile() = default;
++    ~LazyFile() { close(); }
++    LazyFile(const LazyFile&) = delete;
++    LazyFile& operator=(const LazyFile&) = delete;
++
++    // Returns false when the file cannot be opened or sized.
++    bool open(const std::string& path) {
++        close();
++        fd_ = ::open(path.c_str(), O_RDONLY);
++        if (fd_ == -1) return false;
++        struct stat st {};
++        if (fstat(fd_, &st) == -1) {
++            close();
++            return false;
++        }
++        size_ = static_cast<std::uint64_t>(st.st_size);
++        return true;
++    }
++
++    void close() {
++        if (fd_ != -1) ::close(fd_);
++        fd_ = -1;
++        size_ = 0;
++        pages_.clear();
++        last_page_ = nullptr;
++    }
++
++    [[nodiscard]] bool is_open() const { return fd_ != -1; }
++    [[nodiscard]] std::uint64_t size() const { return size_; }
++
++    void read(std::uint64_t offset, void* out, std::size_t bytes) const {
++        if (offset > size_ || bytes > size_ - offset) {
++            throw std::runtime_error("Read past the end of an index file");
++        }
++        auto* dst = static_cast<unsigned char*>(out);
++        const std::lock_guard<std::mutex> lock(mutex_);
++        while (bytes > 0) {
++            const std::uint64_t index = offset / kPageSize;
++            const std::size_t within = static_cast<std::size_t>(offset % kPageSize);
++            const std::size_t take = bytes < kPageSize - within ? bytes : kPageSize - within;
++            std::memcpy(dst, page(index) + within, take);
++            dst += take;
++            offset += take;
++            bytes -= take;
++        }
++    }
++
++    template <typename T>
++    [[nodiscard]] T get(std::uint64_t offset) const {
++        T value;
++        read(offset, &value, sizeof(T));
++        return value;
++    }
++
++private:
++    static constexpr std::size_t kPageSize = 1 << 12;
++
++    const unsigned char* page(std::uint64_t index) const {
++        if (last_page_ && last_index_ == index) return last_page_;
++        auto found = pages_.find(index);
++        if (found == pages_.end()) {
++            auto buffer = std::make_unique<unsigned char[]>(kPageSize);
++            const std::uint64_t begin = index * kPageSize;
++            const std::size_t want =
++                size_ - begin < kPageSize ? static_cast<std::size_t>(size_ - begin) : kPageSize;
++            std::size_t have = 0;
++            while (have < want) {
++                const ssize_t got = ::pread(fd_, buffer.get() + have, want - have,
++                                            static_cast<off_t>(begin + have));
++                if (got <= 0) throw std::runtime_error("Failed to read an index file page");
++                have += static_cast<std::size_t>(got);
++            }
++            found = pages_.emplace(index, std::move(buffer)).first;
++        }
++        last_index_ = index;
++        last_page_ = found->second.get();
++        return last_page_;
++    }
++
++    int fd_{-1};
++    std::uint64_t size_{0};
++    mutable std::mutex mutex_;
++    mutable std::unordered_map<std::uint64_t, std::unique_ptr<unsigned char[]>> pages_;
++    mutable std::uint64_t last_index_{0};
++    mutable const unsigned char* last_page_{nullptr};
++};
++
++// Say which bytes of a file are about to be read in sequence. On a local disk
++// this is the usual readahead hint; over range requests it lets the whole run
++// be fetched at once instead of being discovered a buffer at a time.
++inline void advise_will_need(const std::string& path, std::uint64_t offset, std::uint64_t length) {
++#ifdef POSIX_FADV_WILLNEED
++    const int fd = ::open(path.c_str(), O_RDONLY);
++    if (fd == -1) return;
++    (void)posix_fadvise(fd, static_cast<off_t>(offset), static_cast<off_t>(length), POSIX_FADV_WILLNEED);
++    ::close(fd);
++#else
++    (void)path;
++    (void)offset;
++    (void)length;
++#endif
++}
++
++}  // namespace gfaidx
++
++#endif  // GFAIDX_LAZY_FILE_H
+diff -ruN a/src/indexer/node_hash_index.cpp b/src/indexer/node_hash_index.cpp
+--- a/src/indexer/node_hash_index.cpp	2026-11-19 20:56:01
++++ b/src/indexer/node_hash_index.cpp	2026-11-19 20:56:01
+@@ -11,7 +11,6 @@
+ static_assert(sizeof(gfaidx::indexer::NodeHashEntry) == 16, "NodeHashEntry size must be 16 bytes");
+ 
+ #include <fcntl.h>
+-#include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -311,45 +310,25 @@
+ }
+ 
+ NodeHashIndex::NodeHashIndex(const std::string& path) {
+-    fd_ = ::open(path.c_str(), O_RDONLY);
+-    if (fd_ == -1) {
++    if (!file_.open(path)) {
+         throw std::runtime_error("Failed to open node index file: " + path);
+     }
+ 
+-    struct stat st{};
+-    if (fstat(fd_, &st) == -1) {
+-        ::close(fd_);
+-        fd_ = -1;
+-        throw std::runtime_error("Failed to get the stat of the node index file: " + path);
+-    }
+-
+-    file_size_ = static_cast<std::size_t>(st.st_size);
+-    const bool legacy = file_size_ % sizeof(NodeHashEntry) == 0;
+-    if (!legacy && (file_size_ % 16 != kNodeIndexV2SizeResidue ||
+-                    file_size_ < sizeof(NodeHashIndexHeaderDisk))) {
+-        ::close(fd_);
+-        fd_ = -1;
++    file_size_ = static_cast<std::size_t>(file_.size());
++    legacy_ = file_size_ % sizeof(NodeHashEntry) == 0;
++    if (!legacy_ && (file_size_ % 16 != kNodeIndexV2SizeResidue ||
++                     file_size_ < sizeof(NodeHashIndexHeaderDisk))) {
++        file_.close();
+         throw std::runtime_error("Node index file size is invalid: " + path);
+     }
+ 
+-    if (file_size_ > 0) {
+-        void* mapping = mmap(nullptr, file_size_, PROT_READ, MAP_SHARED, fd_, 0);
+-        if (mapping == MAP_FAILED) {
+-            ::close(fd_);
+-            fd_ = -1;
+-            throw std::runtime_error("mmap failed for node index file: " + path);
+-        }
+-        mapping_ = static_cast<const unsigned char*>(mapping);
+-    }
+-
+-    if (legacy) {
+-        data_ = reinterpret_cast<const NodeHashEntry*>(mapping_);
++    if (legacy_) {
++        entries_offset_ = 0;
+         n_entries_ = file_size_ / sizeof(NodeHashEntry);
+         return;
+     }
+ 
+-    NodeHashIndexHeaderDisk header{};
+-    std::memcpy(&header, mapping_, sizeof(header));
++    const auto header = file_.get<NodeHashIndexHeaderDisk>(0);
+     const std::uint64_t expected_starts_offset =
+         sizeof(header) + header.entry_count * sizeof(NodeHashEntry);
+     const bool valid =
+@@ -362,37 +341,24 @@
+         file_size_ >= expected_starts_offset + (header.community_count + 1) * sizeof(std::uint32_t) &&
+         file_size_ - (expected_starts_offset + (header.community_count + 1) * sizeof(std::uint32_t)) < 16;
+     if (!valid) {
+-        munmap(const_cast<unsigned char*>(mapping_), file_size_);
+-        mapping_ = nullptr;
+-        ::close(fd_);
+-        fd_ = -1;
++        file_.close();
+         throw std::runtime_error("Node index header is invalid or unsupported: " + path);
+     }
+ 
+-    data_ = reinterpret_cast<const NodeHashEntry*>(mapping_ + header.entries_offset);
++    entries_offset_ = header.entries_offset;
+     n_entries_ = static_cast<std::size_t>(header.entry_count);
+-    community_starts_ = reinterpret_cast<const std::uint32_t*>(mapping_ + header.community_starts_offset);
+     community_count_ = static_cast<std::size_t>(header.community_count);
++    community_starts_.resize(community_count_ + 1);
++    file_.read(header.community_starts_offset, community_starts_.data(),
++               community_starts_.size() * sizeof(std::uint32_t));
+     node_id_space_ = header.node_id_space;
+     if (community_starts_[0] != 0 || community_starts_[community_count_] != n_entries_) {
+-        munmap(const_cast<unsigned char*>(mapping_), file_size_);
+-        mapping_ = nullptr;
+-        ::close(fd_);
+-        fd_ = -1;
++        file_.close();
+         throw std::runtime_error("Node index community table is invalid: " + path);
+     }
+ }
+ 
+-NodeHashIndex::~NodeHashIndex() {
+-    if (mapping_) {
+-        munmap(const_cast<unsigned char*>(mapping_), file_size_);
+-        mapping_ = nullptr;
+-    }
+-    if (fd_ != -1) {
+-        ::close(fd_);
+-        fd_ = -1;
+-    }
+-}
++NodeHashIndex::~NodeHashIndex() = default;
+ 
+ bool NodeHashIndex::find_entry(std::string_view node_id, std::size_t& out_index) const {
+     // Binary search lookup through the on-disk hash table.
+@@ -403,18 +369,18 @@
+     std::size_t high_val = n_entries_;
+     while (low_val < high_val) {
+         const std::size_t mid_val = low_val + (high_val - low_val) / 2;
+-        const std::uint64_t mid_val_hash = data_[mid_val].hash;
++        const std::uint64_t mid_val_hash = entry(mid_val).hash;
+ 
+         if (mid_val_hash < query_hash) low_val = mid_val + 1;
+         else if (mid_val_hash > query_hash) high_val = mid_val;
+         else {
+             // Walk left to the first matching hash, then scan right to resolve collisions.
+             std::size_t left = mid_val;
+-            while (left > 0 && data_[left - 1].hash == query_hash) {
++            while (left > 0 && entry(left - 1).hash == query_hash) {
+                 left--;
+             }
+-            for (std::size_t i = left; i < n_entries_ && data_[i].hash == query_hash; ++i) {
+-                if (data_[i].hash32 == query_hash32) {
++            for (std::size_t i = left; i < n_entries_ && entry(i).hash == query_hash; ++i) {
++                if (entry(i).hash32 == query_hash32) {
+                     out_index = i;
+                     return true;
+                 }
+@@ -449,7 +415,7 @@
+         return false;
+     }
+     if (!is_legacy()) {
+-        out_rank = data_[index].payload;
++        out_rank = entry(index).payload;
+         return true;
+     }
+     // Legacy files reuse the sorted entry position as the compact node id.
+@@ -483,13 +449,13 @@
+         throw std::runtime_error("Node hash index rank out of range");
+     }
+     if (is_legacy()) {
+-        return data_[rank].payload;
++        return entry(rank).payload;
+     }
+     // Node ids are grouped by community, so the owner is the last community
+     // starting at or before this id (empty communities share a start).
+-    const auto* begin = community_starts_;
+-    const auto* end = community_starts_ + community_count_ + 1;
+-    return static_cast<std::uint32_t>(std::upper_bound(begin, end, rank) - begin - 1);
++    const auto begin = community_starts_.begin();
++    return static_cast<std::uint32_t>(
++        std::upper_bound(begin, community_starts_.end(), rank) - begin - 1);
+ }
+ 
+ void require_matching_node_ids(const NodeHashIndex& node_index,
+diff -ruN a/src/indexer/node_hash_index.h b/src/indexer/node_hash_index.h
+--- a/src/indexer/node_hash_index.h	2026-11-19 20:56:01
++++ b/src/indexer/node_hash_index.h	2026-11-19 20:56:01
+@@ -7,6 +7,8 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++#include "fs/lazy_file.h"
++
+ namespace gfaidx::indexer {
+ 
+ // On-disk entry format for the node hash index (.ndx). Entries are sorted by
+@@ -78,19 +80,23 @@
+     // ids depend only on the node set. Path indexes record the value they were
+     // built against so a .pdx is never paired with a differently numbered .ndx.
+     [[nodiscard]] std::uint64_t node_id_space() const { return node_id_space_; }
+-    [[nodiscard]] bool is_legacy() const { return community_starts_ == nullptr; }
++    [[nodiscard]] bool is_legacy() const { return legacy_; }
+ 
+ private:
+     bool find_entry(std::string_view node_id, std::size_t& out_index) const;
+ 
+-    // The node hash index is mmap-backed and only supported on Unix-like
+-    // systems. gfaidx does not target Windows builds.
+-    int fd_ = -1;
+-    const unsigned char* mapping_ = nullptr;
+-    const NodeHashEntry* data_ = nullptr;
++    [[nodiscard]] NodeHashEntry entry(std::size_t index) const {
++        return file_.get<NodeHashEntry>(entries_offset_ + index * sizeof(NodeHashEntry));
++    }
++
++    // Graphoscope patch: read in pages on demand instead of mmap, so a remote
++    // .ndx is fetched a few pages per lookup.
++    gfaidx::LazyFile file_;
++    bool legacy_ = false;
++    std::uint64_t entries_offset_ = 0;
+     std::size_t file_size_ = 0;
+     std::size_t n_entries_ = 0;
+-    const std::uint32_t* community_starts_ = nullptr;
++    std::vector<std::uint32_t> community_starts_;
+     std::size_t community_count_ = 0;
+     std::uint64_t node_id_space_ = 0;
+ };
+diff -ruN a/src/indexer/node_length_index.cpp b/src/indexer/node_length_index.cpp
+--- a/src/indexer/node_length_index.cpp	2026-11-19 20:56:01
++++ b/src/indexer/node_length_index.cpp	2026-11-19 20:56:01
+@@ -8,7 +8,6 @@
+ #include <vector>
+ 
+ #include <fcntl.h>
+-#include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -96,15 +95,7 @@
+ }  // namespace
+ 
+ void NodeLengthIndexReader::close_mapping() {
+-    if (mapping_) {
+-        munmap(mapping_, file_size_);
+-        mapping_ = nullptr;
+-    }
+-    if (fd_ != -1) {
+-        ::close(fd_);
+-        fd_ = -1;
+-    }
+-    lengths_ = nullptr;
++    file_.close();
+     file_size_ = 0;
+     node_count_ = 0;
+ }
+@@ -187,33 +178,17 @@
+ }
+ 
+ NodeLengthIndexReader::NodeLengthIndexReader(const std::string& path) {
+-    fd_ = ::open(path.c_str(), O_RDONLY);
+-    if (fd_ == -1) {
++    if (!file_.open(path)) {
+         throw std::runtime_error("Failed to open node length index: " + path);
+     }
+-
+-    struct stat st{};
+-    if (fstat(fd_, &st) == -1) {
+-        ::close(fd_);
+-        fd_ = -1;
+-        throw std::runtime_error("Failed to stat node length index: " + path);
+-    }
+-    file_size_ = static_cast<std::size_t>(st.st_size);
++    file_size_ = static_cast<std::size_t>(file_.size());
+     if (file_size_ < sizeof(NodeLengthIndexHeaderDisk)) {
+-        ::close(fd_);
+-        fd_ = -1;
++        file_.close();
+         throw std::runtime_error("Node length index is too small: " + path);
+     }
+ 
+-    mapping_ = mmap(nullptr, file_size_, PROT_READ, MAP_SHARED, fd_, 0);
+-    if (mapping_ == MAP_FAILED) {
+-        mapping_ = nullptr;
+-        ::close(fd_);
+-        fd_ = -1;
+-        throw std::runtime_error("mmap failed for node length index: " + path);
+-    }
+-
+-    const auto* header = static_cast<const NodeLengthIndexHeaderDisk*>(mapping_);
++    const auto header_value = file_.get<NodeLengthIndexHeaderDisk>(0);
++    const auto* header = &header_value;
+     if (std::memcmp(header->magic, kNodeLengthIndexMagic, sizeof(header->magic)) != 0) {
+         close_mapping();
+         throw std::runtime_error("Invalid node length index magic: " + path);
+@@ -236,8 +211,6 @@
+     }
+ 
+     node_count_ = header->node_count;
+-    lengths_ = reinterpret_cast<const std::uint32_t*>(
+-        static_cast<const char*>(mapping_) + sizeof(NodeLengthIndexHeaderDisk));
+ }
+ 
+ NodeLengthIndexReader::~NodeLengthIndexReader() {
+@@ -248,7 +221,8 @@
+     if (rank >= node_count_) {
+         throw std::runtime_error("Node length rank out of range");
+     }
+-    return lengths_[rank];
++    return file_.get<std::uint32_t>(sizeof(NodeLengthIndexHeaderDisk) +
++                                    static_cast<std::uint64_t>(rank) * sizeof(std::uint32_t));
+ }
+ 
+ }  // namespace gfaidx::indexer
+diff -ruN a/src/indexer/node_length_index.h b/src/indexer/node_length_index.h
+--- a/src/indexer/node_length_index.h	2026-11-19 20:56:01
++++ b/src/indexer/node_length_index.h	2026-11-19 20:56:01
+@@ -6,6 +6,7 @@
+ #include <string>
+ 
+ #include "fs/Reader.h"
++#include "fs/lazy_file.h"
+ 
+ namespace gfaidx::indexer {
+ 
+@@ -32,11 +33,10 @@
+ private:
+     void close_mapping();
+ 
+-    int fd_{-1};
+-    void* mapping_{nullptr};
++    // Graphoscope patch: read in pages on demand instead of mmap.
++    gfaidx::LazyFile file_;
+     std::size_t file_size_{0};
+     std::uint64_t node_count_{0};
+-    const std::uint32_t* lengths_{nullptr};
+ };
+ 
+ }  // namespace gfaidx::indexer
+diff -ruN a/src/paths/path_coordinate_checkpoints.cpp b/src/paths/path_coordinate_checkpoints.cpp
+--- a/src/paths/path_coordinate_checkpoints.cpp	2026-11-19 20:56:01
++++ b/src/paths/path_coordinate_checkpoints.cpp	2026-11-19 20:56:01
+@@ -12,7 +12,6 @@
+ #include <vector>
+ 
+ #include <fcntl.h>
+-#include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -135,10 +134,6 @@
+     return *static_cast<const CheckpointHeaderDisk*>(header);
+ }
+ 
+-const CheckpointPathRecordDisk* mapped_path_records(const void* records) {
+-    return static_cast<const CheckpointPathRecordDisk*>(records);
+-}
+-
+ }  // namespace
+ 
+ void build_path_coordinate_checkpoint_index(
+@@ -372,35 +367,21 @@
+ 
+ PathCoordinateCheckpointIndexReader::
+ PathCoordinateCheckpointIndexReader(const std::string& path) {
+-    fd_ = ::open(path.c_str(), O_RDONLY);
+-    if (fd_ == -1) {
++    if (!file_.open(path)) {
+         throw std::runtime_error(
+             "Failed to open path checkpoint index: " + path);
+     }
+-
+-    struct stat st{};
+-    if (fstat(fd_, &st) == -1) {
+-        ::close(fd_);
+-        fd_ = -1;
+-        throw std::runtime_error(
+-            "Failed to stat path checkpoint index: " + path);
+-    }
+-    file_size_ = static_cast<std::size_t>(st.st_size);
++    file_size_ = static_cast<std::size_t>(file_.size());
+     if (file_size_ < sizeof(CheckpointHeaderDisk)) {
+         close_mapping();
+         throw std::runtime_error(
+             "Path checkpoint index is too small: " + path);
+     }
+ 
+-    mapping_ = mmap(nullptr, file_size_, PROT_READ, MAP_SHARED, fd_, 0);
+-    if (mapping_ == MAP_FAILED) {
+-        mapping_ = nullptr;
+-        close_mapping();
+-        throw std::runtime_error(
+-            "mmap failed for path checkpoint index: " + path);
+-    }
+-
+-    header_ = mapping_;
++    static_assert(sizeof(header_bytes_) == sizeof(CheckpointHeaderDisk),
++                  "Path checkpoint header buffer size");
++    file_.read(0, header_bytes_, sizeof(header_bytes_));
++    header_ = header_bytes_;
+     const auto& header = mapped_header(header_);
+     if (std::memcmp(header.magic,
+                     kCheckpointMagic,
+@@ -454,10 +435,8 @@
+             "Path checkpoint index table offsets are invalid");
+     }
+ 
+-    const auto* bytes = static_cast<const unsigned char*>(mapping_);
+-    path_records_ = bytes + header.path_table_offset;
+-    checkpoints_ = reinterpret_cast<const std::uint64_t*>(
+-        bytes + header.checkpoint_table_offset);
++    path_table_offset_ = header.path_table_offset;
++    checkpoint_table_offset_ = header.checkpoint_table_offset;
+ }
+ 
+ PathCoordinateCheckpointIndexReader::
+@@ -466,18 +445,11 @@
+ }
+ 
+ void PathCoordinateCheckpointIndexReader::close_mapping() {
+-    if (mapping_) {
+-        munmap(mapping_, file_size_);
+-        mapping_ = nullptr;
+-    }
+-    if (fd_ != -1) {
+-        ::close(fd_);
+-        fd_ = -1;
+-    }
++    file_.close();
+     file_size_ = 0;
+     header_ = nullptr;
+-    path_records_ = nullptr;
+-    checkpoints_ = nullptr;
++    path_table_offset_ = 0;
++    checkpoint_table_offset_ = 0;
+ }
+ 
+ void PathCoordinateCheckpointIndexReader::validate_against(
+@@ -497,13 +469,14 @@
+             ".pcx path metadata does not match the supplied .pdx");
+     }
+ 
+-    const auto* records = mapped_path_records(path_records_);
+     std::uint64_t step_sum = 0;
+     for (std::uint32_t path_id = 0;
+          path_id < path_index.path_count();
+          ++path_id) {
+         const auto info = path_index.get_path_info(path_id);
+-        const auto& record = records[path_id];
++        const auto record = file_.get<CheckpointPathRecordDisk>(
++            path_table_offset_ + static_cast<std::uint64_t>(path_id) *
++                                     sizeof(CheckpointPathRecordDisk));
+         const auto expected_checkpoints =
+             info.step_count / header.checkpoint_stride + 1;
+         if (record.step_count != info.step_count ||
+@@ -549,7 +522,9 @@
+         throw std::runtime_error(
+             "Path id is outside the .pcx path table");
+     }
+-    const auto& record = mapped_path_records(path_records_)[path_id];
++    const auto record = file_.get<CheckpointPathRecordDisk>(
++        path_table_offset_ + static_cast<std::uint64_t>(path_id) *
++                                 sizeof(CheckpointPathRecordDisk));
+     if (step_rank > record.step_count) {
+         throw std::runtime_error(
+             "Step rank is outside the .pcx path step range");
+@@ -570,7 +545,8 @@
+         throw std::runtime_error(
+             "Path checkpoint lookup is outside the .pcx value table");
+     }
+-    return checkpoints_[absolute_checkpoint];
++    return file_.get<std::uint64_t>(checkpoint_table_offset_ +
++                                    absolute_checkpoint * sizeof(std::uint64_t));
+ }
+ 
+ }  // namespace gfaidx::paths
+diff -ruN a/src/paths/path_coordinate_checkpoints.h b/src/paths/path_coordinate_checkpoints.h
+--- a/src/paths/path_coordinate_checkpoints.h	2026-11-19 20:56:01
++++ b/src/paths/path_coordinate_checkpoints.h	2026-11-19 20:56:01
+@@ -4,6 +4,7 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <string>
++#include "fs/lazy_file.h"
+ 
+ namespace gfaidx::paths {
+ 
+@@ -57,12 +58,14 @@
+ private:
+     void close_mapping();
+ 
+-    int fd_{-1};
+-    void* mapping_{nullptr};
++    // Graphoscope patch: read in pages on demand instead of mmap. The header
++    // is kept as bytes so this header need not name the on-disk struct.
++    gfaidx::LazyFile file_;
+     std::size_t file_size_{0};
++    unsigned char header_bytes_[80]{};
+     const void* header_{nullptr};
+-    const void* path_records_{nullptr};
+-    const std::uint64_t* checkpoints_{nullptr};
++    std::uint64_t path_table_offset_{0};
++    std::uint64_t checkpoint_table_offset_{0};
+ };
+ 
+ }  // namespace gfaidx::paths
+diff -ruN a/src/paths/path_index.cpp b/src/paths/path_index.cpp
+--- a/src/paths/path_index.cpp	2026-11-19 20:56:01
++++ b/src/paths/path_index.cpp	2026-11-19 20:56:01
+@@ -20,7 +20,9 @@
+ #include <utility>
+ 
+ #include <fcntl.h>
++#ifndef __wasi__
+ #include <sys/resource.h>
++#endif
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
+@@ -239,9 +241,13 @@
+ // Soft open-file limit of this process, or 0 when it is unlimited or unknown.
+ // The limit is only read, never raised.
+ std::size_t soft_open_file_limit() {
++#ifdef __wasi__
++    return 0;
++#else
+     struct rlimit limit {};
+     if (getrlimit(RLIMIT_NOFILE, &limit) != 0 || limit.rlim_cur == RLIM_INFINITY) return 0;
+     return static_cast<std::size_t>(limit.rlim_cur);
++#endif
+ }
+ 
+ // Merge width that fits the soft open-file limit: a merge holds fan_in inputs

@@ -156,3 +156,54 @@ test.describe('links for agents', () => {
 		await expect(page.getByTestId('param-warnings')).toContainText('example=nope');
 	});
 });
+
+// The gfaidx page: gfaidx.wasm reading a small bundled index (a test fixture,
+// not one of the page's examples) by range request from this server, its
+// haplotypes named.
+const MLPH_INDEX = '/examples/gfaidx/mlph.gfaidx';
+test.describe('a gfaidx index', () => {
+	test('a region comes back with named haplotypes', async ({ page }) => {
+		// genes=0: the CHM13 gene track comes from UCSC, which CI can't rely on.
+		await page.goto(`/gfaidx?index=${MLPH_INDEX}&locus=chr2:238,030,000-238,040,000&pin=HG00621&genes=0`);
+		await waitForDone(page);
+		const state = await page.evaluate(() => {
+			const g = (
+				window as unknown as {
+					graphoscope: {
+						status: string;
+						error: string | null;
+						warnings: string[];
+						query: { path: string; start: number; end: number };
+						complexity: { namedWalks: number; nodes: number; nodesBeforeSimplification: number };
+					};
+				}
+			).graphoscope;
+			return { status: g.status, error: g.error, warnings: g.warnings, query: g.query, complexity: g.complexity };
+		});
+		expect(state.error).toBeNull();
+		expect(state.status).toBe('done');
+		expect(state.warnings).toEqual([]);
+		// The region, on the index's CHM13 walk (picked as the reference).
+		expect(state.query.path).toBe('CHM13#0#chr2');
+		expect(state.query.end - state.query.start).toBe(10_000);
+		expect(state.complexity.namedWalks).toBeGreaterThan(30);
+		// Simplified for drawing, from the full region gfaidx returned.
+		expect(state.complexity.nodes).toBeLessThan(state.complexity.nodesBeforeSimplification);
+		// The haplotype panel lists real samples, and the link's pin traced one's two haplotypes.
+		await expect(page.getByText('GRCh38', { exact: true }).first()).toBeVisible();
+		await expect(page.getByText(/HG00621 · hap 1/)).toBeVisible();
+		await expect(page.getByText(/HG00621 · hap 2/)).toBeVisible();
+		// The address bar names the index, path and region that are on screen.
+		const url = new URL(page.url());
+		expect(new URL(url.searchParams.get('index')!).pathname).toBe(MLPH_INDEX);
+		expect(url.searchParams.get('path')).toBe('CHM13#0#chr2');
+		expect(url.searchParams.get('locus')).toBe('chr2:238,030,000-238,040,000');
+	});
+
+	test('a region off the path says so', async ({ page }) => {
+		await page.goto(`/gfaidx?index=${MLPH_INDEX}&locus=chr2:1-1000`);
+		await waitForDone(page);
+		await expect(page.locator('html')).toHaveAttribute('data-status', 'error');
+		await expect(page.locator('.error-banner')).toContainText('overlaps the requested interval');
+	});
+});

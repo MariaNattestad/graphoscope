@@ -27,6 +27,12 @@ vite.config.ts.timestamp-*
 /crates/reduce/target
 /crates/reduce/vendor
 /crates/reduce/wasi-sdk-*
+# gfaidx and zlib sources, objects and the WASI SDK, fetched and built by
+# scripts/build-gfaidx-wasm.sh. Only src/main.cpp is ours.
+/crates/gfaidx-wasm/vendor
+/crates/gfaidx-wasm/obj
+/crates/gfaidx-wasm/wasi-sdk-*
+/crates/gfaidx-wasm/gfaidx.wasm
 
 # Playwright
 /test-results
